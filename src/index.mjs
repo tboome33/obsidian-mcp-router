@@ -120,6 +120,10 @@ import {
   auditSourcesTool,
 } from './tools/source-ledger.mjs';
 import {
+  TOOL_DEFINITION as INSTALL_CONVENTIONS_TOOL_DEFINITION,
+  installConventionsTool,
+} from './tools/install-conventions.mjs';
+import {
   TOOL_DEFINITION as WRITE_BUNDLE_TOOL_DEFINITION,
   writeBundleTool,
 } from './tools/write-bundle.mjs';
@@ -788,7 +792,7 @@ const TOOLS = [
   {
     name: 'youtube_to_markdown',
     description:
-      'Convert a YouTube video page to markdown — includes the transcript when one is available. Falls back to yt-dlp caption extraction when the primary (MarkItDown) path fails; the fallback needs yt-dlp on PATH (or YTDLP_PATH) and degrades with a clear error if it is absent. URL must be http(s); private/loopback hosts are refused (SSRF guard).',
+      'Convert a YouTube video page to markdown — includes the transcript when one is available. The page is converted first (MarkItDown); for a video URL, yt-dlp caption extraction runs when that conversion fails OR yields no transcript (it usually yields none), and if yt-dlp fails too the page text is returned with a warning saying why. The fallback needs yt-dlp on PATH (or YTDLP_PATH) and degrades with a clear error if it is absent (list_vaults conversionToolbox.youtube says whether it was found). yt-dlp is given this Node as its JavaScript runtime. When YouTube rate-limits or bot-checks the machine\'s IP (HTTP 429, typical of datacenter IPs), set YTDLP_COOKIES (absolute path to a Netscape cookies.txt) or YTDLP_PROXY (http/https/socks4/socks5[h] URL) in the router\'s own environment — the MCP server declaration; a workspace .env cannot set them. URL must be http(s); private/loopback hosts are refused (SSRF guard).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1072,6 +1076,10 @@ const TOOLS = [
   BUILD_SEARCH_INDEX_TOOL_DEFINITION,
   RECORD_SOURCE_TOOL_DEFINITION,
   AUDIT_SOURCES_TOOL_DEFINITION,
+  // Installs library conventions into the vault's conventions file with ONE
+  // compare-and-swap write, then reads it back. WRITES → WRITE_TOOL_NAMES
+  // (its `dryRun` writes nothing — see requiresAlsoTierCheck).
+  INSTALL_CONVENTIONS_TOOL_DEFINITION,
   // C2 — journaled multi-file bundle with rollback. WRITES (it runs the other
   // write tools, plus its own journal under wiki-meta/) → WRITE_TOOL_NAMES.
   WRITE_BUNDLE_TOOL_DEFINITION,
@@ -1220,6 +1228,7 @@ const TOOLS = [
         tlsInsecure: { type: 'boolean', description: 'Skip certificate verification. Default false (verify). Set true for the plugin\'s self-signed cert over an already-authenticated transport like WireGuard.' },
         insecurePort: { type: 'number', description: 'That vault\'s plaintext HTTP port, ONLY if you want clickToOpenUrl links emitted for it (see docs/remote-vaults.md — this is an assertion about who will click the link, not a secret).' },
         timeoutMs: { type: 'number', description: 'Per-request timeout in ms. Default 10000 if omitted.' },
+        localPath: { type: 'string', description: 'OPTIONAL absolute directory where this vault\'s files ALSO sit on the machine running the router (e.g. a container volume). Stored as declared — the server cannot verify it; `setup-vault.mjs --attach <name> --local-path <dir>` checks it against the vault. Lets the hooks load hot.md and search_smart check index freshness; notes are still read and written over REST.' },
       },
       required: ['name', 'baseUrl', 'apiKey'],
       additionalProperties: false,
@@ -1325,6 +1334,7 @@ const TOOL_HANDLERS = {
   // C6 — source ledger: forward-fill register + read-only independence audit.
   record_source: (reg, args) => recordSourceTool(reg, args),
   audit_sources: (reg, args) => auditSourcesTool(reg, args),
+  install_conventions: (reg, args) => installConventionsTool(reg, args),
   // C2 — journaled multi-file bundle (all-or-nothing apply + rollback).
   write_bundle: (reg, args) => writeBundleTool(reg, args),
   refresh_okf_projections: (reg, args) => refreshOkfProjectionsTool(reg, args),
@@ -1512,6 +1522,10 @@ const WRITE_TOOL_NAMES = new Set([
   // C6 — writes wiki-meta/source-ledger.json. `audit_sources` is read-only and
   // is deliberately NOT in this set.
   'record_source',
+  // Appends library conventions to the vault's conventions file (CLAUDE.md,
+  // wiki-meta/CLAUDE.md or Documentation/CLAUDE.md). Its `dryRun` is read-only
+  // but the tool as a whole writes, so a read-only deployment hides it.
+  'install_conventions',
   // C2 — runs several write tools as one journaled operation. Its `recover:true`
   // listing is read-only, but the tool as a whole writes (steps + journal), so
   // it is hidden wholesale in readonly mode: a deployment that cannot write
@@ -1622,6 +1636,9 @@ function requiresAlsoTierCheck(toolName, args) {
   if (toolName === 'build_wiki_graph' && Boolean(args.dryRun)) return false;
   if (toolName === 'build_search_index' && args.check === true) return false;
   if (toolName === 'refresh_okf_projections' && args.check === true) return false;
+  // `=== true`, exactly the handler's own test (`args.dryRun === true`): a
+  // string "true" is NOT a dry run there, so it must not be exempt here.
+  if (toolName === 'install_conventions' && args.dryRun === true) return false;
   return true;
 }
 
@@ -2115,6 +2132,9 @@ const FIXED_AUDIT_TARGETS = {
   refresh_okf_projections: 'wiki/index.md (okf projections)',
   build_search_index: SEARCH_INDEX_PATH,
   record_source: SOURCE_LEDGER_PATH,
+  // The file is RESOLVED by the tool among three candidates, never named by
+  // the caller — so the journal names the set, not a caller-chosen path.
+  install_conventions: 'CLAUDE.md (conventions file)',
   // v0.90.0 — writes ONLY the router's OWN config.json, never a vault path.
   // Currently unreachable in practice (userId truthy implies gated implies
   // this tool is refused before the handler runs — same mutual exclusion

@@ -103,6 +103,34 @@ The port number itself is not a secret: it is not an authentication credential, 
 
 One more consequence: `build_open_link` normally *verifies* a path against the local disk and corrects or refuses a wrong one. It cannot do that for a vault with no disk, so its result carries **`pathVerified: false`** and a `verification` sentence. The URL is well-formed; it is not proof the file exists.
 
+### Optional — `localPath`, when the vault's files also sit on this machine
+
+A common shape: Obsidian runs in a container (the linuxserver image, say), its Local REST API is published on a LAN or WireGuard address, and the container's volume is a directory on the very machine the router runs on. The vault is still **remote** to the router — every note goes over HTTP — but some things only need a disk, and the disk is right there. Declare it:
+
+```json
+{ "name": "notes", "baseUrl": "http://10.8.0.1:27180", "apiKey": "…", "localPath": "/srv/obsidian/notes" }
+```
+
+The value must be an absolute directory. Two ways to set it:
+
+- **Verified, from a terminal (recommended)**, in the workspace you are binding:
+
+  ```
+  obsidian-mcp-router --attach notes --local-path /srv/obsidian/notes
+  ```
+
+  Before anything is written, the CLI compares the same file on both sides — `wiki-meta/catalog.md` (or its legacy name), else a note from the vault root — as served over REST and as found in the directory, both decoded as UTF-8 the way the router decodes REST responses. Same text: the directory is recorded in `remoteVaults[].localPath`, in the same locked config write as the binding. A different text, a file one side has and the other lacks, or a directory that does not exist: the command refuses **with nothing written**. Nothing to compare (an empty vault) or a REST side that cannot be read: nothing is recorded, and the command says why. A mismatch on a `localPath` already in the config is reported loudly on re-attach, never silently rewritten.
+- **Declared, from a conversation**: `register_remote_vault({ …, localPath })` stores it **as declared**. The server does not read a vault's disk, so it cannot check the directory; its result says `status: "declared"` and names the `--attach --local-path` command that verifies it.
+
+**What it enables.**
+
+- The session hooks load that vault's `wiki-meta/hot.md` from the directory, as for a local vault — and the `CLAUDE.md` block that `--attach` writes stops claiming a hot cache is auto-loaded when it is not.
+- `search_smart` and `get_wiki_context_pack` check their index freshness against the directory instead of declining with `no-local-disk`.
+- `--install-plugins` and `--plugin-health` can reach the vault's `.obsidian/` folder. Without `localPath`, both refuse and say so.
+- `--attach` can read plugins and conventions from the disk for its "Final state" report instead of printing `unknown`.
+
+**What it does not enable.** Notes are still read and written **over REST only**. The server exposes the directory as `diskPath`, never as `path`, precisely so that none of its "read or write this vault through its disk" branches can fire for a remote vault: the HTTP-only rule for note content holds (`tests/no-vault-disk.test.mjs`). Click-to-open does not read the container's `data.json` either — the port there is the one inside the container — so `insecurePort` above stays the only way to get links.
+
 ## `find_twin_pages` on a remote vault (v0.82.0)
 
 `find_twin_pages` compares every page against every other by cosine, using the vectors Smart Connections keeps in `<vault>/.smart-env/multi/`. That is a **dot-directory the Local REST API does not serve** — and not by oversight: measured on a real vault, Obsidian's own `vault.getFiles()` returns zero entries under `.smart-env`, so nothing in the core API can see it.

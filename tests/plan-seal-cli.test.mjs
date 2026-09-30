@@ -190,11 +190,39 @@ describe('plan cores — determinism, drift, binding', () => {
     assert.notEqual(sA, otherVault);
   });
 
-  test('syncPlanCore: archive / force / target-set are all sealed', () => {
-    const core = (over = {}) => syncPlanCore({ repo: 'o/r', ref: 'main', force: false, archiveSha256: 'a'.repeat(64), targets: ['/b', '/a'], ...over });
+  test('syncPlanCore: archive / force / target-set / lang / per-vault plans are all sealed', () => {
+    const vaultPlan = (over = {}) => ({
+      vault: '/a',
+      plugins: [{ id: 'obsidian42-brat', action: 'copy', kind: 'code', files: ['main.js', 'manifest.json'] }],
+      willEnable: ['obsidian42-brat'],
+      remainWithoutCode: ['smart-connections'],
+      smartEnv: { clone: true, language: null, model: 'TaylorAI/bge-micro-v2' },
+      rootDocs: [],
+      ...over,
+    });
+    const core = (over = {}) => syncPlanCore({
+      repo: 'o/r', ref: 'main', force: false, archiveSha256: 'a'.repeat(64), targets: ['/b', '/a'],
+      vaultPlans: [vaultPlan()], ...over,
+    });
     assert.deepEqual(core().targets, ['/a', '/b'], 'targets sorted for stability');
     const base = computePlanSeal({ op: 'sync-from-github', identity: { repo: 'o/r' }, plan: core() });
-    for (const over of [{ archiveSha256: 'b'.repeat(64) }, { force: true }, { targets: ['/a'] }, { ref: 'v1' }]) {
+    // Order of the per-vault plans is not part of the plan.
+    const twoPlans = [vaultPlan(), vaultPlan({ vault: '/b' })];
+    assert.equal(
+      computePlanSeal({ op: 'sync-from-github', identity: { repo: 'o/r' }, plan: core({ vaultPlans: twoPlans }) }),
+      computePlanSeal({ op: 'sync-from-github', identity: { repo: 'o/r' }, plan: core({ vaultPlans: [...twoPlans].reverse() }) }),
+    );
+    for (const over of [
+      { archiveSha256: 'b'.repeat(64) }, { force: true }, { targets: ['/a'] }, { ref: 'v1' }, { lang: 'fr' },
+      // A copy that became a skip (a plugin folder appeared in the target).
+      { vaultPlans: [vaultPlan({ plugins: [{ id: 'obsidian42-brat', action: 'skip-present', kind: 'code', files: ['main.js', 'manifest.json'] }] })] },
+      // Same action, but the source now ships settings only.
+      { vaultPlans: [vaultPlan({ plugins: [{ id: 'obsidian42-brat', action: 'copy', kind: 'settings-only', files: ['data.json'] }] })] },
+      { vaultPlans: [vaultPlan({ willEnable: [] })] },
+      { vaultPlans: [vaultPlan({ remainWithoutCode: [] })] },
+      { vaultPlans: [vaultPlan({ smartEnv: { clone: true, language: 'fr', model: 'onnx-community/embeddinggemma-300m-ONNX' } })] },
+      { vaultPlans: [vaultPlan({ rootDocs: ['README.md'] })] },
+    ]) {
       assert.notEqual(base, computePlanSeal({ op: 'sync-from-github', identity: { repo: 'o/r' }, plan: core(over) }), `drift on ${JSON.stringify(over)}`);
     }
   });

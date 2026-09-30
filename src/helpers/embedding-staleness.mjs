@@ -182,7 +182,9 @@ const DECLINE_DETAIL = {
   'no-local-disk':
     'Freshness was not checked: this vault has no disk on the machine running the router, and the '
     + 'check compares each page\'s mtime against the one the index recorded. Absence of a warning '
-    + 'here is NOT evidence that the results are current.',
+    + 'here is NOT evidence that the results are current. A remote vault whose files also sit on '
+    + 'this machine can say so (`remoteVaults[].localPath`, set by `setup-vault.mjs --attach '
+    + '<name> --local-path <dir>` after checking the directory against the vault).',
   'store-missing':
     'Freshness was not checked: no Smart Connections store (.smart-env/multi) was readable in this '
     + 'vault. Absence of a warning here is NOT evidence that the results are current.',
@@ -202,6 +204,19 @@ const DECLINE_DETAIL = {
  */
 function libFor(vaultPath) {
   return /^[A-Za-z]:[\\/]/.test(vaultPath) || /^\\\\/.test(vaultPath) ? path.win32 : path.posix;
+}
+
+/**
+ * The directory this check may stat, or null: a local vault's `path`, or the
+ * `diskPath` a remote descriptor carries when its files also sit on this
+ * machine. Anything else — a remote without one, a malformed descriptor — has
+ * no disk here, and the check declines rather than guess.
+ */
+function diskRootOf(vault) {
+  if (!vault || typeof vault !== 'object') return null;
+  if (vault.type === 'local') return typeof vault.path === 'string' && vault.path ? vault.path : null;
+  if (vault.type === 'remote') return typeof vault.diskPath === 'string' && vault.diskPath ? vault.diskPath : null;
+  return null;
 }
 
 /**
@@ -451,7 +466,15 @@ export function assessEmbeddingFreshness(vault, pagePaths, deps = {}) {
 
   // A vault with no disk here cannot be checked. Not an error and not a warning
   // — the roadmap's rule: best effort, never a false positive.
-  if (!vault || vault.type !== 'local' || !vault.path || typeof vault.path !== 'string') {
+  //
+  // "A disk here" is a local vault's `path`, OR a remote vault's `diskPath`
+  // (`remoteVaults[].localPath`: Obsidian served from a container whose volume
+  // sits on this machine). This check may use the latter because it reads
+  // only the index and the pages' STAT — never a note's content, which for a
+  // remote vault keeps going through REST. See `remoteVaultDescriptor` in
+  // src/registry.mjs for the list of readers allowed to use `diskPath`.
+  const root = diskRootOf(vault);
+  if (!root) {
     return decline('no-local-disk');
   }
   // THESE PATHS COME OFF THE WIRE. They are whatever the bridge put in a search
@@ -509,8 +532,8 @@ export function assessEmbeddingFreshness(vault, pagePaths, deps = {}) {
     return withRefusals(decline(refusedPaths > 0 ? 'no-usable-paths' : 'no-paths'));
   }
 
-  const lib = libFor(vault.path);
-  const dir = lib.join(vault.path, SMART_ENV_DIR, SMART_ENV_MULTI);
+  const lib = libFor(root);
+  const dir = lib.join(root, SMART_ENV_DIR, SMART_ENV_MULTI);
 
   let entries;
   try {
@@ -575,7 +598,7 @@ export function assessEmbeddingFreshness(vault, pagePaths, deps = {}) {
     let statFailed = null;
     for (const candidate of statCandidates) {
       try {
-        stat = io.statSync(lib.join(vault.path, candidate.split('/').join(lib.sep)));
+        stat = io.statSync(lib.join(root, candidate.split('/').join(lib.sep)));
         statFailed = null;
         break;
       } catch (err) {

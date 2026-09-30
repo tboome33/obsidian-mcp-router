@@ -93,6 +93,16 @@ import {
   vaultSlug,
   vaultsRootPath,
 } from '../src/helpers/vault-slug.mjs';
+import {
+  remoteEntryNames,
+  resolveRemoteEntry,
+  examineRemotePrimary,
+  describeVaultLocation,
+  hotSentence,
+  formatFinalState,
+  LOCAL_PATH_STATUS,
+} from './attach-remote.mjs';
+import { assessAttachReadiness } from './attach-readiness.mjs';
 // Filesystem-safe slug for a NEW vault's folder name, aliased against the many
 // local `slug` bindings already in this file (vaultSlug results, --attach
 // params) — see the vaultsRoot-composition block below for why this is a
@@ -141,11 +151,28 @@ import { hasProjectionMarker } from '../src/helpers/okf-projections.mjs';
 import { partitionSeededAreas, ownedAreaFor } from '../src/helpers/session-folder-collision.mjs';
 import { WIKI_MODE_SECTIONS } from '../src/helpers/wiki-mode-sections.mjs';
 import {
+  PLUGIN_SYNC_ACTIONS,
+  summarizePluginSync,
+  projectPluginSync,
+  formatPluginSyncReport,
+  formatPluginSyncPlan,
+} from '../src/helpers/plugin-sync-report.mjs';
+import { buildPostSyncChecklist } from '../src/helpers/post-sync-checklist.mjs';
+import {
+  normalizeLang,
+  embedModelForLanguage,
+  applyLanguageToSmartEnv,
+  detectDeclaredLanguage,
+} from '../src/helpers/smart-env-language.mjs';
+import { CLAUDE_MD_CANDIDATES } from '../src/helpers/claude-md-conventions.mjs';
+import {
   buildProvisionPlan,
   resolveSourceVault,
   resolvePluginProfile,
   existingSlugs,
+  knownVaultRoots,
 } from './vault-plan.mjs';
+import { pinProvisionTarget } from '../src/helpers/pin-provision-target.mjs';
 
 // --- Config path: user-home, NOT relative to this script ---------------------
 // The script lives inside the router repo (which is git-tracked and may live
@@ -190,7 +217,7 @@ const ROUTER_BIN = path.join(REPO_ROOT, 'bin', 'obsidian-mcp-router.mjs');
 const NODE_EXE = process.execPath;
 
 // --- Required plugins: must exist in reference vault, otherwise we fail --
-const REQUIRED_PLUGINS = ['obsidian-local-rest-api', 'mcp-router-bridge'];
+export const REQUIRED_PLUGINS = ['obsidian-local-rest-api', 'mcp-router-bridge'];
 
 // --- Credentialed plugins (data.json carries per-vault secrets) -------------
 // Plugins whose folder contains a per-vault credential file. The
@@ -248,7 +275,7 @@ const CREDENTIAL_LEAK_PLUGINS = new Set(['obsidian-local-rest-api']);
 // claims; note the residual trust boundary stays repo+ref+HTTPS — a hostile
 // archive could still ship its own code UNDER one of these names, which is
 // why --repo away from the default requires --trust-repo.
-const NETWORK_PLUGIN_ALLOWLIST = new Set([
+export const NETWORK_PLUGIN_ALLOWLIST = new Set([
   'obsidian-local-rest-api',
   'mcp-router-bridge',
   'obsidian42-brat',
@@ -306,7 +333,7 @@ const SKELETON_DIR = path.join(REPO_ROOT, 'templates', 'reference-vault-skeleton
 // 302-redirects to the latest release asset's signed CDN URL.
 // `downloadToFile` follows the redirect chain. Both files are tiny
 // (main.js ~few KB, manifest.json <1KB).
-const BRIDGE_PLUGIN_URLS = {
+export const BRIDGE_PLUGIN_URLS = {
   'main.js': 'https://github.com/tboome33/obsidian-mcp-router-bridge/releases/latest/download/main.js',
   'manifest.json': 'https://github.com/tboome33/obsidian-mcp-router-bridge/releases/latest/download/manifest.json',
 };
@@ -2375,7 +2402,11 @@ function linkWorkspaceToVault({ workspacePath, vaultPath, vaultSlug, opts = {} }
   if (!fs.existsSync(workspacePath)) fail(`Workspace path does not exist: ${workspacePath}`);
   if (!fs.statSync(workspacePath).isDirectory()) fail(`Workspace path is not a directory: ${workspacePath}`);
 
-  const catalog = resolveScaffold(vaultPath, 'catalog', { fs, path });
+  // A REMOTE primary has no `vaultPath` to probe here: `--attach` asked the
+  // vault itself (its verified local directory, or REST) before calling, and a
+  // missing wiki is a WARNING for it, not a refusal — see attachWorkspace. The
+  // local-vault precondition below is unchanged.
+  const catalog = opts.remote ? true : resolveScaffold(vaultPath, 'catalog', { fs, path });
   if (!catalog) {
     const indexMd = scaffoldWritePath(vaultPath, 'catalog', { path });
     fail(
@@ -2524,7 +2555,7 @@ function linkWorkspaceToVault({ workspacePath, vaultPath, vaultSlug, opts = {} }
       console.log(`    ${c('green', '→')} ${CONFIG_PATH}`);
       console.log(`    ${c('green', '→')} workspaceBindings: ${vaultSlug} ${c('gray', '(this is what decides; the .env line is a portable hint)')}`);
     }
-    console.log(`    ${c('gray', `(vault path: ${vaultPath})`)}`);
+    if (vaultPath) console.log(`    ${c('gray', `(vault path: ${vaultPath})`)}`);
   }
   // `dropped` RETURNED, not only warned: the warning is suppressed by
   // `opts.quiet`, which is how a caller that silences the log also loses the
@@ -2611,6 +2642,14 @@ export function knownSlugs(cfg) {
  * silent: a forgotten `vault:` writes to the primary and nothing complains.
  *
  * Pure string builder, so the wording is testable without touching disk.
+ *
+ * THE HOT-CACHE SENTENCE TELLS THE TRUTH. It used to say "Auto-loaded at
+ * session start (its `wiki-meta/hot.md`)" for every primary, and an agent
+ * reads this block as fact. Measured on a remote vault attached to a code
+ * workspace: the file did not exist, and the hook could not have read it if it
+ * had (no local disk). `primary.hot` ({ exists, loadable }) now carries what
+ * attach established, and `hotSentence` (scripts/attach-remote.mjs) says the
+ * one true thing. A vault's `kind: 'remote'` is described by its baseUrl.
  */
 export function buildWorkspaceVaultsBlock({ primary, secondaries = [] }) {
   const lines = [];
@@ -2619,12 +2658,12 @@ export function buildWorkspaceVaultsBlock({ primary, secondaries = [] }) {
   lines.push('');
   lines.push('*Managed by `obsidian-mcp-router --attach`. Edits inside this block are overwritten on re-attach; write your own notes outside it.*');
   lines.push('');
-  lines.push(`- **Primary — \`${primary.slug}\`** (${primary.path})`);
-  lines.push('  Auto-loaded at session start (its `wiki-meta/hot.md`), and the target of every router call made **without** a `vault:` argument.');
+  lines.push(`- **Primary — \`${primary.slug}\`** (${describeVaultLocation(primary)})`);
+  lines.push(hotSentence(primary.hot));
   if (secondaries.length > 0) {
     lines.push('');
     for (const s of secondaries) {
-      lines.push(`- **Secondary — \`${s.slug}\`** (${s.path})`);
+      lines.push(`- **Secondary — \`${s.slug}\`** (${describeVaultLocation(s)})`);
       lines.push(`  Reachable ONLY by naming it explicitly: \`vault: "${s.slug}"\`.`);
     }
     lines.push('');
@@ -2690,28 +2729,56 @@ export function appendWorkspaceGitignore(workspacePath) {
  * `opts.claudeMd` / `opts.gitignore` / `opts.plugin` (all default true) let a
  * caller opt out of individual writes.
  */
-export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], opts = {} }) {
+export async function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], localPath = null, opts = {} }) {
   const ws = path.resolve(workspacePath);
   if (!fs.existsSync(ws)) fail(`Workspace path does not exist: ${ws}`);
   if (!fs.statSync(ws).isDirectory()) fail(`Workspace path is not a directory: ${ws}`);
 
   const cfg = loadConfig();
-  if (registeredVaultPaths(cfg).length === 0) {
+  const remoteNames = remoteEntryNames(cfg);
+  if (registeredVaultPaths(cfg).length === 0 && remoteNames.length === 0) {
     fail(
-      'Router config has no vaults in portRegistry.\n' +
+      'Router config has no vaults in portRegistry or remoteVaults.\n' +
       '   --attach binds EXISTING vaults. Bootstrap one first with `setup-vault.mjs <vault-path>`,\n' +
-      '   or use the /obsidian-router:meta-attach-vault wizard to create one.',
+      '   register a remote one with register_remote_vault, or use the\n' +
+      '   /obsidian-router:meta-attach-vault wizard to create one.',
     );
   }
+
+  // What the command established, for the "Final state" report. Warnings are
+  // printed as they happen AND collected, so the report can count them.
+  const warnings = [];
+  const note = (msg) => { warnings.push(msg); warn(msg); };
 
   // Resolve every slug BEFORE writing anything — a typo in the 2nd vault must
   // not leave the workspace half-attached.
   const resolve1 = (slug, label) => {
     const vp = resolveSlugToVaultPath(cfg, slug);
     if (!vp) {
+      // A REMOTE VAULT IS A VAULT TOO. The local resolution above stays first
+      // and unchanged; only a name it does not answer is looked up in
+      // `remoteVaults` — exactly, then by an unambiguous fold that no local
+      // vault shares (resolveRemoteEntry). The binding layer has always
+      // accepted remote names; this command was the one door that did not.
+      const remote = resolveRemoteEntry(cfg, slug);
+      if (remote) {
+        if (!remote.baseUrl || !remote.apiKey || remote.enabled === false) {
+          fail(
+            `${label} vault "${remote.name}" is a remoteVaults entry the router does not load (no baseUrl,\n` +
+            '   no apiKey, or enabled: false) — nothing could be attached to it. Fix the entry in config.json.',
+          );
+        }
+        return {
+          slug: remote.name,
+          kind: 'remote',
+          path: null,
+          baseUrl: String(remote.baseUrl).replace(/\/$/, ''),
+          entry: remote,
+        };
+      }
       fail(
-        `${label} vault slug "${slug}" is not in portRegistry.\n` +
-        `   Known slugs: ${knownSlugs(cfg).join(', ')}`,
+        `${label} vault slug "${slug}" is not in portRegistry nor in remoteVaults.\n` +
+        `   Known slugs: ${[...knownSlugs(cfg), ...remoteNames].join(', ')}`,
       );
     }
     // THE REGISTERED SPELLING IS STORED, NOT THE USER'S. Resolution is
@@ -2724,7 +2791,7 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
     // word about a vault's name — the hand-written version of this line was
     // exactly what the `vaultNames` sweep collapsed, and its scan refuses a
     // twenty-third copy on the commit that introduces it.
-    return { slug: vaultSlug(cfg, vp), path: vp };
+    return { slug: vaultSlug(cfg, vp), kind: 'local', path: vp };
   };
   // RESOLVE FIRST, THEN DEDUPLICATE — on the CANONICAL slug each argument
   // resolved to, never on the spelling the caller typed. Folding the typed
@@ -2747,6 +2814,63 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
     secondaries.push(resolved);
   }
 
+  // 0) WHAT THE PRIMARY IS, established before anything is written: a remote
+  //    vault's local directory (verified against the vault itself) and
+  //    whether the vault has a wiki. A mismatching `--local-path` refuses the
+  //    whole command here, with nothing written. The `state` object is what
+  //    the "Final state" report prints — flat, so later additions (plugin,
+  //    conventions) are one more field each.
+  const state = {
+    vault: primary.slug,
+    kind: primary.kind,
+    localPath: { status: primary.kind === 'local' ? 'not-applicable' : 'none' },
+    wiki: { catalog: null, hot: null },
+    warnings,
+  };
+  if (localPath !== null && primary.kind !== 'remote') {
+    fail(
+      `--local-path applies to a REMOTE primary only; "${primary.slug}" is a local vault, whose directory\n` +
+      `   the config already knows (${primary.path}).`,
+    );
+  }
+  let persistLocalPath = null;
+  if (primary.kind === 'remote') {
+    // The SAME descriptor the server builds for this entry — imported here,
+    // lazily, so the rest of this script keeps not loading the registry.
+    const { remoteVaultDescriptor } = await import('../src/registry.mjs');
+    const remote = await examineRemotePrimary({
+      primary,
+      localPath,
+      note,
+      fail,
+      descriptorFor: remoteVaultDescriptor,
+    });
+    state.localPath = remote.localPath;
+    state.wiki = remote.wiki;
+    persistLocalPath = remote.persistLocalPath;
+    // The directory named in the block, only when the hooks may trust it.
+    primary.path = remote.localPath.status === LOCAL_PATH_STATUS.VERIFIED ? remote.localPath.path : null;
+  } else {
+    // Local: the catalog precondition is still enforced by linkWorkspaceToVault
+    // below, unchanged; here the hot cache is looked at, for the block.
+    state.wiki.catalog = Boolean(resolveScaffold(primary.path, 'catalog', { fs, path }));
+    state.wiki.hot = fs.existsSync(path.join(primary.path, 'wiki-meta', 'hot.md'));
+  }
+  // Can the hot-cache hook read it at all? A local vault's disk, or a remote
+  // vault's VERIFIED directory — and nothing else, whatever the file's
+  // existence.
+  const hotLoadable = primary.kind === 'local' || state.localPath.status === LOCAL_PATH_STATUS.VERIFIED;
+  primary.hot = { exists: state.wiki.hot, loadable: hotLoadable };
+  if (!hotLoadable) {
+    note(
+      `"${primary.slug}" is a remote vault with no verified local directory: its wiki-meta/hot.md is NOT\n` +
+      '   auto-loaded at session start (the hooks need a disk), and the CLAUDE.md block says so. If its\n' +
+      '   files also sit on this machine, re-run with --local-path <dir>.',
+    );
+  } else if (state.wiki.hot === false && state.wiki.catalog !== false) {
+    note(`"${primary.slug}" has no wiki-meta/hot.md yet: nothing is auto-loaded at session start until it exists.`);
+  }
+
   const steps = [];
 
   // 1) .env — reuses the bootstrap path's validation (catalog present, rebind
@@ -2757,7 +2881,9 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
     vaultSlug: primary.slug,
     // `--attach` writes its own binding below, with the secondaries, so the
     // link step writes only the portable hint. One config write, not two.
-    opts: { quiet: true, recordBinding: false },
+    // `remote`: the wiki was asked of the vault itself above, and a missing
+    // one is a warning for a remote vault rather than the local refusal.
+    opts: { quiet: true, recordBinding: false, remote: primary.kind === 'remote' },
   });
   steps.push({ step: '.env', detail: `OBSIDIAN_ROUTER_DEFAULT_VAULT=${primary.slug}`, path: link.envPath });
 
@@ -2834,7 +2960,33 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
       // that stays in `also` survives the re-attach; one that leaves takes its
       // tier with it; the previous primary, if it drops to `also`, starts soft.
       const keep = (list) => (previous && Array.isArray(list) ? list.filter((n) => also.includes(n)) : []);
-      return withBinding(cfg, ws, {
+      // A VERIFIED `--local-path` IS RECORDED HERE, in the same locked write
+      // as the binding: one file state in which both are true, or neither.
+      // The entry is re-found in the file AS IT READS INSIDE THE LOCK, and
+      // refused if it moved: a sibling that rewrote the entry's baseUrl in
+      // between would otherwise get a directory verified against another
+      // server.
+      let base = cfg;
+      if (persistLocalPath) {
+        const list = Array.isArray(cfg.remoteVaults) ? cfg.remoteVaults : [];
+        const idx = list.findIndex((r) => r && r.name === primary.slug);
+        const now = idx === -1 ? null : list[idx];
+        if (!now || String(now.baseUrl || '').replace(/\/$/, '') !== primary.baseUrl) {
+          const err = new Error(
+            `--attach: the remoteVaults entry "${primary.slug}" changed (or disappeared) while its --local-path was `
+            + 'being verified. Nothing was recorded in the router config — the portable hint in the workspace\'s '
+            + '.env was already written. Run --attach again.',
+          );
+          err.code = BINDING_REPAIR_REQUIRED_CODE;
+          throw err;
+        }
+        if (now.localPath !== persistLocalPath) {
+          const nextList = list.slice();
+          nextList[idx] = { ...now, localPath: persistLocalPath };
+          base = { ...cfg, remoteVaults: nextList };
+        }
+      }
+      return withBinding(base, ws, {
         vault: primary.slug,
         also,
         locked: Boolean(previous && previous.vault === primary.slug && previous.locked),
@@ -2843,6 +2995,9 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
         alsoWritable: keep(previous?.alsoWritable),
       });
     });
+    if (persistLocalPath) {
+      steps.push({ step: 'localPath', detail: `${persistLocalPath} — verified against the vault, recorded`, path: CONFIG_PATH });
+    }
     const alsoNote = secondaries.length ? ` (+${secondaries.length} also)` : '';
     steps.push({ step: 'binding', detail: `${primary.slug}${alsoNote} — in your router config, not in this project`, path: CONFIG_PATH });
     // WHAT THIS ATTACH LEFT OUT, said: a secondary the previous binding
@@ -2906,7 +3061,18 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
     });
   }
 
-  return { workspacePath: ws, primary, secondaries, steps, previousSlug: link.previousSlug };
+  // 5) WHAT IS STILL MISSING — plugins, wiki, conventions — read from the
+  //    vault's disk (a local vault's folder, or a remote vault's VERIFIED
+  //    directory: `primary.path` is null otherwise), with the ordered commands
+  //    that close each gap. See scripts/attach-readiness.mjs.
+  state.readiness = assessAttachReadiness({
+    vault: primary.slug,
+    kind: primary.kind,
+    diskPath: primary.path || null,
+    wiki: state.wiki,
+  });
+
+  return { workspacePath: ws, primary, secondaries, steps, previousSlug: link.previousSlug, state };
 }
 
 // ---------------------------------------------------------------------------
@@ -3147,13 +3313,38 @@ function scaffoldWikiMeta(vaultPath, wikiOpts = {}) {
 // list is a union across source shapes.
 const ROOT_FILES_TO_CLONE = ['README.md', 'Documentation', '.claude'];
 
+// The SHIPPED skeleton — the bundled templates/reference-vault-skeleton, or the
+// same folder extracted from the GitHub archive by --sync-from-github. Its
+// README.md documents the skeleton itself ("Reference vault skeleton"), not the
+// vault it seeds: copied into a user's vault it sat at the root, got indexed by
+// Smart Connections and answered searches about the user's notes. It is never
+// copied from such a source. A user's own reference vault is not a skeleton,
+// and its README keeps travelling as before.
+function isShippedSkeletonSource(dir) {
+  if (!dir) return false;
+  try { if (samePath(dir, SKELETON_DIR)) return true; } catch { /* fall through */ }
+  const abs = path.resolve(dir);
+  return path.basename(abs) === 'reference-vault-skeleton' && path.basename(path.dirname(abs)) === 'templates';
+}
+
+/**
+ * The root-doc items cloneRootDocs() WOULD copy — read-only, so a dry-run can
+ * show it and the sync plan seal can cover it. Same rules as the copy.
+ */
+function planRootDocs(referenceVault, targetVault, force, skipItems = []) {
+  const skip = new Set(skipItems);
+  if (isShippedSkeletonSource(referenceVault)) skip.add('README.md');
+  return ROOT_FILES_TO_CLONE.filter((item) => {
+    if (skip.has(item)) return false;
+    if (!fs.existsSync(path.join(referenceVault, item))) return false;
+    return force || !fs.existsSync(path.join(targetVault, item));
+  });
+}
+
 function cloneRootDocs(referenceVault, targetVault, force, skipItems = []) {
-  for (const item of ROOT_FILES_TO_CLONE) {
-    if (skipItems.includes(item)) continue;
+  for (const item of planRootDocs(referenceVault, targetVault, force, skipItems)) {
     const src = path.join(referenceVault, item);
     const dst = path.join(targetVault, item);
-    if (!fs.existsSync(src)) continue;
-    if (fs.existsSync(dst) && !force) continue;
     if (fs.existsSync(dst)) fs.rmSync(dst, { recursive: true, force: true });
     fs.mkdirSync(path.dirname(dst), { recursive: true });
     if (fs.statSync(src).isDirectory()) {
@@ -4364,6 +4555,279 @@ async function setupVault(vaultPath, opts = {}) {
   };
 }
 
+// ---------- Plugin sync plan (read-only) --------------------------------------
+//
+// syncPluginsMode used to DECIDE and ACT in one loop, so nothing could say what
+// a sync would do before it did it: `--dry-run` listed vaults and no plugins,
+// and the plan seal could only bind the archive and the vault set. The
+// decisions now come from planPluginSync() — read-only, same rules in the same
+// order as before — and the loop only applies them. The dry-run prints the same
+// entries, and the --sync-from-github seal covers them, so an approved seal can
+// never apply a different per-plugin plan.
+
+/** Ids in a vault's `.obsidian/community-plugins.json` ([] when absent/unreadable). */
+function readEnabledPluginIds(vault) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(vault, '.obsidian', 'community-plugins.json'), 'utf8'));
+    return Array.isArray(parsed) ? parsed.filter((x) => typeof x === 'string') : [];
+  } catch { return []; }
+}
+
+/** A plugin folder has CODE when both `main.js` and `manifest.json` are there. */
+function pluginDirHasCode(dir) {
+  return fs.existsSync(path.join(dir, 'main.js')) && fs.existsSync(path.join(dir, 'manifest.json'));
+}
+
+/**
+ * Files a plugin copy would write, relative and `/`-joined, sorted. The
+ * credential file of a CREDENTIAL_LEAK_PLUGINS entry is left out, as
+ * clonePluginFolder() leaves it out.
+ */
+function listPluginFiles(dir, pluginId) {
+  const credentialed = CREDENTIAL_LEAK_PLUGINS.has(String(pluginId).trim().toLowerCase());
+  const out = [];
+  const walk = (d, rel) => {
+    let items;
+    try { items = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const it of items) {
+      const r = rel ? `${rel}/${it.name}` : it.name;
+      if (it.isDirectory()) walk(path.join(d, it.name), r);
+      else if (!(credentialed && r.toLowerCase() === 'data.json')) out.push(r);
+    }
+  };
+  walk(dir, '');
+  return out.sort();
+}
+
+/**
+ * Decide, per plugin, what a sync from `sourceVault` into `targetVault` does.
+ * Read-only. The order of the checks is the order the apply loop used to run
+ * them in, and each check keeps its reason (see the comments in the branches).
+ *
+ * @returns {{entries: Array<{id: string, action: string, kind: string, files: string[]}>,
+ *   sourceEnabled: string[]}}
+ */
+export function planPluginSync(sourceVault, targetVault, { force = false, networkSource = false } = {}) {
+  const refPluginsDir = path.join(sourceVault, '.obsidian', 'plugins');
+  const tgtPluginsDir = path.join(targetVault, '.obsidian', 'plugins');
+  const refPlugins = fs.readdirSync(refPluginsDir).filter((p) => {
+    try { return fs.statSync(path.join(refPluginsDir, p)).isDirectory(); }
+    catch { return false; }
+  }).sort();
+  const sourceEnabled = readEnabledPluginIds(sourceVault);
+  const entries = [];
+
+  // Network-sourced skeleton (--sync-from-github): the archive is NOT a
+  // trusted plugin store. Only plugins that the skeleton's own curated
+  // community-plugins.json (∪ REQUIRED_PLUGINS) declares are eligible, and
+  // only under strictly normalized names with a matching manifest id — a
+  // dir like `Obsidian-Local-REST-API` or one with a trailing space exists
+  // to dodge the credential guard on a case-insensitive filesystem
+  // (review finding). Local sources (.template) are untouched by this.
+  let vettedPlugins = refPlugins;
+  if (networkSource) {
+    // The archive's own enabled list only SELECTS among the pinned
+    // allowlist — it can never enlarge it (circular-trust review finding).
+    const allow = new Set(
+      [...REQUIRED_PLUGINS, ...sourceEnabled].filter((x) => NETWORK_PLUGIN_ALLOWLIST.has(x)),
+    );
+    vettedPlugins = [];
+    for (const p of refPlugins) {
+      // The skeleton legitimately ships two kinds of dirs: full vendored
+      // plugins (manifest + main.js — BRAT, the bridge once downloaded) and
+      // CONFIG PRE-SEEDS (a lone non-secret data.json; the code comes from
+      // the marketplace/BRAT — Lot 2 curation). So: a manifest must match
+      // the folder name; no manifest is fine ONLY without executable code
+      // (Obsidian won't load a manifest-less dir anyway — belt and braces).
+      const hasMain = fs.existsSync(path.join(refPluginsDir, p, 'main.js'));
+      let manifestOk;
+      try {
+        manifestOk = JSON.parse(fs.readFileSync(path.join(refPluginsDir, p, 'manifest.json'), 'utf8')).id === p;
+      } catch { manifestOk = !hasMain; }
+      if (/^[a-z0-9][a-z0-9._-]*$/.test(p) && manifestOk && allow.has(p)) vettedPlugins.push(p);
+      else entries.push({ id: p, action: PLUGIN_SYNC_ACTIONS.REFUSED, kind: null, files: [] });
+    }
+  }
+
+  for (const p of vettedPlugins) {
+    const srcPlugin = path.join(refPluginsDir, p);
+    const dstPlugin = path.join(tgtPluginsDir, p);
+    const exists = fs.existsSync(dstPlugin);
+    const entry = {
+      id: p,
+      action: null,
+      kind: pluginDirHasCode(srcPlugin) ? 'code' : 'settings-only',
+      files: listPluginFiles(srcPlugin, p),
+    };
+    entries.push(entry);
+
+    if (exists && !force) { entry.action = PLUGIN_SYNC_ACTIONS.SKIP_PRESENT; continue; }
+
+    // Credentialed-plugin safety check. Refuse the copy whenever the
+    // target lacks its own data.json — both the first-time-copy case
+    // (folder absent) AND the --force refresh case where the folder
+    // exists but data.json doesn't. Without this second check, --force
+    // on a folder-present-but-data.json-missing target would copy the
+    // reference's data.json wholesale (codex P1 — folder existed
+    // because Obsidian had created it on plugin install but the user
+    // never activated it, so no data.json was ever written).
+    // Normalized lookup: `.has(p)` was an exact case-sensitive match while
+    // Windows resolves paths case-insensitively — `Obsidian-Local-REST-API`
+    // from a hostile source skipped the guard yet wrote into the real
+    // plugin folder (review finding).
+    if (CREDENTIAL_LEAK_PLUGINS.has(p.trim().toLowerCase())
+      && !fs.existsSync(path.join(dstPlugin, 'data.json'))) {
+      entry.action = PLUGIN_SYNC_ACTIONS.DEFER_CREDENTIAL;
+      continue;
+    }
+
+    if (exists) {
+      // A manifest-less source dir is a config PRE-SEED (lone data.json —
+      // the Lot 2 curation pattern): it may seed a first install, never
+      // replace a target that has a REAL installed plugin (manifest
+      // present). Without this, --force replaced the bridge's code with a
+      // bare data.json fleet-wide (review+ BLOCKER). A target that has no
+      // manifest either is not an installed plugin — refresh stays allowed.
+      if (!fs.existsSync(path.join(srcPlugin, 'manifest.json'))
+        && fs.existsSync(path.join(dstPlugin, 'manifest.json'))) {
+        entry.action = PLUGIN_SYNC_ACTIONS.KEEP_INSTALLED;
+        continue;
+      }
+      // Lot 2 anti-downgrade: BRAT auto-updates GitHub plugins in user vaults,
+      // so the target can be ahead of the reference — never replace a newer
+      // installed version, even under --force.
+      if (isTargetPluginNewer(srcPlugin, dstPlugin)) {
+        entry.action = PLUGIN_SYNC_ACTIONS.KEEP_NEWER;
+        continue;
+      }
+      entry.action = PLUGIN_SYNC_ACTIONS.REFRESH;
+    } else {
+      entry.action = PLUGIN_SYNC_ACTIONS.COPY;
+    }
+  }
+  return { entries, sourceEnabled };
+}
+
+/**
+ * What the sync does with `.smart-env`: cloned only when the target has none
+ * (an existing one is NEVER overwritten), and in which language.
+ *
+ * Language, in order: `--lang` → a language the vault already declares (see
+ * detectDeclaredLanguage) → none, in which case the source's own file is copied
+ * untouched (a user's reference vault may have chosen its own model) and the
+ * sync prints a one-line hint.
+ */
+function planSmartEnv(sourceVault, targetVault, lang) {
+  const srcFile = path.join(sourceVault, '.smart-env', 'smart_env.json');
+  const clone = !fs.existsSync(path.join(targetVault, '.smart-env'))
+    && fs.existsSync(path.join(sourceVault, '.smart-env'));
+  let chosen = normalizeLang(lang ?? '');
+  let source = chosen ? '--lang' : null;
+  if (!chosen) {
+    let claudeMd = null;
+    for (const rel of CLAUDE_MD_CANDIDATES) {
+      try { claudeMd = fs.readFileSync(path.join(targetVault, ...rel.split('/')), 'utf8'); break; } catch { /* next */ }
+    }
+    let scData = null;
+    try { scData = JSON.parse(fs.readFileSync(path.join(targetVault, '.obsidian', 'plugins', 'smart-connections', 'data.json'), 'utf8')); } catch { /* none */ }
+    const found = detectDeclaredLanguage({ claudeMd, smartConnectionsData: scData });
+    if (found) { chosen = found.lang; source = found.source; }
+  }
+  let model = null;
+  if (chosen) model = embedModelForLanguage(chosen);
+  else {
+    try { model = JSON.parse(fs.readFileSync(srcFile, 'utf8'))?.smart_sources?.embed_model?.transformers?.model_key ?? null; }
+    catch { model = null; }
+  }
+  return { clone, lang: chosen, langSource: source, model };
+}
+
+/** Ids BRAT installs, from its tracked GitHub repos. Only known pairs are mapped. */
+const BRAT_REPO_PLUGIN_IDS = Object.freeze({
+  'tboome33/obsidian-mcp-router-bridge': 'mcp-router-bridge',
+  'pjeby/hot-reload': 'hot-reload',
+});
+
+function bratManagedIds(...vaults) {
+  // The bridge is GitHub-only — never in the marketplace — so BRAT is its
+  // remedy even when no BRAT settings are on disk yet.
+  const ids = new Set(['mcp-router-bridge']);
+  for (const v of vaults) {
+    try {
+      const data = JSON.parse(fs.readFileSync(path.join(v, '.obsidian', 'plugins', 'obsidian42-brat', 'data.json'), 'utf8'));
+      for (const repo of Array.isArray(data?.pluginList) ? data.pluginList : []) {
+        const id = BRAT_REPO_PLUGIN_IDS[String(repo).toLowerCase()];
+        if (id) ids.add(id);
+      }
+    } catch { /* no BRAT settings there */ }
+  }
+  return [...ids];
+}
+
+/**
+ * Container likelihood for the post-sync checklist: true with `--container`,
+ * true when the router config also registers a REMOTE vault under this
+ * vault's name (the same vault served by a containerised Obsidian), otherwise
+ * null — unknown, and the checklist prints both variants.
+ */
+function detectContainerVault(abs, explicit) {
+  if (explicit === true) return true;
+  try {
+    const cfg = loadConfigReadOnly();
+    const names = new Set([path.basename(abs).toLowerCase()]);
+    try { names.add(String(vaultSlug(cfg, abs)).toLowerCase()); } catch { /* unregistered */ }
+    const remotes = Array.isArray(cfg.remoteVaults) ? cfg.remoteVaults : [];
+    if (remotes.some((r) => r && typeof r.name === 'string' && names.has(r.name.toLowerCase()))) return true;
+  } catch { /* no readable config */ }
+  return null;
+}
+
+/**
+ * The full read-only plan of one vault's sync: per-plugin decisions, what gets
+ * enabled, what stays enabled without code, `.smart-env`, root docs. `core` is
+ * what the --sync-from-github seal binds; `lines` is what a dry-run prints.
+ */
+export function describeVaultSyncPlan(sourceVault, targetVault, { force = false, networkSource = false, lang = null } = {}) {
+  const abs = path.resolve(targetVault);
+  const { entries, sourceEnabled } = planPluginSync(sourceVault, abs, { force, networkSource });
+  const tgtPluginsDir = path.join(abs, '.obsidian', 'plugins');
+  const projected = projectPluginSync({
+    entries,
+    targetEnabledBefore: readEnabledPluginIds(abs),
+    hasCodeBefore: (id) => pluginDirHasCode(path.join(tgtPluginsDir, id)),
+  });
+  const summary = summarizePluginSync({
+    entries,
+    targetEnabled: projected.targetEnabled,
+    sourceEnabled,
+    hasCode: projected.hasCode,
+    bratManaged: bratManagedIds(abs, sourceVault),
+  });
+  const remainWithoutCode = summary.enabledWithoutCode.map((e) => e.id);
+  const smartEnv = planSmartEnv(sourceVault, abs, lang);
+  const rootDocs = planRootDocs(sourceVault, abs, force, networkSource ? ['.claude', 'README.md'] : []);
+  const core = {
+    vault: canonicalPath(abs),
+    plugins: [...entries]
+      .map((e) => ({ id: e.id, action: e.action, kind: e.kind, files: [...e.files] }))
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+    willEnable: projected.willEnable,
+    remainWithoutCode,
+    smartEnv: smartEnv.clone
+      ? { clone: true, language: smartEnv.lang, model: smartEnv.model }
+      : { clone: false, language: null, model: null },
+    rootDocs: [...rootDocs].sort(),
+  };
+  const lines = formatPluginSyncPlan(entries, { willEnable: projected.willEnable, remainWithoutCode });
+  lines.push(smartEnv.clone
+    ? `.smart-env: clone — model ${smartEnv.model ?? '(source default)'}${smartEnv.lang ? `, language ${smartEnv.lang} (${smartEnv.langSource})` : ' (no language declared — pass --lang <code> for a non-English vault)'}`
+    : fs.existsSync(path.join(abs, '.smart-env'))
+      ? '.smart-env: keep the existing one (never overwritten)'
+      : '.smart-env: none (the source has none)');
+  lines.push(`root docs: ${rootDocs.length > 0 ? rootDocs.join(', ') : '(none)'}`);
+  return { core, lines, summary };
+}
+
 async function syncPluginsMode(vaultPath, opts = {}) {
   // When called from --sync-all (opts.throwOnError = true), errors throw
   // instead of process.exit so a single failing vault doesn't tear down
@@ -4425,48 +4889,17 @@ async function syncPluginsMode(vaultPath, opts = {}) {
   const tgtPluginsDir = path.join(targetObsidian, 'plugins');
   fs.mkdirSync(tgtPluginsDir, { recursive: true });
 
-  const refPlugins = fs.readdirSync(refPluginsDir).filter((p) => {
-    try { return fs.statSync(path.join(refPluginsDir, p)).isDirectory(); }
-    catch { return false; }
+  // Every per-plugin decision comes from the read-only planner, which carries
+  // the vetting and the guards (credential, pre-seed, anti-downgrade) with
+  // their reasons. This function only applies what it decided.
+  const { entries: planned, sourceEnabled } = planPluginSync(sourceVault, abs, {
+    force: opts.force,
+    networkSource: opts.networkSource,
   });
-
-  // Network-sourced skeleton (--sync-from-github): the archive is NOT a
-  // trusted plugin store. Only plugins that the skeleton's own curated
-  // community-plugins.json (∪ REQUIRED_PLUGINS) declares are eligible, and
-  // only under strictly normalized names with a matching manifest id — a
-  // dir like `Obsidian-Local-REST-API` or one with a trailing space exists
-  // to dodge the credential guard on a case-insensitive filesystem
-  // (review finding). Local sources (.template) are untouched by this.
-  let vettedPlugins = refPlugins;
-  const rejectedByVetting = [];
-  if (opts.networkSource) {
-    let enabled = [];
-    try {
-      const parsed = JSON.parse(fs.readFileSync(path.join(sourceVault, '.obsidian', 'community-plugins.json'), 'utf8'));
-      if (Array.isArray(parsed)) enabled = parsed.filter((x) => typeof x === 'string');
-    } catch { enabled = []; }
-    // The archive's own enabled list only SELECTS among the pinned
-    // allowlist — it can never enlarge it (circular-trust review finding).
-    const allow = new Set(
-      [...REQUIRED_PLUGINS, ...enabled].filter((x) => NETWORK_PLUGIN_ALLOWLIST.has(x)),
-    );
-    vettedPlugins = [];
-    for (const p of refPlugins) {
-      // The skeleton legitimately ships two kinds of dirs: full vendored
-      // plugins (manifest + main.js — BRAT, the bridge once downloaded) and
-      // CONFIG PRE-SEEDS (a lone non-secret data.json; the code comes from
-      // the marketplace/BRAT — Lot 2 curation). So: a manifest must match
-      // the folder name; no manifest is fine ONLY without executable code
-      // (Obsidian won't load a manifest-less dir anyway — belt and braces).
-      const hasMain = fs.existsSync(path.join(refPluginsDir, p, 'main.js'));
-      let manifestOk;
-      try {
-        manifestOk = JSON.parse(fs.readFileSync(path.join(refPluginsDir, p, 'manifest.json'), 'utf8')).id === p;
-      } catch { manifestOk = !hasMain; }
-      if (/^[a-z0-9][a-z0-9._-]*$/.test(p) && manifestOk && allow.has(p)) vettedPlugins.push(p);
-      else rejectedByVetting.push(p);
-    }
-  }
+  const rejectedByVetting = planned.filter((e) => e.action === PLUGIN_SYNC_ACTIONS.REFUSED).map((e) => e.id);
+  // The outcome, entry by entry — the plan, except where the apply itself
+  // refused (a vault this installation does not own).
+  const outcome = planned.map((e) => ({ ...e }));
 
   const newlySynced = [];
   const refreshed = [];
@@ -4487,69 +4920,48 @@ async function syncPluginsMode(vaultPath, opts = {}) {
   // machine. Merging them would blur two refusals with different remedies.
   const skippedNotOwned = [];
 
-  for (const p of vettedPlugins) {
+  for (const e of outcome) {
+    const p = e.id;
     const srcPlugin = path.join(refPluginsDir, p);
     const dstPlugin = path.join(tgtPluginsDir, p);
-    const exists = fs.existsSync(dstPlugin);
-
-    if (exists && !opts.force) continue;
-
-    // Credentialed-plugin safety check. Refuse the copy whenever the
-    // target lacks its own data.json — both the first-time-copy case
-    // (folder absent) AND the --force refresh case where the folder
-    // exists but data.json doesn't. Without this second check, --force
-    // on a folder-present-but-data.json-missing target would copy the
-    // reference's data.json wholesale (codex P1 — folder existed
-    // because Obsidian had created it on plugin install but the user
-    // never activated it, so no data.json was ever written).
-    // Normalized lookup: `.has(p)` was an exact case-sensitive match while
-    // Windows resolves paths case-insensitively — `Obsidian-Local-REST-API`
-    // from a hostile source skipped the guard yet wrote into the real
-    // plugin folder (review finding).
-    if (CREDENTIAL_LEAK_PLUGINS.has(p.trim().toLowerCase())) {
-      const tgtDataJson = path.join(dstPlugin, 'data.json');
-      if (!fs.existsSync(tgtDataJson)) {
-        deferredForSafety.push(p);
-        continue;
-      }
-    }
-
-    if (exists) {
-      // A manifest-less source dir is a config PRE-SEED (lone data.json —
-      // the Lot 2 curation pattern): it may seed a first install, never
-      // replace a target that has a REAL installed plugin (manifest
-      // present). Without this, --force replaced the bridge's code with a
-      // bare data.json fleet-wide (review+ BLOCKER). A target that has no
-      // manifest either is not an installed plugin — refresh stays allowed.
-      if (!fs.existsSync(path.join(srcPlugin, 'manifest.json'))
-        && fs.existsSync(path.join(dstPlugin, 'manifest.json'))) continue;
-      // Lot 2 anti-downgrade: BRAT auto-updates GitHub plugins in user vaults,
-      // so the target can be ahead of the reference — never replace a newer
-      // installed version, even under --force.
-      if (isTargetPluginNewer(srcPlugin, dstPlugin)) {
-        keptNewer.push(p);
-        continue;
-      }
+    if (e.action === PLUGIN_SYNC_ACTIONS.DEFER_CREDENTIAL) { deferredForSafety.push(p); continue; }
+    if (e.action === PLUGIN_SYNC_ACTIONS.KEEP_NEWER) { keptNewer.push(p); continue; }
+    if (e.action === PLUGIN_SYNC_ACTIONS.REFRESH) {
       // --force: re-clone but preserve local data.json (port + apiKey + user settings)
       const recloned = await recloneVaultPluginPreservingConfig(vaultPath, p, srcPlugin, dstPlugin);
       if (!recloned.done) {
         if (!opts.quiet) warn(`Kept ${p} untouched — ${recloned.reason}`);
         skippedNotOwned.push(p);
+        e.action = PLUGIN_SYNC_ACTIONS.NOT_OWNED;
         continue;
       }
       refreshed.push(p);
-    } else {
+    } else if (e.action === PLUGIN_SYNC_ACTIONS.COPY) {
       clonePluginFolder(p, srcPlugin, dstPlugin);
       newlySynced.push(p);
     }
+    // skip-present / keep-installed / refused: nothing to write.
   }
 
-  // Sync .smart-env if missing locally
-  const tgtSmartEnv = path.join(abs, '.smart-env');
+  // Sync .smart-env if missing locally — and ONLY then: an existing one is the
+  // vault's own index configuration and is never overwritten. The language
+  // decides the embedding model (src/helpers/smart-env-language.mjs).
+  const smartEnvPlan = planSmartEnv(sourceVault, abs, opts.lang);
   let smartEnvAdded = false;
-  if (!fs.existsSync(tgtSmartEnv) && fs.existsSync(path.join(sourceVault, '.smart-env'))) {
+  if (smartEnvPlan.clone) {
     cloneSmartEnv(sourceVault, abs, false);
     smartEnvAdded = true;
+    if (smartEnvPlan.lang) {
+      const envFile = path.join(abs, '.smart-env', 'smart_env.json');
+      try {
+        const current = JSON.parse(fs.readFileSync(envFile, 'utf8'));
+        fs.writeFileSync(envFile, JSON.stringify(applyLanguageToSmartEnv(current, smartEnvPlan.lang), null, 2));
+      } catch (err) {
+        if (!opts.quiet) warn(`Could not set the .smart-env language (${err.message}) — the source's model was kept.`);
+      }
+    }
+  } else if (opts.lang && !opts.quiet && fs.existsSync(path.join(abs, '.smart-env'))) {
+    info(`--lang ${opts.lang} not applied: this vault already has a .smart-env, and an existing one is never overwritten.`);
   }
 
   // Lot 2 — themes + appearance ride the same sync: per-theme skip unless
@@ -4567,7 +4979,10 @@ async function syncPluginsMode(vaultPath, opts = {}) {
   // hooks (shell commands Claude Code runs automatically) — network bytes
   // must never land in an executable config while plugins get vetted and
   // this wouldn't (review+ finding: same threat model, two treatments).
-  cloneRootDocs(sourceVault, abs, opts.force, opts.networkSource ? ['.claude'] : []);
+  // README.md is skipped too: a network source IS the shipped skeleton, whose
+  // README documents the skeleton, not the user's vault (cloneRootDocs also
+  // recognises the skeleton by location — this is belt and braces).
+  cloneRootDocs(sourceVault, abs, opts.force, opts.networkSource ? ['.claude', 'README.md'] : []);
 
   // Update community-plugins.json with newly synced plugins
   if (newlySynced.length > 0) {
@@ -4580,10 +4995,30 @@ async function syncPluginsMode(vaultPath, opts = {}) {
     fs.writeFileSync(cpPath, JSON.stringify(list, null, 2));
   }
 
+  // What actually landed, in three buckets (src/helpers/plugin-sync-report.mjs):
+  // only a plugin whose CODE is now on disk counts as installed. The ids above
+  // were appended to community-plugins.json code or not — so each switches on
+  // as soon as its code arrives — and are never counted as synced for it.
+  const targetEnabledAfter = readEnabledPluginIds(abs);
+  const hasCodeAfter = (id) => pluginDirHasCode(path.join(tgtPluginsDir, id));
+  const summary = summarizePluginSync({
+    entries: outcome,
+    targetEnabled: targetEnabledAfter,
+    sourceEnabled,
+    hasCode: hasCodeAfter,
+    bratManaged: bratManagedIds(abs, sourceVault),
+  });
+
   // Output: silent if nothing changed (especially in --quiet mode)
   if (opts.quiet) {
     if (newlySynced.length > 0) {
-      console.log(`[obsidian-mcp-router] Synced ${newlySynced.length} new plugin(s) from ${sourceLabel}: ${newlySynced.join(', ')}`);
+      const parts = [];
+      const newCode = summary.codeInstalled.filter((id) => newlySynced.includes(id));
+      const newSettings = summary.settingsOnly.filter((id) => newlySynced.includes(id));
+      if (newCode.length > 0) parts.push(`code installed for ${newCode.join(', ')}`);
+      if (newSettings.length > 0) parts.push(`settings only (code still to install) for ${newSettings.join(', ')}`);
+      if (summary.enabledWithoutCode.length > 0) parts.push(`${summary.enabledWithoutCode.length} enabled plugin(s) still without code`);
+      console.log(`[obsidian-mcp-router] Plugin sync from ${sourceLabel}: ${parts.join('; ')}. Reload Obsidian to load them; run --sync-plugins without --quiet for the full checklist.`);
     }
     if (deferredForSafety.length > 0) {
       // Even in --quiet (used by hooks), credential-leak avoidance
@@ -4605,10 +5040,20 @@ async function syncPluginsMode(vaultPath, opts = {}) {
       `community-plugins.json, or failed name/manifest hygiene): ${rejectedByVetting.join(', ')}`,
     );
   }
-  if (newlySynced.length > 0) ok(`Synced ${newlySynced.length} new plugin(s): ${newlySynced.join(', ')}`);
   if (refreshed.length > 0) ok(`Refreshed ${refreshed.length} plugin(s) (--force): ${refreshed.join(', ')}`);
+  for (const line of formatPluginSyncReport(summary, { vaultPath: abs })) {
+    if (line.level === 'ok') ok(line.text);
+    else if (line.level === 'warn') warn(line.text);
+    else info(line.text);
+  }
   if (keptNewer.length > 0) info(`Kept ${keptNewer.length} plugin(s) at the target's NEWER version (BRAT-updated, never downgraded): ${keptNewer.join(', ')}`);
-  if (smartEnvAdded) ok('Cloned .smart-env from reference vault');
+  if (smartEnvAdded) {
+    ok(`Cloned .smart-env from ${sourceLabel}${smartEnvPlan.model ? ` — embedding model ${smartEnvPlan.model}` : ''}` +
+      `${smartEnvPlan.lang ? `, language ${smartEnvPlan.lang} (${smartEnvPlan.langSource})` : ''}`);
+    if (!smartEnvPlan.lang) {
+      info('No vault language declared — the source\'s embedding model was kept. For a non-English vault, re-create .smart-env with --lang <code> (e.g. --lang fr).');
+    }
+  }
   if (deferredForSafety.length > 0) {
     warn(
       `Refused first-time copy of credentialed plugin(s) into ${abs}:\n` +
@@ -4622,6 +5067,25 @@ async function syncPluginsMode(vaultPath, opts = {}) {
   }
   if (newlySynced.length === 0 && refreshed.length === 0 && !smartEnvAdded && deferredForSafety.length === 0) {
     info(`Already up to date with ${sourceLabel}.`);
+  }
+
+  // The steps left for a person in Obsidian, for THIS vault. Printed when the
+  // sync wrote something or left an enabled plugin without its code — an
+  // up-to-date vault with everything installed gets no checklist.
+  if (newlySynced.length > 0 || refreshed.length > 0 || smartEnvAdded || summary.enabledWithoutCode.length > 0) {
+    const bratPending = summary.enabledWithoutCode.filter((x) => x.installVia === 'brat').map((x) => x.id);
+    const marketplaceMissing = summary.enabledWithoutCode.filter((x) => x.installVia === 'marketplace').map((x) => x.id);
+    const checklist = buildPostSyncChecklist({
+      vaultPath: abs,
+      container: detectContainerVault(abs, opts.container),
+      withCode: targetEnabledAfter.filter(hasCodeAfter),
+      bratPending,
+      bratHasCode: hasCodeAfter('obsidian42-brat'),
+      marketplaceMissing,
+    });
+    console.log('');
+    console.log(c('bold', checklist[0]));
+    for (const line of checklist.slice(1)) console.log(line);
   }
 }
 
@@ -5136,20 +5600,31 @@ export function migrationPlanCore(op, result) {
 /**
  * Drift-sensitive core of a `--sync-from-github` plan. Binds the ARCHIVE
  * identity (its SHA-256 — the key signal: a moving ref like `main` can advance
- * between preview and apply), the repo/ref/force knobs, and the resolved
- * eligible-target set. It deliberately does NOT model per-plugin sync decisions
- * (those live inside the hardened, un-touched syncPluginsMode) — the seal
- * guarantees the apply runs against the SAME archive + vault set + force the
- * caller previewed, which is the outer drift that matters.
+ * between preview and apply), the repo/ref/force/lang knobs, the resolved
+ * eligible-target set, AND each vault's per-plugin plan (`vaultPlans`, the
+ * `core` of describeVaultSyncPlan: every plugin's action, code-or-settings
+ * kind and file list, the ids that get enabled, the ids left enabled without
+ * code, the .smart-env model/language and the root docs).
+ *
+ * The per-vault plans were once deliberately left out, and the seal then
+ * approved "this archive into these vaults" while the plugins it would copy
+ * could change underneath — a plugin folder appearing in a target between the
+ * preview and the apply turned a copy into a skip, and nobody was asked. The
+ * decisions now come from the read-only planPluginSync(), so they can be
+ * sealed; syncPluginsMode re-plans with the same function at apply time.
  */
-export function syncPlanCore({ repo, ref, force, archiveSha256, targets }) {
+export function syncPlanCore({ repo, ref, force, archiveSha256, targets, lang = null, vaultPlans = [] }) {
   return {
     op: 'sync-from-github',
     repo: repo ?? null,
     ref: ref ?? null,
     force: Boolean(force),
+    lang: lang ?? null,
     archiveSha256: archiveSha256 ?? null,
     targets: Array.isArray(targets) ? [...targets].map(String).sort() : [],
+    vaultPlans: Array.isArray(vaultPlans)
+      ? [...vaultPlans].sort((a, b) => (String(a?.vault) < String(b?.vault) ? -1 : String(a?.vault) > String(b?.vault) ? 1 : 0))
+      : [],
   };
 }
 
@@ -5169,6 +5644,21 @@ function readApprovedPlanSeal(argv) {
     fail('Invalid --approved-plan-sha256: expected a 64-char lowercase hex plan seal (the value a --dry-run printed).');
   }
   return value;
+}
+
+/**
+ * Parse `--lang <code>` for the plugin-sync commands (--sync-plugins,
+ * --sync-all). Null when absent; fails loudly on a missing or malformed value
+ * rather than silently falling back to English.
+ */
+function readSyncLangFlag(argv) {
+  const i = argv.indexOf('--lang');
+  if (i === -1) return null;
+  const value = argv[i + 1];
+  if (value === undefined || value.startsWith('-')) fail('--lang requires a value (a language code such as en, fr, de).');
+  const lang = normalizeLang(value);
+  if (!lang) fail(`Invalid --lang: "${value}" — expected a language code such as en, fr, de or pt-BR.`);
+  return lang;
 }
 
 /** Print the seal after a dry-run, with the exact command to apply it. */
@@ -5345,17 +5835,23 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   node setup-vault.mjs <vault-path> --sync-plugins           Sync new plugins from reference vault
   node setup-vault.mjs <vault-path> --sync-plugins --force   Re-clone all plugins, preserving data.json
   node setup-vault.mjs <vault-path> --sync-plugins --quiet   Silent unless something changed (for hooks)
+  node setup-vault.mjs <vault-path> --sync-plugins --dry-run Per-plugin plan (copy / settings only / skip / enable /
+                                                              still without code), nothing written
+      [--lang <code>] [--container]                           --lang: embedding model of a .smart-env the sync creates
+                                                              (en = bge-micro-v2, other = multilingual); --container:
+                                                              checklist says how to reload a containerised Obsidian
   node setup-vault.mjs --sync-all                            Run --sync-plugins on every vault in portRegistry
   node setup-vault.mjs --sync-all --force                    Same, force-overwrite plugins + snippets
   node setup-vault.mjs --sync-from-github <vault…>|--all     Sync plugins/themes/snippets straight from the GitHub
       [--ref <branch|tag>] [--force] [--dry-run]              skeleton — no dev repo or local .template needed.
       [--repo <owner/name> --trust-repo]                      Same guards as --sync-plugins (credentials, anti-
       [--approved-plan-sha256 <hash>]                         downgrade) + hardened archive extraction + pinned
-                                                              plugin allowlist. A non-default --repo requires the
+      [--lang <code>] [--container]                           plugin allowlist. A non-default --repo requires the
                                                               explicit --trust-repo acknowledgement. C3: --dry-run
-                                                              prints an approvedPlanSha256 sealing {archive, targets,
-                                                              force}; pass it back on apply to refuse a drifted archive
-                                                              (moved ref) or vault set before any sync.
+                                                              prints each vault's per-plugin plan and an
+                                                              approvedPlanSha256 sealing {archive, targets, force,
+                                                              lang, per-plugin plans}; pass it back on apply to refuse
+                                                              any drift before a vault is touched.
   node setup-vault.mjs --bootstrap-reference <path>          Scaffold a fresh reference vault from the
                                                               shipped skeleton + download bridge plugin.
                                                               Follow up with --init-reference once you've
@@ -5406,7 +5902,10 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
                                                               portRegistry. Reports per-vault status; non-zero
                                                               exit if any vault fails.
   node setup-vault.mjs --attach <slug> [--also <slug>]...    v0.65.0. Bind the CURRENT directory to vault(s)
-                                                              that ALREADY exist in portRegistry. Does the four
+                                                              that ALREADY exist in portRegistry or remoteVaults.
+                                                              For a remote primary whose files also sit on this
+                                                              machine, add --local-path <abs-dir>: checked against
+                                                              the vault over REST, then recorded. Does the four
                                                               workspace writes in one go: .env binding,
                                                               .claude/settings.json (enables the router plugin —
                                                               without it the .env is inert), a CLAUDE.md block
@@ -6600,11 +7099,20 @@ if (args[0] === '--attach') {
   const positional = [];
   const alsoSlugs = [];
   let wsArg = null;
+  let localPathArg = null;
   const optOut = { plugin: true, claudeMd: true, gitignore: true };
 
   for (let i = 1; i < args.length; i++) {
     const a = args[i];
-    if (a === '--also') {
+    if (a === '--local-path') {
+      // A REMOTE primary's files, also on this machine. Absolute only: a
+      // relative path would mean a different directory from every cwd the
+      // hooks start in. Verified against the vault before it is recorded.
+      const v = args[++i];
+      if (!v || v.startsWith('--')) fail('--local-path requires a directory (e.g. `--local-path /srv/obsidian/notes`).');
+      if (!path.isAbsolute(v)) fail(`--local-path must be an absolute directory; got "${v}".`);
+      localPathArg = path.resolve(v);
+    } else if (a === '--also') {
       const v = args[++i];
       if (!v || v.startsWith('--')) fail('--also requires a vault slug (e.g. `--also dedibox-hermes`).');
       alsoSlugs.push(v);
@@ -6621,7 +7129,7 @@ if (args[0] === '--attach') {
   if (positional.length === 0) {
     fail(
       '--attach requires a vault slug.\n' +
-      '   Usage: --attach <primary-slug> [--also <slug>]... [--workspace <path>]\n' +
+      '   Usage: --attach <primary-slug> [--also <slug>]... [--workspace <path>] [--local-path <abs-dir>]\n' +
       '   The workspace defaults to the current directory.',
     );
   }
@@ -6632,18 +7140,19 @@ if (args[0] === '--attach') {
     );
   }
 
-  const result = attachWorkspace({
+  const result = await attachWorkspace({
     workspacePath: wsArg || process.cwd(),
     primarySlug: positional[0],
     alsoSlugs,
+    localPath: localPathArg,
     opts: optOut,
   });
 
   console.log('');
   ok(`Attached ${result.workspacePath}`);
-  console.log(`    ${c('green', '→')} primary: ${c('bold', result.primary.slug)}  ${c('gray', `(${result.primary.path})`)}`);
+  console.log(`    ${c('green', '→')} primary: ${c('bold', result.primary.slug)}  ${c('gray', `(${describeVaultLocation(result.primary)})`)}`);
   for (const s of result.secondaries) {
-    console.log(`    ${c('green', '→')} also:    ${s.slug}  ${c('gray', `(${s.path})`)} — address with vault: "${s.slug}"`);
+    console.log(`    ${c('green', '→')} also:    ${s.slug}  ${c('gray', `(${describeVaultLocation(s)})`)} — address with vault: "${s.slug}"`);
   }
   console.log('');
   for (const s of result.steps) {
@@ -6658,6 +7167,9 @@ if (args[0] === '--attach') {
   if (result.secondaries.length > 0) {
     info(`Secondary vault(s) are NOT auto-loaded: name them explicitly (vault: "${result.secondaries[0].slug}").`);
   }
+  // WHAT IS TRUE NOW, in one place — the warnings above scroll away.
+  console.log('');
+  for (const line of formatFinalState(result.state)) console.log(`  ${line}`);
   process.exit(0);
 }
 
@@ -6978,6 +7490,8 @@ if (args[0] === '--sync-from-github') {
   let approvedPlanSha256 = null;
   let ref = 'main';
   let repo = DEFAULT_SYNC_REPO;
+  let lang = null;
+  let container = false;
   const targets = [];
   for (let i = 1; i < args.length; i++) {
     const a = args[i];
@@ -6985,12 +7499,16 @@ if (args[0] === '--sync-from-github') {
     if (a === '--all') { all = true; continue; }
     if (a === '--trust-repo') { trustRepo = true; continue; }
     if (a === '--dry-run') { dryRun = true; continue; }
-    if (a === '--ref' || a === '--repo' || a === '--approved-plan-sha256') {
+    if (a === '--container') { container = true; continue; }
+    if (a === '--ref' || a === '--repo' || a === '--approved-plan-sha256' || a === '--lang') {
       const value = args[i + 1];
       if (value === undefined || value.startsWith('-')) fail(`${a} requires a value`);
       if (a === '--ref') ref = value;
       else if (a === '--repo') repo = value;
-      else {
+      else if (a === '--lang') {
+        lang = normalizeLang(value);
+        if (!lang) fail(`Invalid --lang: "${value}" — expected a language code such as en, fr, de or pt-BR.`);
+      } else {
         if (!isPlanSeal(value)) fail('Invalid --approved-plan-sha256: expected a 64-char lowercase hex plan seal (the value a --dry-run printed).');
         approvedPlanSha256 = value;
       }
@@ -7022,7 +7540,7 @@ if (args[0] === '--sync-from-github') {
     fail('--all cannot be combined with explicit vault paths — pick one or the other.');
   }
   if (!all && targets.length === 0) {
-    fail('Usage: --sync-from-github <vault-path…> | --all  [--ref <branch|tag>] [--repo <owner/name>] [--force] [--dry-run] [--approved-plan-sha256 <hash>]');
+    fail('Usage: --sync-from-github <vault-path…> | --all  [--ref <branch|tag>] [--repo <owner/name>] [--force] [--lang <code>] [--container] [--dry-run] [--approved-plan-sha256 <hash>]');
   }
 
   // Resolve the target list BEFORE downloading anything: it fails fast, and
@@ -7046,31 +7564,18 @@ if (args[0] === '--sync-from-github') {
 
   // C3 sealed preview: bind the plan to the ARCHIVE identity (its sha256 — a
   // moving ref like `main` advancing between preview and apply is the drift that
-  // matters), the repo/ref/force knobs, and the resolved eligible-target set.
-  // The hardened per-vault syncPluginsMode is NOT modelled or touched. Compute
-  // it — and, on an apply, VERIFY it — from the downloaded buffer + read-only fs
-  // checks, BEFORE creating or extracting any temp dir, so a drifted apply
-  // refuses before even a scratch write (Codex: "refuse before any mutation").
+  // matters), the repo/ref/force/lang knobs, the resolved eligible-target set,
+  // AND each vault's per-plugin plan (see syncPlanCore). The per-plugin plan is
+  // read from the extracted skeleton, so the seal is verified AFTER the
+  // extraction into a private temp dir and BEFORE any vault is touched. That
+  // is one step later than it used to be (the old seal, archive + vault set
+  // only, refused before the extraction): a drifted apply now leaves a scratch
+  // directory for the few milliseconds before cleanup(), and no vault write.
   const archiveSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
   const eligible = [];
   const skippedNoObsidian = [];
   for (const vp of list) {
     (fs.existsSync(path.join(vp, '.obsidian')) ? eligible : skippedNoObsidian).push(vp);
-  }
-  const planCore = syncPlanCore({ repo, ref, force, archiveSha256, targets: eligible });
-  if (!dryRun && approvedPlanSha256) {
-    try {
-      verifyPlanSeal({
-        op: 'sync-from-github',
-        identity: { repo },
-        plan: planCore,
-        approvedPlanSha256,
-        previewHint: `setup-vault.mjs --sync-from-github … --dry-run`,
-      });
-    } catch (e) {
-      if (e instanceof PlanDriftError) fail(`Sealed-preview drift — nothing was synced (no archive extracted).\n   ${e.message}`);
-      throw e;
-    }
   }
 
   // NOTE on cleanup: process.exit() skips finally blocks, so every exit path
@@ -7097,13 +7602,43 @@ if (args[0] === '--sync-from-github') {
     fail(`The archive has no templates/reference-vault-skeleton with plugins — wrong repo or ref? (${repo}@${ref})`);
   }
 
+  // Per-vault plans: the same read-only planner syncPluginsMode applies.
+  const vaultPlans = [];
+  try {
+    for (const vp of eligible) {
+      vaultPlans.push({ vault: vp, ...describeVaultSyncPlan(skeleton, vp, { force, networkSource: true, lang }) });
+    }
+  } catch (e) { cleanup(); fail(`Could not plan the sync: ${e.message}`); }
+  const planCore = syncPlanCore({
+    repo, ref, force, lang, archiveSha256, targets: eligible,
+    vaultPlans: vaultPlans.map((p) => p.core),
+  });
+  if (!dryRun && approvedPlanSha256) {
+    try {
+      verifyPlanSeal({
+        op: 'sync-from-github',
+        identity: { repo },
+        plan: planCore,
+        approvedPlanSha256,
+        previewHint: `setup-vault.mjs --sync-from-github … --dry-run`,
+      });
+    } catch (e) {
+      cleanup();
+      if (e instanceof PlanDriftError) fail(`Sealed-preview drift — nothing was synced (no vault touched).\n   ${e.message}`);
+      throw e;
+    }
+  }
+
   if (dryRun) {
-    console.log(c('bold', `[DRY-RUN] Would sync ${eligible.length} eligible vault(s) from ${repo}@${ref}${force ? ' (--force)' : ''} (archive ${archiveSha256.slice(0, 12)}…):`));
-    for (const vp of eligible) console.log(c('cyan', `  → ${vp}`));
+    console.log(c('bold', `[DRY-RUN] Would sync ${eligible.length} eligible vault(s) from ${repo}@${ref}${force ? ' (--force)' : ''}${lang ? ` --lang ${lang}` : ''} (archive ${archiveSha256.slice(0, 12)}…):`));
+    for (const p of vaultPlans) {
+      console.log(c('cyan', `  → ${p.vault}`));
+      for (const line of p.lines) console.log(`      ${line}`);
+    }
     for (const vp of skippedNoObsidian) console.log(c('yellow', `  - skip (no .obsidian): ${vp}`));
     cleanup();
     const seal = computePlanSeal({ op: 'sync-from-github', identity: { repo }, plan: planCore });
-    printPlanSeal(seal, `Re-run without --dry-run and with --approved-plan-sha256 ${seal} to apply exactly this plan — refused if the archive or vault set drifts.`);
+    printPlanSeal(seal, `Re-run without --dry-run and with --approved-plan-sha256 ${seal} to apply exactly this plan — refused if the archive, the vault set or any vault's per-plugin plan drifts.`);
     process.exit(0);
   }
 
@@ -7129,6 +7664,8 @@ if (args[0] === '--sync-from-github') {
         // Enables the curated-allowlist + name/manifest hygiene vetting —
         // a network archive is never a trusted plugin store.
         networkSource: true,
+        lang,
+        container,
       });
     } catch (err) {
       console.log(c('red', `    failed: ${err.message || err}`));
@@ -7158,6 +7695,11 @@ if (args[0] === '--sync-all') {
     fail('No reference vault configured or it no longer exists.');
   }
   const force = args.includes('--force');
+  // --lang applies to every vault whose .smart-env this run creates (an
+  // existing one is never touched); without it each vault's own declared
+  // language is looked for. --container tailors the post-sync checklist.
+  const syncAllLang = readSyncLangFlag(args);
+  const syncAllContainer = args.includes('--container');
   // Through the accessor, same reason as every other reader of this container.
   const targets = registeredVaultPaths(cfg);
   if (targets.length === 0) {
@@ -7194,7 +7736,9 @@ if (args[0] === '--sync-all') {
       console.log(c('cyan', `  → ${vaultPath}`));
       // throwOnError: true so a single failing vault throws instead of
       // calling process.exit(1), keeping the loop alive for the rest.
-      await syncPluginsMode(vaultPath, { force, quiet: false, throwOnError: true });
+      await syncPluginsMode(vaultPath, {
+        force, quiet: false, throwOnError: true, lang: syncAllLang, container: syncAllContainer,
+      });
     } catch (err) {
       console.log(c('red', `    failed: ${err.message || err}`));
       failCount++;
@@ -7495,6 +8039,12 @@ if (lwIdx !== -1) {
   consumedValueIdx.add(lwIdx + 1);
 }
 
+// `--lang <code>` (plugin sync only: picks the embedding model of a .smart-env
+// the sync creates). Parsed — and its value consumed — whatever the command, so
+// the code is never mistaken for the vault path.
+const syncLangFlag = readSyncLangFlag(args);
+if (syncLangFlag !== null) consumedValueIdx.add(args.indexOf('--lang') + 1);
+
 // --- Wizard flags (W1) -----------------------------------------------------
 // Every one is ADDITIVE: when none are passed, the bootstrap behaves exactly as
 // before (the wizard opts object is threaded through but the default source is
@@ -7506,6 +8056,10 @@ const themeFlag = flagValue('--theme');
 const wikiModeFlag = flagValue('--wiki-mode');
 const wikiSectionsFlag = flagValue('--wiki-sections');
 const probeTimeoutFlag = flagValue('--probe-timeout');
+// provision_vault's real run: the target its dry-run planned (see --pin-target).
+const expectedTargetFlag = flagValue('--expected-target');
+// ...and the real roots its gate judged against, as a JSON array of strings.
+const approvedRootsFlag = flagValue('--approved-roots');
 
 // Template source (mutually exclusive; default 'reference').
 const sourceFlags = [];
@@ -7628,6 +8182,26 @@ if (!vaultArg) {
   }
 }
 
+// `<vault> --sync-plugins --dry-run`: the per-plugin plan of a sync from the
+// reference vault, read-only — what would be copied (code or settings only),
+// skipped and why, enabled, and left enabled without code. Checked BEFORE the
+// provisioning --dry-run below, which would otherwise answer a different
+// question (how to bootstrap the vault) for the same flag.
+if (args.includes('--sync-plugins') && args.includes('--dry-run')) {
+  const sourceVault = referenceVaultPath(loadConfigReadOnly());
+  if (!sourceVault || !fs.existsSync(path.join(sourceVault, '.obsidian', 'plugins'))) {
+    fail(`Sync source not found or has no plugins dir: ${sourceVault || '(no reference vault configured)'}`);
+  }
+  const target = path.resolve(vaultArg);
+  if (!fs.existsSync(path.join(target, '.obsidian'))) fail(`Not an Obsidian vault (no .obsidian/): ${target}`);
+  if (samePath(target, sourceVault)) fail(`Refusing to plan a sync of the reference vault onto itself: ${target}`);
+  const plan = describeVaultSyncPlan(sourceVault, target, { force, lang: syncLangFlag });
+  console.log(c('bold', `[DRY-RUN] Would sync ${target} from ${sourceVault}${force ? ' (--force)' : ''}${syncLangFlag ? ` --lang ${syncLangFlag}` : ''}:`));
+  for (const line of plan.lines) console.log(`  ${line}`);
+  info('Nothing was written.');
+  process.exit(0);
+}
+
 // --dry-run [--json] — build the full provisioning plan WITHOUT mutating
 // anything and print it. Consumed by the wizard skill's pre-flight and by the
 // MCP plan_vault tool (which imports buildProvisionPlan directly).
@@ -7646,8 +8220,39 @@ if (args.includes('--dry-run')) {
 }
 
 if (args.includes('--sync-plugins')) {
-  await syncPluginsMode(vaultArg, { force, quiet });
+  await syncPluginsMode(vaultArg, { force, quiet, lang: syncLangFlag, container: args.includes('--container') });
   process.exit(0);
+}
+
+// --pin-target (passed by provision_vault's real run, never by the CLI's
+// user): the vault directory is PINNED before the provisioning writes and held
+// until this process exits — see src/helpers/pin-provision-target.mjs (the
+// pin itself writes first: its probe, and the missing levels of the target).
+// HERE, before BOTH provisioning branches: it once sat after the skeleton
+// branch, which exits on its own and so was never pinned (Codex review).
+// `--expected-target` / `--approved-roots` are the REAL target and roots
+// provision_vault's dry-run gate judged: the pin must land on that target,
+// inside those roots, compared as given (Codex review, rounds 1 and 3). The
+// current config's roots are asked too — both must agree.
+if (args.includes('--pin-target')) {
+  let frozenRoots = null;
+  if (approvedRootsFlag !== undefined && approvedRootsFlag !== null) {
+    try { frozenRoots = JSON.parse(approvedRootsFlag); } catch { frozenRoots = undefined; }
+    if (!Array.isArray(frozenRoots) || !frozenRoots.every((r) => typeof r === 'string')) {
+      fail('--approved-roots must be a JSON array of paths.');
+    }
+  }
+  try {
+    vaultArg = pinProvisionTarget(vaultArg, {
+      roots: knownVaultRoots(loadConfigReadOnly()),
+      frozenRoots,
+      allowOutsideRoots: args.includes('--allow-outside-roots'),
+      expectedTarget: expectedTargetFlag,
+      gitInit: wizardOpts.gitInit,
+    });
+  } catch (err) {
+    fail(err.message);
+  }
 }
 
 // --from-skeleton delegates to the existing bootstrap-reference flow (scaffold
@@ -7709,7 +8314,10 @@ maybeAutoInstallHooks({ quiet, noHooks: args.includes('--no-hooks') });
 
 // --git-init (opt-in): initialize a git repo in the freshly-scaffolded vault +
 // an initial commit. Off by default (vaults often live under Google Drive /
-// iCloud where a repo is undesirable). Operates ONLY inside the new vault dir.
+// iCloud where a repo is undesirable). Runs with the vault dir as its cwd;
+// under --pin-target a `.git` already in the target is refused before
+// anything is written (a `.git` FILE could point git elsewhere) — a `.git`
+// planted there during the run, or one run by hand without the pin, is not.
 if (wizardOpts.gitInit && provisionResult && provisionResult.abs) {
   // git runs with the git allowlist as its environment (subprocess-env.mjs):
   // when this script is the child of the MCP server, process.env here is the

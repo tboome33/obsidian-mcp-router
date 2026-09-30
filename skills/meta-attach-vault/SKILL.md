@@ -40,7 +40,7 @@ obsidian-mcp-router --attach <primary-slug> [--also <secondary-slug>]...
 
 (from the workspace directory; add `--workspace <path>` to target another one. Fallback when the binary is not on PATH: `node "<router-repo>/scripts/setup-vault.mjs" --attach <slug> ...`.)
 
-That single command does the four writes and is idempotent: `.env` binding · `.claude/settings.json` (enables the router plugin — **without it the `.env` is inert**, no hook runs) · a `CLAUDE.md` block naming primary + secondaries · `.gitignore`. Then tell the user to **restart Claude Code** in that workspace.
+That single command does the four writes and is idempotent: `.env` binding · `.claude/settings.json` (enables the router plugin — **without it the `.env` is inert**, no hook runs) · a `CLAUDE.md` block naming primary + secondaries · `.gitignore`. Then, if the vault answers (`list_vaults` shows it online), run the conventions picker of **1A.5** — automatically, the attach is not finished without it. Then tell the user to **restart Claude Code** in that workspace.
 
 **Multi-vault**: the router binds ONE vault per workspace — `detectVaultContext()` reads a single slug. Secondaries passed via `--also` are documented in the generated `CLAUDE.md` block and reached with an explicit `vault: "<slug>"` on each call; they are never auto-loaded. Say this plainly to the user — the failure mode is silent (a forgotten `vault:` writes to the primary without any error).
 
@@ -167,24 +167,27 @@ Read `<cwd>/.gitignore` if it exists. Use `Edit` (or `Write` if absent) to appen
 
 Idempotency rule: scan existing content for the exact strings `.env` and `.mcp.json` on their own lines BEFORE appending. If both already present, skip silently.
 
-### 1A.5 — Conventions picker
+### 1A.5 — Conventions picker (AUTOMATIC at the end of every attach)
 
-**READ THE TARGET FIRST — the picker is not allowed to guess.** A vault provisioned from the reference template already carries the four CORE conventions (decision [[conventions-livrees-par-le-modele]], 2026-09-11). Before composing the question, resolve the vault's conventions file and detect what is in it, exactly as the `conventions` skill's `pick` flow describes:
+**This step is not optional and not "offered" — it RUNS at the end of every flow that leaves a vault attached**: 1A after provisioning, 1B, and the 0.0 fast path once the vault answers. Do not ask "do you want the conventions picker?" — show the picker itself. The only precondition is a reachable vault: `install_conventions` goes through the vault's REST API, so if the probe is still red (Trust author not clicked yet), say so, wait for the user to confirm the click, re-probe, then run it. If the vault stays unreachable, go to the last paragraph of this section (name what is missing).
 
-```javascript
-import { resolveClaudeMd, detectConventions, planConventionPicker }
-  from '<plugin-root>/src/helpers/claude-md-conventions.mjs';
+**READ THE TARGET FIRST — the picker is not allowed to guess.** A vault provisioned from the reference template already carries the four CORE conventions — `roadmap-discipline`, `default-vault-health-check`, `wiki-query-first`, `path-disambiguation` (decision [[conventions-livrees-par-le-modele]], 2026-09-11; that is the reference `.template` VAULT, not the repository's `templates/` files, which carry no library convention at all). Before composing the question, ask the router for the real state, in one call that writes nothing:
+
 ```
+install_conventions({ vault: "<slug>", ids: [], dryRun: true })
+```
+
+It resolves the vault's conventions file (`path`, `fileExisted`), and returns `catalogue` (every convention the library ships, id + heading) and `detection` (installed / duplicate, per convention). If it refuses because two conventions files exist, stop and ask the user which one is theirs — do not pick one.
 
 Measured on 0.94.1 (2026-09-11, vault `La méthode LICARES`): the picker was shown blind, the user kept six conventions and unchecked two — and all eight were already installed. Every positive choice was a no-op reported as a success, and both negative choices were violated in silence. One of them, `auto-enrichment`, governs automatic saves into the vault.
 
 Pre-flight (adapt the counts to what you actually detected):
 
-> Le vault est provisionné et lié au workspace. Reste à choisir quelles **conventions** doivent figurer dans le fichier de conventions du vault (`<le fichier que resolveClaudeMd a trouvé>`). Une convention, c'est une règle de comportement pour Claude — par exemple "toujours mettre à jour les roadmaps quand on ship du code" ou "vérifier dans le wiki avant de répondre". Elles sont lues au démarrage de chaque session sur ce vault.
+> Le vault est provisionné et lié au workspace. Reste à choisir quelles **conventions** doivent figurer dans le fichier de conventions du vault (`<le path que le dryRun a renvoyé>`). Une convention, c'est une règle de comportement pour Claude — par exemple "toujours mettre à jour les roadmaps quand on ship du code" ou "vérifier dans le wiki avant de répondre". Elles sont lues au démarrage de chaque session sur ce vault.
 >
 > ⚠️ Ce vault en porte déjà **N sur M**. Les autres sont **proposées, déjà cochées** : tu décoches ce que tu ne veux pas. Décocher une convention **déjà présente** veut dire *retirer sa section de ce fichier* — je te le redemanderai avant d'y toucher.
 
-`M` is the number of options you are about to display, counted from the collection you globbed — never a literal number written on this page.
+`M` is the number of options you are about to display, counted from the `catalogue` the dryRun returned — never a literal number written on this page.
 
 #### The initialization rule is ASYMMETRIC, and that is the whole point
 
@@ -200,9 +203,9 @@ In the other direction there is no such danger: pre-checking an absent conventio
 
 **Why the absent ones arrive checked** (decision [[conventions-livrees-par-le-modele]] §2): the reference template stopped shipping the stylistic conventions, and a feature nobody knows about is a feature nobody ever enables. The user must act to **refuse**, not to **discover**. If they validate without changing anything, they get the same result as before the decision — the difference is that it was shown to them.
 
-**Display the whole library, not a subset.** `Glob` the snippets directory and show every convention it holds; the collection you display IS the collection you pass to `planConventionPicker`. Planning with a wider list than you displayed puts a convention the user never saw into the `remove` bucket, and the confirmation then says "you did not check these" about a checkbox that never existed.
+**Display the whole library, not a subset.** Show every convention in the dryRun's `catalogue` (split over several `AskUserQuestion` questions if one cannot hold them all); the collection you display IS the collection you plan with. Planning with a wider list than you displayed puts a convention the user never saw into the `remove` bucket, and the confirmation then says "you did not check these" about a checkbox that never existed.
 
-Use `AskUserQuestion` with `multiSelect: true`. Pre-check per the table above, suffix a detected one with `— déjà en place`, and give each option a description that says what it DOES. The recommended set — the eight this page shipped with — and the wording that survived review:
+Use `AskUserQuestion` with `multiSelect: true`. Pre-check per the table above, suffix a detected one with `— déjà en place`, and give each option a description that says what it DOES. The recommended set — the nine below — and the wording that survived review:
 
 - **roadmap-discipline** — tenir les roadmaps à jour quand du code est livré
 - **default-vault-health-check** — prévenir si le vault par défaut n'est pas joignable, et ne jamais retomber sur le système de fichiers
@@ -214,7 +217,7 @@ Use `AskUserQuestion` with `multiSelect: true`. Pre-check per the table above, s
 - **auto-enrichment** — Claude propose de sauvegarder les décisions et résultats au fil de la conversation (il demande toujours avant d'écrire), et marque une pause quand tu changes de sujet
 - **description-frontmatter** — *comment bien écrire* la phrase `description:` (le champ, lui, est requis de toute façon)
 
-`description-frontmatter` n'est **pas** un choix de comportement comme les sept autres, et son étiquette doit le dire **avant** que l'utilisateur coche ou décoche, pas après. Ce qu'il installe, c'est le **guide de rédaction** : quoi dire, quelle longueur, comment citer la valeur. Le **champ lui-même est exigé indépendamment** — le lint du wiki signale chaque page sans `description` depuis la v0.59.2, la régénération des projections OKF les reporte, et les index publient la phrase telle quelle. Cette exigence-là part avec chaque vault scaffoldé, dans le gabarit, sans passer par ce menu.
+`description-frontmatter` n'est **pas** un choix de comportement comme les huit autres, et son étiquette doit le dire **avant** que l'utilisateur coche ou décoche, pas après. Ce qu'il installe, c'est le **guide de rédaction** : quoi dire, quelle longueur, comment citer la valeur. Le **champ lui-même est exigé indépendamment** — le lint du wiki signale chaque page sans `description` depuis la v0.59.2, la régénération des projections OKF les reporte, et les index publient la phrase telle quelle. Cette exigence-là part avec chaque vault scaffoldé, dans le gabarit, sans passer par ce menu.
 
 Donc : décocher cette case ne rend rien optionnel, et ne retire rien d'un vault qui la porte déjà — ça renonce seulement au guide. Dis-le dans ces termes. Mesuré le 2026-09-11 : **aucun des 16 vaults inspectés ayant un fichier de conventions ne contenait cette section**, alors que le lint s'appliquait à leurs pages.
 
@@ -224,14 +227,14 @@ The first four are shipped by the reference template, so on a template-born vaul
 
 The word "absent" there is load-bearing, and review caught its absence. Written without it, that sentence contradicts the table one paragraph above: a convention the vault ALREADY carries but that nobody recommended would be displayed unchecked, and unchecking a present convention is what puts it in the `remove` bucket. The default would then propose exactly the deletion the asymmetric rule exists to forbid. **Detection wins over the recommended list, always**: present means pre-checked, whatever the list says.
 
-**Then plan the answer, don't act on it directly.** `planConventionPicker({ content, catalogue, selected })` sorts the displayed options into `install` / `keep` / `remove` / `skip`. Act on each bucket as the `conventions` skill's `pick` section specifies:
+**Then plan the answer, don't act on it directly.** Sort the displayed options against the dryRun's `detection` into `install` (checked, absent) / `keep` (checked, present) / `remove` (unchecked, present) / `skip` (unchecked, absent) — the rule `planConventionPicker` implements. Act on each bucket as the `conventions` skill's `pick` section specifies:
 
-- `install` — invoke `/obsidian-router:conventions install <id>` per convention. **Install via the skill, not by hand**: it owns snippet resolution, fence-aware detection and the safe append. Do NOT bypass it with a raw `mcp__obsidian-router__append_to_file`.
+- `install` — **ONE call for the whole bucket**: `install_conventions({ vault: "<slug>", ids: [<every id of the bucket>] })`. The router reads the texts from its own package, appends them in one compare-and-swap write (so it works on a shared vault), and reads the file back. Never paste a snippet, and never use `append_to_file` for this — it carries no precondition and the shared-vault gate refuses it. Then **show the verified result**: `installed`, `alreadyPresent` (say "déjà en place"), `unknown`, and `verified` — if `verified` is false, show `problems` and say the install is NOT confirmed. Link the file with the returned `clickToOpenUrl`. A conflict (409) means the file moved under you and nothing was written: run the same call again.
 - `keep` — report "déjà en place". Never as "installée".
 - `remove` — **ask before anything is cut**, listing them by name and saying what disappears; on a yes, go through `/obsidian-router:conventions remove <id>` with its preview, sidecar backup and `verifyRemoval` check; on a no, say that **leurs sections restent dans ce fichier**. Say "je retire leur section de ce fichier", not "je les désactive": several of these also live in the user's global `~/.claude/CLAUDE.md`, where this changes nothing — and whether a rule is *active* depends on which files the next session loads, which nothing here observes.
 - `skip` — nothing, silently. This is the only bucket that may be silent.
 
-Print `plan.plan` before acting — it counts intentions. Show progress per convention, then close with a summary built from what actually HAPPENED: installed, already in place, removed, declined, failed. If nothing was installed because everything was already there, the first line must say so: *"0 installée, 6 déjà en place"* is the truth, *"6 conventions configurées"* is not.
+Print the plan line before acting (`prévu : N à installer, M déjà en place, R décochées mais présentes (confirmation avant retrait), S non touchées`) — it counts intentions. Then close with a summary built from what actually HAPPENED: installed, already in place, removed, declined, failed. If nothing was installed because everything was already there, the first line must say so: *"0 installée, 6 déjà en place"* is the truth, *"6 conventions configurées"* is not.
 
 **If the picker was skipped, NAME what is missing.** Impatience, a non-interactive run, a user who says "plus tard" — the flow can reach the recap without the question ever being answered. The recap must then list the conventions that are not installed and the command that adds them:
 
@@ -254,7 +257,7 @@ End with a short recap (FR or EN matching the user). `provision_vault` with `ope
 >
 > Si la sonde était rouge : une fois « Trust author » cliqué, je peux relancer `provision_vault` en mode `probe` seul (ou `/obsidian-router:meta-audit-bridge-readiness`) pour confirmer le vert.
 >
-> Conventions installées : `<comma-separated-list>` (visibles dans `<vault>/CLAUDE.md`).
+> Conventions installées : `<installed>` · déjà en place : `<alreadyPresent>` · vérifié : `<oui|non>` — dans `<path renvoyé par install_conventions>` (lien : `clickToOpenUrl`).
 >
 > Pour vérifier que tout est bien câblé : `/obsidian-router:meta-status` (diagnostic complet) ou `/obsidian-router:discover-list-vaults` (liste rapide).
 
@@ -270,7 +273,7 @@ Same as 1A but:
 - **Skip the git step entirely** (no workspace = no git concerns at this layer).
 - **Skip the linking step** (no workspace to bind).
 - **Skip the workspace `.gitignore` edit**.
-- **Still scaffold the wiki structure and offer the conventions picker** — even a personal vault benefits from them.
+- **Still scaffold the wiki structure and run the conventions picker (1A.5, automatic)** — even a personal vault benefits from them.
 
 Ask for the vault path explicitly (no default — there's no cwd to derive from).
 
@@ -322,6 +325,39 @@ curl -sk -H "Authorization: Bearer <apiKey>" \
 ```
 
 Returns server-info JSON → golden. 401 → wrong API key. Timeout → URL unreachable.
+
+### Then: attach it to the workspace, and finish it — in this order, without skipping
+
+Registration alone leaves a blank remote vault with nothing but Local REST API. Measured on a real
+attach (a linuxserver container): no bridge, no wiki, no conventions, and nothing said so. The chain
+below is the whole job; each step's output says whether the next one is needed.
+
+1. **Attach**, from the workspace, in a shell:
+   `obsidian-mcp-router --attach <name> --local-path <abs-dir>` — `--local-path` only if the vault's
+   files ALSO sit on this machine (a container's bind mount, for instance). The directory is checked
+   against the vault over REST before it is recorded; a mismatch refuses with nothing written. It
+   buys the hot-cache hook, index freshness for semantic search, and the two plugin commands below.
+   The command ends with **"État final / Final state"** and an ordered **next steps** list. Read it
+   out to the user as it is; do not paraphrase it into a shorter plan, and follow ITS order — it is
+   not always the order below. A **blank** vault is the case that differs: its folder cannot be
+   verified yet (the check compares a note served over REST with the same file on disk, and a blank
+   vault has no note), so `--local-path` is not recorded, and the list puts the **wiki first**
+   (written over REST, no disk needed), then "attach again with `--local-path`", then the plugins.
+2. **Plugins** (next steps 1–2, when listed): run
+   `obsidian-mcp-router --install-plugins <name> --dry-run`, show the plan plugin by plugin, and ask
+   before applying it with the `--approved-plan-sha256` it printed — it downloads third-party code
+   from the official registry, so the user authorizes that exact plan. Then have the user reload
+   Obsidian (desktop: Ctrl+P → "Reload app without saving"; container: the same command in the web
+   UI, or `docker compose restart`) and turn Restricted mode off. Verify with
+   `obsidian-mcp-router --plugin-health <name>`: every expected plugin must be **with code, enabled
+   and loaded**, and the bridge installed. "Enabled without code" or "bridge absent" is not done.
+   Without `--local-path`, both commands refuse: the user installs from Obsidian's Community
+   plugins screen instead, and `--plugin-health` cannot vouch for it — say so.
+3. **Wiki** (when "catalog: no"): run the `wiki` skill on this vault.
+4. **Conventions**: the picker of 1A.5 runs automatically at the end of the wiki skill; if the wiki
+   already existed, run it now. It installs with ONE `install_conventions` call.
+5. **Re-run step 1's command** (same arguments — it is idempotent) and report its final state. The
+   attach is finished when it prints `ready       yes`; until then, name what is still missing.
 
 ---
 

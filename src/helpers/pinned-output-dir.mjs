@@ -281,7 +281,10 @@ function probeWindows(dir, native) {
     const fd = dirFd;
     dirFd = null;
     // Closing deletes the (empty) probe: delete-on-close.
-    return () => closeQuietly(fd);
+    // The release function carries the probe's path: a caller walking the
+    // pinned tree must exempt THIS probe and no other unlistable directory
+    // (pin-provision-target.mjs — Codex review of provision_vault).
+    return Object.assign(() => closeQuietly(fd), { probePath: probeDir });
   } finally {
     if (dirFd !== null) closeQuietly(dirFd);
   }
@@ -367,6 +370,7 @@ function pinWindows(existing, tail, expected, authorize, nativeHelper) {
       strategy: 'win-probe',
       childPath: (name) => path.join(expected, assertChildName(name)),
       release: pinned,
+      probePath: pinned.probePath,
     });
   } finally {
     if (release) release();
@@ -429,7 +433,7 @@ function pinNothing(existing, tail, expected, authorize) {
   });
 }
 
-function makePinned({ realPath, strategy, childPath, release }) {
+function makePinned({ realPath, strategy, childPath, release, probePath = null }) {
   let closed = false;
   const live = () => { if (closed) throw new Error('output directory already released'); };
   const { O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW = 0 } = fs.constants;
@@ -513,6 +517,8 @@ function makePinned({ realPath, strategy, childPath, release }) {
     /** The directory's real path, as authorised and pinned. */
     path: realPath,
     strategy,
+    /** Windows: the held probe directory inside `path` (unlistable while held); null elsewhere. */
+    probePath,
     /**
      * Place `bytes` at `name` only if nothing is there — a file, a directory
      * or a link, dangling or not. Returns 'created' or 'exists'. Never

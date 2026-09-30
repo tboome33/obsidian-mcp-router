@@ -99,6 +99,22 @@ export async function provisionVaultTool(registry, args = {}, _deps = {}) {
     });
   }
 
+  // The REAL target and roots the dry-run's gate judged, as IT resolved them:
+  // the real run's pin must land on that target, inside those roots, compared
+  // as given (pin-provision-target.mjs). Resolving them again here — even
+  // right after the dry-run — would judge a target or a root swapped for a
+  // link in between on where it points by then (Codex review, round 3: an
+  // attacker blocked until the dry-run ends can still act after it). A plan
+  // without them is refused: nothing would bind the real run to the gate.
+  // Checked LAST before the real run, after the gates and the seal, so their
+  // own, more specific refusals are the ones a caller sees first.
+  const approvedTarget = plan.context && typeof plan.context.realTarget === 'string' ? plan.context.realTarget : null;
+  const approvedRoots = plan.context && Array.isArray(plan.context.realRoots)
+    && plan.context.realRoots.every((r) => typeof r === 'string') ? plan.context.realRoots : null;
+  if (approvedTarget === null || approvedRoots === null) {
+    throw new Error('Refused: the dry-run plan did not report the real target and roots its gate judged, so the real run could not be bound to them.');
+  }
+
   // 2) Real run (nonce'd --json → the engine emits a spoof-proof result line).
   //
   // bindToWorkspace (default false) is resolved to a real `linkWorkspace` HERE,
@@ -120,7 +136,13 @@ export async function provisionVaultTool(registry, args = {}, _deps = {}) {
   // (an arbitrary path, already supported) always wins.
   const boundByFlag = args.bindToWorkspace === true && !input.linkWorkspace;
   const execInput = boundByFlag ? { ...input, linkWorkspace: process.cwd() } : input;
-  const { code, stdout, stderr, result } = await runProvision(execInput, { configPath });
+  // `expectedTarget` / `approvedRoots`: the real run must pin the path the
+  // dry-run gated, inside the roots it gated against — not a path recomposed
+  // from a config changed since, nor roots re-resolved after a swap (options
+  // of the spawn, so neither `input` nor the seal ever sees them).
+  const { code, stdout, stderr, result } = await runProvision(execInput, {
+    configPath, expectedTarget: approvedTarget, approvedRoots,
+  });
 
   if (!result) {
     throw new Error(

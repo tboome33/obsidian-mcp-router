@@ -36,6 +36,7 @@ import {
   registeredVaultPaths,
   disabledVaultEntries,
   vaultSlug,
+  remoteVaultLocalPath,
 } from '../../src/helpers/vault-slug.mjs';
 import { normalizePathForCompare } from '../../src/helpers/vault-path-identity.mjs';
 
@@ -295,7 +296,9 @@ function excludedByWhitelist(cfg, dirPath) {
  *     when `cwd/wiki-meta/catalog.md` exists (the workspace IS the vault)
  *   - { mode: 'workspace-bound', vaultPath, slug }
  *     when cwd has no catalog BUT `OBSIDIAN_ROUTER_DEFAULT_VAULT`
- *     resolves to a configured vault whose catalog exists
+ *     resolves to a configured vault whose catalog exists — including a
+ *     REMOTE vault whose config declares `localPath` (then `remote: true`,
+ *     and `vaultPath` is that directory)
  *   - null
  *     when neither condition holds
  *
@@ -395,8 +398,22 @@ export function detectVaultContext(cwd, cfg) {
   const slug = binding?.vault || authoritativeDefaultVault();
   if (!slug) return null;
   if (!bindingIsActive(cfg, slug)) return null;
-  const vp = resolveVaultBySlug(cfg, slug);
-  if (!vp) return null;
+  let vp = resolveVaultBySlug(cfg, slug);
+  //   (e) A REMOTE VAULT WHOSE FILES ALSO SIT HERE. `resolveVaultBySlug`
+  //       answers null for a remote name — it has no `portRegistry` path, and
+  //       must not be given a folded local one (above). But when the config
+  //       declares `remoteVaults[].localPath` (Obsidian in a container whose
+  //       volume is a directory of this machine; `setup-vault.mjs --attach
+  //       --local-path` verifies it against the REST side before recording
+  //       it), that directory IS the vault's disk, and the hooks — hot cache
+  //       first — can use it like any local vault's. Exact name only, the
+  //       accessor's own rule, so no substitution can come in this way.
+  let remote = false;
+  if (!vp) {
+    vp = remoteVaultLocalPath(cfg, slug);
+    if (!vp) return null;
+    remote = true;
+  }
   //   (d) AND THE ANSWER MUST MATCH THE QUESTION. `resolveVaultBySlug` keeps a
   //       case-insensitive fallback for people typing at a command line; a
   //       HOOK is not typing, it is carrying a name the registry already
@@ -406,7 +423,7 @@ export function detectVaultContext(cwd, cfg) {
   //       wrote there under the other one's name. The resolver refuses that
   //       particular case at its source now; this line is the general form of
   //       the rule, and it costs one comparison. (Codex, whole-lot review.)
-  if (vaultSlug(cfg, vp) !== slug) return null;
+  if (!remote && vaultSlug(cfg, vp) !== slug) return null;
   const bound = resolveScaffold(vp, 'catalog', { fs, path });
   if (!bound) return null;
   return {
@@ -415,5 +432,8 @@ export function detectVaultContext(cwd, cfg) {
     slug,
     boundBy: binding ? 'binding' : 'host',
     legacyScaffold: bound.legacy ? bound.relPath : null,
+    // Present only for (e): the vault is served over REST, and `vaultPath` is
+    // the local directory its config declares for it.
+    ...(remote ? { remote: true } : {}),
   };
 }

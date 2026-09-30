@@ -36,6 +36,11 @@
  *     `safeFetch` cannot be applied here — this is pre-flight only).
  *   - Graceful degradation when yt-dlp is absent: ENOENT → clear install hint
  *     (matches the markitdown ENOENT pattern in markitdown.mjs).
+ *   - `--js-runtimes=node:<this Node>` so YouTube's JavaScript challenges can be
+ *     solved without deno (retried once without it on a yt-dlp that predates
+ *     the option), and an explicit diagnosis when YouTube rate-limits or
+ *     bot-checks the machine's IP, pointing at YTDLP_COOKIES / YTDLP_PROXY —
+ *     read from the router's own environment only, never a workspace file.
  *
  * Deliberately NOT using `--convert-subs srt`: that postprocessor needs ffmpeg
  * on some yt-dlp builds. We fetch the native format (`vtt/srt/best`) and parse
@@ -83,6 +88,129 @@ export function resolveYtdlpPath() {
   // A relative override is resolved against the router's cwd NOW — the spawn
   // runs in the private caption directory (subprocess-env.mjs).
   return absolutizeExecutableOverride(process.env.YTDLP_PATH) || 'yt-dlp';
+}
+
+/**
+ * The `--js-runtimes` value that hands yt-dlp THIS Node as its JavaScript
+ * runtime.
+ *
+ * Since yt-dlp 2025.11.12, full YouTube support needs an external JavaScript
+ * runtime to solve YouTube's challenges (the yt-dlp-ejs scripts), and "Only
+ * "deno" is enabled by default" — yt-dlp README, OPTIONS, `--js-runtimes
+ * RUNTIME[:PATH]`: "Additional JavaScript runtime to enable, with an optional
+ * location for the runtime (either the path to the binary or its containing
+ * directory)". https://github.com/yt-dlp/yt-dlp#general-options
+ * The value is split with `arg.split(':', 1)` (yt_dlp/__init__.py), so a
+ * Windows drive letter in the path survives: `node:C:\…\node.exe`.
+ *
+ * The router always runs under a Node, so a runtime is always at hand — but
+ * `process.execPath` is only a NODE when its name says so. Under an Electron
+ * host it is the host application, which run without ELECTRON_RUN_AS_NODE
+ * would start the app, not a script engine. Then the bare `node` is enabled
+ * and yt-dlp looks it up on PATH itself.
+ */
+export function jsRuntimeArg(execPath = process.execPath) {
+  const base = typeof execPath === 'string' ? path.basename(execPath) : '';
+  return /^node(\.exe)?$/i.test(base) ? `node:${execPath}` : 'node';
+}
+
+/** yt-dlp older than 2025.11.12 does not know the option: optparse says so, verbatim. */
+const NO_SUCH_JS_RUNTIMES = /no such option:?\s*--js-runtimes/i;
+
+/**
+ * YouTube refusing THIS MACHINE, not this video: a rate limit (HTTP 429) or
+ * the bot check ("Sign in to confirm you're not a bot"). Typical of a
+ * datacenter / VPS address. Retrying does not help; cookies or a proxy can.
+ */
+const YOUTUBE_BLOCKED = /HTTP Error 429|Too Many Requests|Sign in to confirm you/i;
+
+const PROXY_SCHEMES = new Set(['http:', 'https:', 'socks4:', 'socks5:', 'socks5h:']);
+// A browser cookie export is a few KB; anything this large is not one.
+const MAX_COOKIES_BYTES = 5 * 1024 * 1024;
+
+/** A proxy URL for an error message, with any credentials in it masked. */
+function redactProxy(raw) {
+  try {
+    const u = new URL(raw);
+    if (u.username || u.password) { u.username = '***'; u.password = ''; }
+    return u.toString();
+  } catch {
+    return '(unparseable value)';
+  }
+}
+
+/**
+ * The two network settings a user may give yt-dlp: a proxy and a cookie file.
+ *
+ * WHERE THEY COME FROM — the router's own environment (the MCP host's server
+ * declaration, a launcher, a shell), and deliberately NOT a workspace .env
+ * file: workspace-dotenv.mjs accepts only the keys it names, and these are not
+ * among them. A cloned repository's .env file able to set YTDLP_PROXY would
+ * route every caption fetch — and whatever cookies travel with it — through a
+ * host the repository's author chose. The same reasoning already keeps
+ * `YTDLP_PATH` and `HTTPS_PROXY` out of workspace files.
+ *
+ * VALIDATED BEFORE ANYTHING RUNS, and refused loudly rather than ignored: a
+ * setting the user made that silently does nothing is a debugging session.
+ *
+ *   YTDLP_PROXY    http/https/socks4/socks5/socks5h URL with a host.
+ *   YTDLP_COOKIES  an ABSOLUTE path to an existing regular file (a Netscape
+ *                  cookies.txt). Absolute because the child runs in a private
+ *                  temp directory, and a relative path would silently mean
+ *                  something else there.
+ *
+ * @returns {{proxy: string|null, cookies: string|null}}
+ */
+export function readYtdlpNetworkSettings(env = process.env, io = fs) {
+  const out = { proxy: null, cookies: null };
+  const rawProxy = typeof env.YTDLP_PROXY === 'string' ? env.YTDLP_PROXY.trim() : '';
+  if (rawProxy) {
+    let u = null;
+    try { u = new URL(rawProxy); } catch { /* reported below */ }
+    // eslint-disable-next-line no-control-regex
+    if (!u || !PROXY_SCHEMES.has(u.protocol) || !u.hostname || /[\s\x00-\x1f]/.test(rawProxy)) {
+      throw new Error(
+        `YTDLP_PROXY is set to ${redactProxy(rawProxy)}, which is not a usable proxy URL. `
+          + 'Expected http://, https://, socks4://, socks5:// or socks5h:// followed by a host '
+          + '(e.g. socks5h://127.0.0.1:1080). Fix it or unset it.',
+      );
+    }
+    out.proxy = rawProxy;
+  }
+  const rawCookies = typeof env.YTDLP_COOKIES === 'string' ? env.YTDLP_COOKIES.trim() : '';
+  if (rawCookies) {
+    if (!path.isAbsolute(rawCookies)) {
+      throw new Error(
+        `YTDLP_COOKIES must be an ABSOLUTE path to a Netscape-format cookies.txt (got "${rawCookies}"). `
+          + 'yt-dlp runs in a private temporary directory, so a relative path would point somewhere else.',
+      );
+    }
+    let st = null;
+    try { st = io.statSync(rawCookies); } catch { /* reported below */ }
+    if (!st || !st.isFile()) {
+      throw new Error(`YTDLP_COOKIES points at "${rawCookies}", which is not an existing file. Export a Netscape-format cookies.txt there, or unset it.`);
+    }
+    if (st.size > MAX_COOKIES_BYTES) {
+      throw new Error(`YTDLP_COOKIES points at a ${st.size}-byte file — too large for a cookie export (cap ${MAX_COOKIES_BYTES} bytes).`);
+    }
+    out.cookies = rawCookies;
+  }
+  return out;
+}
+
+/** The message for "YouTube is refusing this machine", naming what is already in use. */
+function blockedMessage(url, settings, stderr) {
+  const tried = [settings.cookies && 'YTDLP_COOKIES', settings.proxy && 'YTDLP_PROXY'].filter(Boolean);
+  const already = tried.length
+    ? ` This happened WITH ${tried.join(' and ')} in use — the cookies may be stale or signed out, or the proxy's address blocked as well.`
+    : '';
+  return `yt-dlp was refused by YouTube for ${url}: this machine's IP address is rate-limited or `
+    + 'blocked (HTTP 429 / "Sign in to confirm you\'re not a bot"), which is typical of datacenter '
+    + 'and VPS addresses — retrying soon will not help.'
+    + `${already} Two ways through, set in the router's own environment (the MCP server `
+    + 'declaration; a workspace .env does NOT set these): YTDLP_COOKIES=<absolute path to a Netscape '
+    + 'cookies.txt exported from a browser signed in to YouTube>, or YTDLP_PROXY=<http(s):// or '
+    + `socks5:// proxy URL, e.g. a residential proxy>. yt-dlp said: ${String(stderr).slice(0, 300)}`;
 }
 
 const YT_VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
@@ -248,7 +376,7 @@ function fmtDuration(seconds) {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
-function assembleMarkdown({ url, subFile, transcript, info }) {
+function assembleMarkdown({ url, subFile, transcript, info, ranWithoutJsRuntime = false }) {
   const langMatch = /\.([a-z]{2,3}(?:-[A-Za-z0-9]+)?)\.(?:vtt|srt)$/i.exec(subFile);
   const lang = langMatch ? langMatch[1] : 'unknown';
   const meta = [`**Source:** ${url}`];
@@ -256,6 +384,9 @@ function assembleMarkdown({ url, subFile, transcript, info }) {
   const dur = fmtDuration(info.duration);
   if (dur) meta.push(`**Duration:** ${dur}`);
   meta.push(`_Transcript extracted via the yt-dlp fallback (captions, lang: ${lang})._`);
+  if (ranWithoutJsRuntime) {
+    meta.push('_Note: this yt-dlp is older than 2025.11.12 (it rejected --js-runtimes) and ran without a JavaScript runtime; upgrade it._');
+  }
   return [
     `# ${info.title || 'YouTube transcript'}`,
     '',
@@ -276,6 +407,9 @@ function assembleMarkdown({ url, subFile, transcript, info }) {
  * without spawning yt-dlp or hitting the network:
  *   - `opts.execFileImpl(cmd, args, options)` — the subprocess runner.
  *   - `opts.assertPublic(hostname)` — the DNS rebinding pre-flight.
+ *   - `opts.env` — where YTDLP_PROXY / YTDLP_COOKIES are read (default: the
+ *     router's own environment; see `readYtdlpNetworkSettings`).
+ *   - `opts.execPath` — the Node handed to `--js-runtimes` (see `jsRuntimeArg`).
  */
 export async function fetchYoutubeTranscriptViaYtdlp(url, opts = {}) {
   const execFileImpl = opts.execFileImpl || execFileAsync;
@@ -304,14 +438,32 @@ export async function fetchYoutubeTranscriptViaYtdlp(url, opts = {}) {
   // Kept for parity with `fromRepo` and as an injection seam in tests.
   await assertPublic('www.youtube.com');
 
+  // Read and validated BEFORE the temp dir exists and before anything spawns:
+  // a malformed setting is the user's to fix, and must not be half-applied.
+  const env = opts.env || process.env;
+  const settings = readYtdlpNetworkSettings(env);
+  const jsRuntime = jsRuntimeArg(opts.execPath || process.execPath);
+
   const cmd = resolveYtdlpPath();
   const subLangs = getSubLangs();
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdlp-subs-'));
   try {
-    const args = [
+    // yt-dlp's `--cookies FILE` both reads the jar AND "dump[s] cookie jar in"
+    // it (README) — it REWRITES the file on exit. It gets a private copy inside
+    // the temp dir, which `finally` removes, so the user's export is never
+    // modified and no refreshed session cookie is left behind in it.
+    let cookiesCopy = null;
+    if (settings.cookies) {
+      cookiesCopy = path.join(tempDir, 'cookies.txt');
+      fs.copyFileSync(settings.cookies, cookiesCopy);
+    }
+    const buildArgs = (withJsRuntime) => [
       '--skip-download',
       '--no-playlist',
       '--no-warnings',
+      ...(withJsRuntime ? [`--js-runtimes=${jsRuntime}`] : []),
+      ...(settings.proxy ? [`--proxy=${settings.proxy}`] : []),
+      ...(cookiesCopy ? [`--cookies=${cookiesCopy}`] : []),
       '--write-subs',
       '--write-auto-subs',
       `--sub-langs=${subLangs}`,
@@ -323,25 +475,40 @@ export async function fetchYoutubeTranscriptViaYtdlp(url, opts = {}) {
       canonicalUrl,
     ];
 
+    // ONE spawn site, called at most twice (see the retry below).
+    // `tempDir` is also the working directory. MEASURED: yt-dlp reads a
+    // `yt-dlp.conf` from its cwd (its "home configuration"), and the
+    // router's cwd is the user's workspace — a repository carrying that
+    // file could have appended `--exec …` to every caption fetch. The
+    // environment is the yt-dlp allowlist (proxies, CA bundles, the profile
+    // roots for its own config), never the router's (subprocess-env.mjs).
+    const runYtdlp = (args) => execFileImpl(cmd, args, subprocessOptions('yt-dlp', {
+      cwd: tempDir,
+      maxBuffer: MAX_YTDLP_STDOUT_BYTES,
+      signal: AbortSignal.timeout(YTDLP_TIMEOUT_MS),
+    }));
+
     let execErr = null;
+    let ranWithoutJsRuntime = false;
     try {
-      // `tempDir` is also the working directory. MEASURED: yt-dlp reads a
-      // `yt-dlp.conf` from its cwd (its "home configuration"), and the
-      // router's cwd is the user's workspace — a repository carrying that
-      // file could have appended `--exec …` to every caption fetch. The
-      // environment is the yt-dlp allowlist (proxies, CA bundles, the profile
-      // roots for its own config), never the router's (subprocess-env.mjs).
-      await execFileImpl(cmd, args, subprocessOptions('yt-dlp', {
-        cwd: tempDir,
-        maxBuffer: MAX_YTDLP_STDOUT_BYTES,
-        signal: AbortSignal.timeout(YTDLP_TIMEOUT_MS),
-      }));
+      try {
+        await runYtdlp(buildArgs(true));
+      } catch (e) {
+        // A yt-dlp older than 2025.11.12 rejects the option before doing
+        // anything. Retry ONCE without it rather than fail on our own flag —
+        // and say so in the result, because such a yt-dlp is likely to be
+        // refused by YouTube's current challenges anyway.
+        if (!NO_SUCH_JS_RUNTIMES.test(String(e?.stderr || e?.message || ''))) throw e;
+        ranWithoutJsRuntime = true;
+        await runYtdlp(buildArgs(false));
+      }
     } catch (e) {
       if (e?.code === 'ENOENT') {
         throw new Error(
           `yt-dlp executable not found (looked up "${cmd}"). ` +
-            `Install it (https://github.com/yt-dlp/yt-dlp#installation — e.g. ` +
-            `\`pipx install yt-dlp\`, \`winget install yt-dlp\`, or \`brew install yt-dlp\`) ` +
+            `Install it without admin rights with \`uv tool install "yt-dlp[default,curl-cffi]"\` or ` +
+            `\`pipx install "yt-dlp[default,curl-cffi]"\` — the [default] extra brings the JavaScript ` +
+            `challenge solver YouTube now requires (https://github.com/yt-dlp/yt-dlp#installation) — ` +
             `or set YTDLP_PATH to its absolute location.`,
         );
       }
@@ -364,8 +531,13 @@ export async function fetchYoutubeTranscriptViaYtdlp(url, opts = {}) {
       .filter(Boolean);
     const subFile = pickSubtitleFile(files, langPrefs.length ? langPrefs : ['en']);
     if (!subFile) {
-      const detail = execErr ? `: ${String(execErr.stderr || execErr.message).slice(0, 300)}` : '';
-      throw new Error(`yt-dlp returned no captions for ${url}${detail}`);
+      const stderr = execErr ? String(execErr.stderr || execErr.message || '') : '';
+      if (YOUTUBE_BLOCKED.test(stderr)) throw new Error(blockedMessage(url, settings, stderr));
+      const oldNote = ranWithoutJsRuntime
+        ? ' (this yt-dlp predates --js-runtimes, i.e. is older than 2025.11.12 — upgrade it: current YouTube needs its JavaScript challenge solver)'
+        : '';
+      const detail = execErr ? `: ${stderr.slice(0, 300)}` : '';
+      throw new Error(`yt-dlp returned no captions for ${url}${oldNote}${detail}`);
     }
 
     const subPath = path.join(tempDir, subFile);
@@ -394,7 +566,7 @@ export async function fetchYoutubeTranscriptViaYtdlp(url, opts = {}) {
       // Malformed/absent/oversized info.json — fall back to a generic heading.
     }
 
-    return assembleMarkdown({ url: canonicalUrl, subFile, transcript, info });
+    return assembleMarkdown({ url: canonicalUrl, subFile, transcript, info, ranWithoutJsRuntime });
   } finally {
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });

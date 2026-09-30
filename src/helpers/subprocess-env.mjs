@@ -344,7 +344,8 @@ export const SUBPROCESS_TOOLS = Object.freeze({
       // where xdg-open finds a Flatpak/Snap Obsidian's protocol handler
       'XDG_DATA_DIRS', 'XDG_CURRENT_DESKTOP', 'DESKTOP_SESSION',
     ],
-    runs: 'scripts/setup-vault.mjs (src/helpers/vault-wizard-engine.mjs, bin/obsidian-mcp-router.mjs --attach, scripts/sync-hook.mjs)',
+    runs: 'scripts/setup-vault.mjs (src/helpers/vault-wizard-engine.mjs, bin/obsidian-mcp-router.mjs --attach, scripts/sync-hook.mjs), '
+      + 'scripts/install-plugins.mjs and scripts/plugin-health.mjs (bin/obsidian-mcp-router.mjs --install-plugins / --plugin-health)',
   },
 });
 

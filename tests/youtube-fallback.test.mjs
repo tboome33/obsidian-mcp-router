@@ -16,6 +16,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import {
@@ -25,12 +26,16 @@ import {
   isYoutubeVideoUrl,
   extractYoutubeVideoId,
   fetchYoutubeTranscriptViaYtdlp,
+  jsRuntimeArg,
+  readYtdlpNetworkSettings,
 } from '../src/markdownify/youtube-fallback.mjs';
+import { classifyWorkspaceDotenvKey } from '../src/helpers/workspace-dotenv.mjs';
+import { toMarkdown, describeFetchFailure } from '../src/markdownify/markitdown.mjs';
 
 // A real 11-char YouTube video id, reused across the subprocess-seam tests.
 const VID = 'dQw4w9WgXcQ';
 
-import { youtubeToMarkdown } from '../src/tools/convert.mjs';
+import { youtubeToMarkdown, markdownHasTranscript } from '../src/tools/convert.mjs';
 
 // Helper: a fake execFileImpl that writes caption + info files into the temp
 // dir yt-dlp was told to use (the `-o <dir>/sub.%(ext)s` argv entry).
@@ -329,23 +334,284 @@ test('fetchYoutubeTranscriptViaYtdlp refuses SSRF / non-http URLs before spawnin
   assert.equal(spawned, false, 'execFile must not run for a refused URL');
 });
 
+/* ---------- --js-runtimes, 429 diagnosis, YTDLP_PROXY / YTDLP_COOKIES ---------- */
+
+const CAPTION = { 'sub.en.vtt': 'WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nHello there\n' };
+const NODE_EXEC = path.join(path.sep === '\\' ? 'C:\\nodejs' : '/usr/local/bin', path.sep === '\\' ? 'node.exe' : 'node');
+
+/** A recorder around writerExecFile: keeps every argv it was handed. */
+function recordingExecFile(filesByName, behaviours = []) {
+  const calls = [];
+  const write = writerExecFile(filesByName);
+  const impl = async (cmd, args, options) => {
+    calls.push([...args]);
+    const b = behaviours[calls.length - 1];
+    if (b) throw b;
+    return write(cmd, args, options);
+  };
+  return { impl, calls };
+}
+
+test('yt-dlp is handed THIS Node as its JavaScript runtime, and the URL still sits after --', async () => {
+  const { impl, calls } = recordingExecFile(CAPTION);
+  await fetchYoutubeTranscriptViaYtdlp(`https://youtu.be/${VID}`, {
+    execFileImpl: impl, assertPublic: NOOP_PUBLIC, env: {}, execPath: NODE_EXEC,
+  });
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].includes(`--js-runtimes=node:${NODE_EXEC}`), calls[0].join(' '));
+  const dd = calls[0].indexOf('--');
+  assert.equal(dd, calls[0].length - 2, '-- must be the last-but-one argument');
+  assert.equal(calls[0][dd + 1], `https://www.youtube.com/watch?v=${VID}`);
+});
+
+test('jsRuntimeArg: only a real node binary is named; an Electron host falls back to PATH lookup', () => {
+  assert.equal(jsRuntimeArg('/usr/bin/node'), 'node:/usr/bin/node');
+  assert.equal(jsRuntimeArg('C:\\Program Files\\nodejs\\node.exe'), 'node:C:\\Program Files\\nodejs\\node.exe');
+  assert.equal(jsRuntimeArg('D:\\apps\\ElectronHost\\host.exe'), 'node');
+  assert.equal(jsRuntimeArg('/opt/Electron/electron'), 'node');
+  assert.equal(jsRuntimeArg(null), 'node');
+  assert.equal(jsRuntimeArg(''), 'node');
+});
+
+test('an old yt-dlp that rejects --js-runtimes is retried ONCE without it, and the result says so', async () => {
+  const old = Object.assign(new Error('Command failed'), {
+    code: 2, stderr: 'Usage: yt-dlp [OPTIONS] URL [URL...]\n\nyt-dlp: error: no such option: --js-runtimes\n',
+  });
+  const { impl, calls } = recordingExecFile(CAPTION, [old]);
+  const md = await fetchYoutubeTranscriptViaYtdlp(`https://youtu.be/${VID}`, {
+    execFileImpl: impl, assertPublic: NOOP_PUBLIC, env: {}, execPath: NODE_EXEC,
+  });
+  assert.equal(calls.length, 2, 'exactly one retry');
+  assert.ok(calls[0].some((a) => a.startsWith('--js-runtimes')));
+  assert.equal(calls[1].some((a) => a.startsWith('--js-runtimes')), false, 'the retry drops the option');
+  assert.match(md, /Hello there/);
+  assert.match(md, /older than 2025\.11\.12/);
+});
+
+test('any OTHER failure is not retried', async () => {
+  const other = Object.assign(new Error('Command failed'), { code: 1, stderr: 'ERROR: Video unavailable' });
+  const { impl, calls } = recordingExecFile({}, [other]);
+  await assert.rejects(
+    () => fetchYoutubeTranscriptViaYtdlp(`https://youtu.be/${VID}`, { execFileImpl: impl, assertPublic: NOOP_PUBLIC, env: {} }),
+    (e) => /no captions/.test(e.message) && /Video unavailable/.test(e.message),
+  );
+  assert.equal(calls.length, 1);
+});
+
+test('HTTP 429 / bot check → an explicit "your IP is blocked" diagnosis naming cookies and proxy', async () => {
+  for (const stderr of [
+    'ERROR: [youtube] dQw4w9WgXcQ: Unable to download API page: HTTP Error 429: Too Many Requests',
+    "ERROR: [youtube] dQw4w9WgXcQ: Sign in to confirm you're not a bot. Use --cookies-from-browser or --cookies",
+  ]) {
+    const { impl } = recordingExecFile({}, [Object.assign(new Error('Command failed'), { code: 1, stderr })]);
+    await assert.rejects(
+      () => fetchYoutubeTranscriptViaYtdlp(`https://youtu.be/${VID}`, { execFileImpl: impl, assertPublic: NOOP_PUBLIC, env: {} }),
+      (e) => /rate-limited or blocked/.test(e.message)
+        && /datacenter/.test(e.message)
+        && /YTDLP_COOKIES=<absolute path/.test(e.message)
+        && /YTDLP_PROXY=/.test(e.message)
+        && /workspace \.env does NOT set these/.test(e.message),
+    );
+  }
+});
+
+test('YTDLP_PROXY becomes --proxy before the URL; a bad value is refused BEFORE anything spawns, credentials masked', async () => {
+  const { impl, calls } = recordingExecFile(CAPTION);
+  await fetchYoutubeTranscriptViaYtdlp(`https://youtu.be/${VID}`, {
+    execFileImpl: impl, assertPublic: NOOP_PUBLIC, env: { YTDLP_PROXY: 'socks5h://127.0.0.1:1080' },
+  });
+  const i = calls[0].indexOf('--proxy=socks5h://127.0.0.1:1080');
+  assert.ok(i >= 0 && i < calls[0].indexOf('--'), calls[0].join(' '));
+
+  for (const p of ['http://10.0.0.1:3128', 'https://p.example:443', 'socks4://h:1', 'socks5://h:1']) {
+    assert.equal(readYtdlpNetworkSettings({ YTDLP_PROXY: p }).proxy, p);
+  }
+  let spawned = 0;
+  for (const bad of ['ftp://user:hunter2@h:21', 'not a url', 'file:///etc/passwd', 'http://', '--exec=calc']) {
+    await assert.rejects(
+      () => fetchYoutubeTranscriptViaYtdlp(`https://youtu.be/${VID}`, {
+        execFileImpl: async () => { spawned += 1; return {}; }, assertPublic: NOOP_PUBLIC, env: { YTDLP_PROXY: bad },
+      }),
+      (e) => /YTDLP_PROXY/.test(e.message) && !e.message.includes('hunter2'),
+      bad,
+    );
+  }
+  assert.equal(spawned, 0);
+});
+
+test('YTDLP_COOKIES: absolute + existing, handed to yt-dlp as a PRIVATE COPY the user file never sees rewritten', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdlp-cookies-test-'));
+  try {
+    const jar = path.join(dir, 'cookies.txt');
+    const original = '# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tabc\n';
+    fs.writeFileSync(jar, original);
+    let seenCopy = null;
+    const impl = async (cmd, args, options) => {
+      const c = args.find((a) => a.startsWith('--cookies='));
+      seenCopy = c && c.slice('--cookies='.length);
+      assert.equal(fs.readFileSync(seenCopy, 'utf8'), original, 'the copy carries the jar');
+      fs.writeFileSync(seenCopy, 'rewritten by yt-dlp'); // what `--cookies` does on exit
+      return writerExecFile(CAPTION)(cmd, args, options);
+    };
+    await fetchYoutubeTranscriptViaYtdlp(`https://youtu.be/${VID}`, {
+      execFileImpl: impl, assertPublic: NOOP_PUBLIC, env: { YTDLP_COOKIES: jar },
+    });
+    assert.ok(seenCopy, '--cookies must be passed');
+    assert.notEqual(path.resolve(seenCopy), path.resolve(jar), 'yt-dlp must not get the user file itself');
+    assert.equal(fs.readFileSync(jar, 'utf8'), original, 'the user export is untouched');
+    assert.equal(fs.existsSync(seenCopy), false, 'the copy is removed with the temp dir');
+
+    let spawned = 0;
+    const never = async () => { spawned += 1; return {}; };
+    await assert.rejects(
+      () => fetchYoutubeTranscriptViaYtdlp(`https://youtu.be/${VID}`, { execFileImpl: never, assertPublic: NOOP_PUBLIC, env: { YTDLP_COOKIES: 'cookies.txt' } }),
+      /ABSOLUTE path/,
+    );
+    await assert.rejects(
+      () => fetchYoutubeTranscriptViaYtdlp(`https://youtu.be/${VID}`, { execFileImpl: never, assertPublic: NOOP_PUBLIC, env: { YTDLP_COOKIES: path.join(dir, 'missing.txt') } }),
+      /not an existing file/,
+    );
+    await assert.rejects(
+      () => fetchYoutubeTranscriptViaYtdlp(`https://youtu.be/${VID}`, { execFileImpl: never, assertPublic: NOOP_PUBLIC, env: { YTDLP_COOKIES: dir } }),
+      /not an existing file/,
+    );
+    assert.equal(spawned, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the 429 message says when cookies/proxy were ALREADY in use', async () => {
+  const { impl } = recordingExecFile({}, [Object.assign(new Error('x'), { code: 1, stderr: 'HTTP Error 429: Too Many Requests' })]);
+  await assert.rejects(
+    () => fetchYoutubeTranscriptViaYtdlp(`https://youtu.be/${VID}`, { execFileImpl: impl, assertPublic: NOOP_PUBLIC, env: { YTDLP_PROXY: 'http://p.example:8080' } }),
+    /WITH YTDLP_PROXY in use/,
+  );
+});
+
+test('POLICY: a workspace .env cannot set YTDLP_PROXY or YTDLP_COOKIES', () => {
+  // A cloned repository choosing the proxy every caption fetch goes through
+  // is the attack; the loader's allowlist is what refuses it.
+  for (const k of ['YTDLP_PROXY', 'YTDLP_COOKIES', 'YTDLP_PATH']) {
+    assert.equal(classifyWorkspaceDotenvKey(k), 'ignore', k);
+  }
+});
+
+test('the ENOENT hint recommends yt-dlp[default,curl-cffi] through uv or pipx', async () => {
+  const execFileImpl = async () => { throw Object.assign(new Error('spawn yt-dlp ENOENT'), { code: 'ENOENT' }); };
+  await assert.rejects(
+    () => fetchYoutubeTranscriptViaYtdlp(`https://youtu.be/${VID}`, { execFileImpl, assertPublic: NOOP_PUBLIC, env: {} }),
+    (e) => /uv tool install "yt-dlp\[default,curl-cffi\]"/.test(e.message) && /pipx install "yt-dlp\[default,curl-cffi\]"/.test(e.message),
+  );
+});
+
+/* ---------- the primary path: "fetch failed" carries its cause ---------- */
+
+test('toMarkdown: an undici "fetch failed" surfaces err.cause (code + message), host and pinned IP', async () => {
+  const cases = [
+    [Object.assign(new Error('Connect Timeout Error (attempted address: 142.250.0.1:443, timeout: 10000ms)'), { code: 'UND_ERR_CONNECT_TIMEOUT' }), /UND_ERR_CONNECT_TIMEOUT: Connect Timeout Error/],
+    [Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }), /read ECONNRESET/],
+    [Object.assign(new Error('getaddrinfo ENOTFOUND www.youtube.com'), { code: 'ENOTFOUND' }), /ENOTFOUND/],
+    [Object.assign(new Error('unable to get local issuer certificate'), { code: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY' }), /UNABLE_TO_GET_ISSUER_CERT_LOCALLY: unable to get local issuer certificate/],
+  ];
+  for (const [cause, re] of cases) {
+    let fetched = 0;
+    await assert.rejects(
+      () => toMarkdown({ url: `https://www.youtube.com/watch?v=${VID}` }, {
+        resolveHost: async () => ({ address: '142.250.0.1', family: 4 }),
+        fetch: async () => { fetched += 1; throw new TypeError('fetch failed', { cause }); },
+      }),
+      (e) => /fetch failed/.test(e.message) && re.test(e.message)
+        && /www\.youtube\.com \(142\.250\.0\.1\)/.test(e.message),
+    );
+    assert.equal(fetched, 1);
+  }
+});
+
+test('describeFetchFailure: AggregateError children, timeouts, and a bounded chain', () => {
+  const agg = new AggregateError([
+    Object.assign(new Error('connect ETIMEDOUT 1.2.3.4:443'), { code: 'ETIMEDOUT' }),
+    Object.assign(new Error('connect ENETUNREACH ::1:443'), { code: 'ENETUNREACH' }),
+  ], 'all attempts failed');
+  const d = describeFetchFailure(new TypeError('fetch failed', { cause: agg }));
+  assert.match(d, /ETIMEDOUT/);
+  assert.match(d, /ENETUNREACH/);
+  const t = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+  assert.match(describeFetchFailure(t), /timed out after 30 s/);
+  // A self-referencing cause must not loop, and no cause = the message alone.
+  const loop = new Error('fetch failed'); loop.cause = loop;
+  assert.equal(describeFetchFailure(loop), 'fetch failed');
+  assert.equal(describeFetchFailure(new Error('plain')), 'plain');
+});
+
 /* ---------- youtubeToMarkdown wiring ---------- */
 
-test('youtubeToMarkdown returns the primary result without invoking the fallback', async () => {
+// CHANGED DELIBERATELY: the primary here used to be '# primary ok', and "no
+// fallback" was the rule for ANY successful primary. The rule is now "no
+// fallback when the primary carries a transcript", so this primary has one.
+const WITH_TRANSCRIPT = '# YouTube\n\n## My Vid\n\n### Description\nabout\n\n### Transcript\nhello from markitdown\n';
+
+test('youtubeToMarkdown returns a primary WITH a transcript without invoking the fallback', async () => {
   let fbCalled = false;
   const out = await youtubeToMarkdown(
     null,
     { url: `https://youtu.be/${VID}` },
     {
-      primary: async () => '# primary ok',
+      primary: async () => WITH_TRANSCRIPT,
       fallback: async () => {
         fbCalled = true;
         return '# fb';
       },
     },
   );
-  assert.equal(out, '# primary ok');
+  assert.equal(out, WITH_TRANSCRIPT);
   assert.equal(fbCalled, false);
+});
+
+test('markdownHasTranscript: the "### Transcript" section markitdown emits, with text under it', () => {
+  assert.equal(markdownHasTranscript(WITH_TRANSCRIPT), true);
+  assert.equal(markdownHasTranscript('## Transcript\r\n\r\nsome words'), true);
+  assert.equal(markdownHasTranscript('# Title\n\npage text only'), false);
+  assert.equal(markdownHasTranscript('### Transcript\n\n### Next\nx'), false, 'an empty section is not a transcript');
+  assert.equal(markdownHasTranscript('### Transcript\n'), false);
+  assert.equal(markdownHasTranscript('The Transcript is below'), false, 'prose is not a heading');
+  assert.equal(markdownHasTranscript(null), false);
+});
+
+test('a primary that SUCCEEDS WITHOUT a transcript → yt-dlp runs, its transcript is returned with a note', async () => {
+  let fbUrl = null;
+  const out = await youtubeToMarkdown(null, { url: `https://www.youtube.com/watch?v=${VID}` }, {
+    primary: async () => '# Rick Astley - Never Gonna Give You Up\n\nSome page text, no captions.\n',
+    fallback: async (u) => { fbUrl = u; return '# My Vid\n\n> **Source:** x\n\nHello there\n'; },
+  });
+  assert.equal(fbUrl, `https://www.youtube.com/watch?v=${VID}`);
+  assert.match(out, /Hello there/);
+  assert.match(out, /produced no transcript, so the transcript above was fetched with yt-dlp/);
+});
+
+test('primary without a transcript AND a failing yt-dlp → the primary is RETURNED with a warning naming why', async () => {
+  const page = '# Page title\n\nSome page text.\n';
+  const out = await youtubeToMarkdown(null, { url: `https://youtu.be/${VID}` }, {
+    primary: async () => page,
+    fallback: async () => {
+      throw new Error("yt-dlp was refused by YouTube for x: this machine's IP address is rate-limited or blocked (HTTP 429)\nmore");
+    },
+  });
+  assert.ok(out.endsWith(page), 'the page text is kept, not discarded');
+  assert.match(out, /no transcript could be obtained/);
+  assert.match(out, /rate-limited or blocked \(HTTP 429\) more/, 'the yt-dlp reason, on one line');
+});
+
+test('a non-VIDEO YouTube URL or a non-YouTube URL: a successful primary is returned untouched, no fallback', async () => {
+  for (const url of ['https://www.youtube.com/channel/UCabc', 'https://www.youtube.com/playlist?list=PLxx', 'https://example.com/page']) {
+    let fbCalled = false;
+    const out = await youtubeToMarkdown(null, { url }, {
+      primary: async () => '# no transcript here',
+      fallback: async () => { fbCalled = true; return 'x'; },
+    });
+    assert.equal(out, '# no transcript here', url);
+    assert.equal(fbCalled, false, url);
+  }
 });
 
 test('youtubeToMarkdown falls back to yt-dlp when the primary path throws', async () => {

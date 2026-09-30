@@ -85,3 +85,38 @@ export function realPathWithMissingTail(p) {
     }
   }
 }
+
+/**
+ * Is `real` the directory `root` or below it — both ALREADY real paths (from
+ * realPathWithMissingTail, or a pin's handle), compared EXACTLY, case included.
+ *
+ * Not `path.relative`: on Windows it lowercases both sides before comparing,
+ * and an NTFS directory can have case sensitivity turned on, where `Root` and
+ * `root` are two distinct siblings — a target under `root` then passed as
+ * being inside the known root `Root` (Codex review, round 4, on
+ * provision_vault). On Windows both sides come from the same resolution,
+ * which returns the on-disk spelling of every existing component and keeps a
+ * missing tail as written, so the exact comparison refuses nothing NTFS does
+ * not also distinguish — except a missing tail written in another case than
+ * the root that contains it. Elsewhere the realpath does NOT recover the
+ * stored spelling: on a Linux case-folding directory (ext4 casefold) glibc
+ * copies components as given, so `root/child` under a configured `Root` is
+ * refused although the filesystem names one directory (Codex review,
+ * round 5 — as the POSIX `path.relative` did before). Every such case is a
+ * REFUSAL, never an escape: the comparison only ever says "inside" for a
+ * string that starts with the root's exact spelling. A plain prefix on the
+ * separator boundary also keeps a child named `..cache` inside, where
+ * `rel.startsWith('..')` threw it out.
+ *
+ * @param {string} real
+ * @param {string} root
+ * @returns {boolean}
+ */
+export function isInsideRealPath(real, root) {
+  if (typeof real !== 'string' || typeof root !== 'string' || real === '' || root === '') return false;
+  const t = path.resolve(real);
+  const r = path.resolve(root);
+  if (t === r) return true;
+  const prefix = r.endsWith(path.sep) ? r : r + path.sep;
+  return t.startsWith(prefix);
+}

@@ -60,25 +60,26 @@ There is no single path. The fleet audit that produced `CLAUDE_MD_CANDIDATES` fo
 
 So: probe the candidates (one `list_files` on the vault root, plus `wiki-meta/` and `Documentation/` if present), pass what exists to `resolveClaudeMd`, and use its answer for `install`, `remove` AND `list`. When two candidates exist it returns `ambiguous: true` **and `path: null`** — there is nothing to act on by design; name the files in `present` to the user and let them choose. If nothing exists, create at `createAt` (the vault root) and say where you put it.
 
-Mapping (initial library shipped with this skill):
+Mapping (the library as of this page — 14 snippets; the identity is the WHOLE first line, parenthesised part included, since matching is exact):
 
 | Snippet file | Convention id | Identifying H2 heading |
 |---|---|---|
-| `source-type.md` | `source-type` | `## Source provenance — \`source_type\` frontmatter` |
-| `bilingual.md` | `bilingual` | `## Bilingual convention (FR + EN, FR primary)` |
-| `heading-hierarchy.md` | `heading-hierarchy` | `## Note structure — headings hierarchy (mandatory)` |
 | `auto-enrichment.md` | `auto-enrichment` | `## Auto-enrichment (4 modes — \`ClaudeAsk\` / \`Hybrid\` / \`FullAuto\` / \`off\`)` |
-| `roadmap-discipline.md` | `roadmap-discipline` | `## Roadmap discipline — création + maintenance dans le vault courant` |
-| `default-vault-health-check.md` | `default-vault-health-check` | `## Default vault health check at session start` |
-| `wiki-query-first.md` | `wiki-query-first` | `## Wiki-query-first reflex — check the vault BEFORE answering` |
-| `path-disambiguation.md` | `path-disambiguation` | `## Workspace-bound path disambiguation — NEVER mix cwd path with vault subpath` |
+| `bilingual.md` | `bilingual` | `## Bilingual convention (FR + EN, FR primary)` |
 | `claim-citations.md` | `claim-citations` | `## Claim-level citations — line-range markers (v0.15.0+, complements \`source-type\`)` |
-| `tribu-routing.md` | `tribu-routing` | `## Family-member auto-routing — identify the speaker, route saves to wiki/People/<member>/` |
+| `default-vault-health-check.md` | `default-vault-health-check` | `## Default vault health check at session start` |
+| `description-frontmatter.md` | `description-frontmatter` | `## One-line summary — \`description\` frontmatter (mandatory for every page)` |
+| `heading-hierarchy.md` | `heading-hierarchy` | `## Note structure — headings hierarchy (mandatory)` |
 | `log-discipline.md` | `log-discipline` | `## Log discipline — index mince + détail dans wiki-meta/Sessions/` |
-| `prompt-status.md` | `prompt-status` | `## Prompt lifecycle — \`status\` frontmatter on \`type: prompt\` pages` |
-| `temporal-validity.md` | `temporal-validity` | `## Temporal validity — \`valid_from\` / \`valid_through\` frontmatter` |
+| `path-disambiguation.md` | `path-disambiguation` | `## Workspace-bound path disambiguation — NEVER mix cwd path with vault subpath` |
+| `prompt-status.md` | `prompt-status` | `## Prompt lifecycle — \`status\` frontmatter on \`type: prompt\` pages (mandatory, since 2026-09-10)` |
+| `roadmap-discipline.md` | `roadmap-discipline` | `## Roadmap discipline — création + maintenance dans le vault courant` |
+| `source-type.md` | `source-type` | `## Source provenance — \`source_type\` frontmatter (mandatory for substantive pages, since 2026-05-18 v0.8.8)` |
+| `temporal-validity.md` | `temporal-validity` | `## Temporal validity — \`valid_from\` / \`valid_through\` frontmatter (optional, any page type, since 2026-09-11)` |
+| `tribu-routing.md` | `tribu-routing` | `## Family-member auto-routing — identify the speaker, route saves to wiki/People/<member>/` |
+| `wiki-query-first.md` | `wiki-query-first` | `## Wiki-query-first reflex — check the vault BEFORE answering` |
 
-(Other snippets may exist — always `Glob` the snippets dir to get the live list, don't hardcode beyond a fallback.)
+(Do not rely on this table for the live list: `install_conventions` with `dryRun: true` and `ids: []` returns the library as the server ships it — `catalogue` — and its detection against the vault's file.)
 
 ## Steps
 
@@ -90,13 +91,13 @@ If you can't find the snippets dir, fall back to reading `<router-clone>/templat
 
 ### `list` — show available conventions + status
 
-1. `Glob` the snippets directory for `*.md`.
-2. For each snippet, read the first 10 lines to get the H2 heading (the convention's identity).
-3. Resolve the target vault(s):
+1. Resolve the target vault(s):
    - If user said *"on vault X"* → just that vault
    - If user said *"on all vaults"* → call `list_vaults`, filter to `online: true`
    - Default (no vault specified) → the current default vault from `list_vaults`
-4. For each vault: resolve its conventions file (see above), read it, and call `detectConventions(content, catalogue)` with the globbed library. Mark ✅ or ❌ from `installed`. A vault with no conventions file at all is "nothing installed", not an error.
+2. For each vault: `install_conventions({ vault, ids: [], dryRun: true })`. It returns the library (`catalogue`), the resolved conventions file (`path`, `fileExisted`) and `detection`. Mark ✅ or ❌ from `installed`, and flag `duplicate`. A vault with no conventions file at all is "nothing installed", not an error; two conventions files is a refusal that names them — report it for that vault.
+3. (Offline fallback only, when the router is unreachable: `Glob` the snippets directory and run `detectConventions(content, catalogue)` from the helper yourself.)
+4. The ids come from `catalogue` — never hardcode the library.
 5. Render as a markdown table, and name the file each column was read from — on a fleet where the path differs per vault, a status table that hides which file it read is a status table nobody can check.
 
 Example output:
@@ -113,18 +114,29 @@ Vault: smile
 
 For multi-vault status, render one row per vault with checkmark columns.
 
-### `install <convention-id> [on <vault>] [--all]` — add a convention
+### `install <convention-id>[,<id>…] [on <vault>] [--all]` — add one or more conventions
 
-1. Resolve the snippet: read `<plugin-root>/skills/conventions/snippets/<convention-id>.md`. If 404, tell user "no such convention" + show `list` output.
-2. Resolve target vault(s):
+**One tool call per vault, whatever the number of conventions: `install_conventions`.** Do not read the snippets and do not paste their text anywhere — the router reads them from its own package. Do not use `append_to_file` for this: it carries no precondition, so the shared-vault gate refuses it on every vault `list_vaults` reports with `writesRequireIfMatch`, and copying ~31 KB of rules through tool calls is how a rule gets altered on the way.
+
+1. Resolve target vault(s):
    - `--all` → all online vaults from `list_vaults`
    - `on <vault>` → that specific vault
    - Default → the current default vault
-3. For each target vault:
-   - Resolve its conventions file and read it via `get_file`
-   - `isConventionInstalled(content, heading)` → if true, SKIP and report "already in place"
-   - If false, `append_to_file` with the snippet content, prefixed by `\n` to ensure section separation
-4. Report a summary: `N installed, M already in place, K failed`.
+2. For each target vault, ONE call:
+   ```
+   install_conventions({ vault, ids: ["source-type", "heading-hierarchy", …] })
+   ```
+   The tool resolves the conventions file itself (the three candidates above; two present → it refuses and names them, so put the question to the user), skips what is already present, appends every missing snippet in ONE compare-and-swap write, then reads the file back.
+3. Read the result — every field is a sentence you owe the user:
+   - `installed` — added by this call. `alreadyPresent` — **"already in place"**, never "installed". `unknown` — ids the library does not ship: say so, and show the library (`dryRun` below).
+   - `verified` — `true` only when every requested convention is present exactly once in what the vault now holds. `false` → show `problems` and say the install is NOT confirmed; do not paper over it.
+   - `created: true` — no conventions file existed; say where it was created (`path`).
+   - A **conflict** error (409) means the file changed between the read and the write and nothing was written: run the same call again — it re-reads and never overwrites.
+   - A malformed id (anything but lowercase letters, digits, hyphens) is refused before any I/O.
+   - Link the file with the returned `clickToOpenUrl`.
+4. Report a summary: `N installed, M already in place, K unknown, verified yes/no` per vault.
+
+**State without writing:** `install_conventions({ vault, ids: [], dryRun: true })` returns `catalogue` (the library, id + heading), `detection` (installed / duplicate per convention, against the resolved file) and `path`. That is what `list` and `pick` read — no local `Glob`, no local import.
 
 **Say "already in place", never "installed", for a skip.** Reported per file, "already installed" reads as a benign detail; reported as a total, it reads as "your configuration was applied". A run that installed nothing must say so in the first line — a user who picked six conventions and got six no-ops believes they configured a vault that was already configured for them.
 
@@ -167,19 +179,20 @@ Convenience alias for `install <convention-id> --all`. Same logic, with a cleare
 
 A picker that has not read the target is a picker that lies. Before showing anything:
 
-1. Resolve and read the vault's conventions file (empty string if there is none).
-2. `detectConventions(content, catalogue)` → the real state.
-3. Show every option with the installed ones **already checked** and labelled *"déjà en place"* / *"already in place"*. That single change removes the whole first defect: the user stops "choosing" things that are already there.
-4. Feed the answer to `planConventionPicker({ content, catalogue, selected })`, which sorts every convention into four buckets:
+1. `install_conventions({ vault, ids: [], dryRun: true })` — it resolves the conventions file, reads it, and returns `catalogue` + `detection` (the real state; a vault with no file is "nothing installed"). If it refuses because two conventions files exist, stop and ask which one is the user's.
+2. Build the options from `catalogue`, one per convention (AskUserQuestion, `multiSelect: true`; when the library is larger than one question can hold, split it over several questions and keep the displayed set as your `catalogue` for step 4).
+3. Show every option with the installed ones **already checked** and labelled *"déjà en place"* / *"already in place"*, plus the caller's **recommended** ones checked (the wizards name theirs). That single change removes the whole first defect: the user stops "choosing" things that are already there.
+4. Sort the answer into four buckets from `detection` — the same rule `planConventionPicker({ content, catalogue, selected })` implements, if you can run the helper:
 
 | bucket | meaning | action |
 |---|---|---|
-| `install` | checked, absent | append the snippet |
+| `install` | checked, absent | ONE `install_conventions` call with every id of this bucket |
 | `keep` | checked, present | nothing — report "already in place" |
 | `remove` | **unchecked, present** | **ask** (see below) |
 | `skip` | unchecked, absent | nothing, silently |
 
-5. Print `plan.plan` **before acting** — it counts intentions, and says so. Report `plan.unknown` if the answer named an id the library does not ship, and `plan.duplicates` if a convention appears twice in the file. The CLOSING summary of the run is built from what actually happened (installed / already in place / removed / **declined** / failed), never from the plan: a user who declined both removals must not be told "2 to remove".
+5. Print the plan line **before acting** — it counts intentions, and says so (`planned: N to install, M already in place, R unchecked but present (confirm before removing), S untouched`). Report any id the answer named that the library does not ship, and any convention `detection` marks `duplicate`.
+6. Install the whole `install` bucket with ONE `install_conventions({ vault, ids: [...] })` call and show its verified result (`installed`, `alreadyPresent`, `verified`, the file's `clickToOpenUrl`). The CLOSING summary of the run is built from what actually happened (installed / already in place / removed / **declined** / failed), never from the plan: a user who declined both removals must not be told "2 to remove".
 
 **The catalogue you plan with must be exactly the options you displayed.** If the library ships a ninth convention and the picker only showed eight, the ninth lands in `remove` — and the confirmation then says "you did not check these" about a checkbox the user never saw. One collection, displayed and planned.
 
@@ -212,10 +225,10 @@ On a yes, go through `remove` in full — verbatim preview, sidecar backup and `
 ## Examples
 
 User: *"installe source-type sur smile"*
-→ install source-type on=smile → read snippets/source-type.md → read smile's CLAUDE.md → check if "## Source provenance" present → it's not → append → report "✅ installed on smile"
+→ install source-type on=smile → `install_conventions({ vault: "smile", ids: ["source-type"] })` → `installed: ["source-type"]`, `verified: true` → report "✅ installed on smile (verified)" with the file's link
 
 User: *"liste les conventions disponibles"*
-→ list (no vault specified) → glob snippets → list the 4 conventions with their identifying H2 → for default vault, check status of each
+→ list (no vault specified) → `install_conventions({ ids: [], dryRun: true })` → list every entry of `catalogue` with its identifying H2 and its `detection` status on the default vault
 
 User: *"sync source-type partout"*
 → sync-all-vaults source-type → list_vaults online → loop install on each → group result by status

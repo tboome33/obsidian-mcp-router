@@ -168,8 +168,17 @@ export function runSetupVault(args, { extraEnv = {}, configPath, scriptPath = SE
 export function provisionPlanCore(plan) {
   const p = plan || {};
   const pl = p.plugins || {};
+  const ctx = p.context && typeof p.context === 'object' ? p.context : {};
   return {
     path: p.path ?? null,
+    // The REAL destination and roots the dry-run's gate judged. Sealed so an
+    // approved preview binds where the vault lands, not only its spelling: a
+    // junction re-pointed between plan_vault and provision_vault keeps the
+    // same `path`, steps and warnings, and would otherwise pass the seal
+    // (Codex review, round 4). Roots sorted: their order is not a decision
+    // (a duplicate stays one entry per occurrence — the list as configured).
+    realTarget: typeof ctx.realTarget === 'string' ? ctx.realTarget : null,
+    realRoots: Array.isArray(ctx.realRoots) ? ctx.realRoots.map((r) => String(r)).sort() : null,
     slug: p.slug ?? null,
     name: p.name ?? null,
     source: p.source ?? null,
@@ -241,9 +250,23 @@ export async function runDryRunPlan(input, { configPath } = {}) {
  * machine-readable result (review+ W2 NIT #2). Returns { code, stdout, stderr,
  * result }.
  */
-export async function runProvision(input, { configPath } = {}) {
+export async function runProvision(input, { configPath, expectedTarget = null, approvedRoots = null } = {}) {
   const nonce = crypto.randomUUID();
-  const args = [...composeSetupVaultArgs(input), '--json'];
+  // The REAL run pins its target and re-asks the roots gate on the pinned real
+  // path (src/helpers/pin-provision-target.mjs): the dry-run's gate judged a
+  // path, in another process, before a swap could happen. Real run only — the
+  // dry-run creates nothing, and the plan seal never sees these flags.
+  // `expectedTarget` / `approvedRoots` are the REAL target and roots the
+  // dry-run's gate judged: a name-only request is recomposed by the real run
+  // from a config that may have changed in between, and a root or target
+  // swapped for a link since would be judged on where it points by then — so
+  // the pin must land on THAT target, inside THOSE roots, compared as given.
+  const args = [
+    ...composeSetupVaultArgs(input), '--json', '--pin-target',
+    ...(input.allowOutsideRoots === true ? ['--allow-outside-roots'] : []),
+    ...(typeof expectedTarget === 'string' && expectedTarget !== '' ? ['--expected-target', expectedTarget] : []),
+    ...(Array.isArray(approvedRoots) ? ['--approved-roots', JSON.stringify(approvedRoots)] : []),
+  ];
   const { code, stdout, stderr } = await runSetupVault(args, {
     configPath,
     extraEnv: { OBSIDIAN_ROUTER_PROVISION_NONCE: nonce },

@@ -142,6 +142,10 @@ describe('the vault baseUrl has one producer', () => {
    */
   const ALLOWED_BASEURL = new Set([
     'scripts/setup-vault.mjs|const baseUrl = `https://127.0.0.1:${port}`;',
+    // --plugin-health's live probe of a LOCAL vault, on the port
+    // resolveLocalRestState just chose from that vault's data.json; a remote
+    // vault is probed at its declared baseUrl instead.
+    'src/helpers/plugin-inventory.mjs|const pluginHealthProbeUrl = `https://127.0.0.1:${port}`;',
   ]);
 
   test('only src/registry.mjs builds the baseUrl the router dials', () => {

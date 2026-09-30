@@ -162,6 +162,7 @@ export const RAW_HTTP_ALLOWLIST = new Map([
   ['src/helpers/view-link.mjs', 'probes the bridge /open/ route; never writes'],
   ['src/markdownify/markitdown.mjs', 'talks to a converter service, not to a vault'],
   ['scripts/bridge-fleet-update.mjs', 'deploys plugin files under .obsidian/, which REST does not serve'],
+  ['src/helpers/plugin-release-resolver.mjs', 'fetches plugin releases from allowlisted GitHub hosts, checked on every redirect hop; never talks to a vault'],
 ]);
 
 /** Directories whose sources ship, and therefore whose sources are the rule. */

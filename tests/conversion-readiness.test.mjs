@@ -34,6 +34,7 @@ import {
 import { missingMarkitdownMessage } from '../src/markdownify/markitdown.mjs';
 import { resolveMarkitdownPath } from '../src/markdownify/utils.mjs';
 import { listVaults } from '../src/tools/list-vaults.mjs';
+import { installMarkitdown, uvExecutableDir } from '../scripts/install-markitdown.mjs';
 
 const isWin = process.platform === 'win32';
 const venvRel = path.join('.venv', isWin ? 'Scripts' : 'bin', `markitdown${isWin ? '.exe' : ''}`);
@@ -388,15 +389,27 @@ describe('probeConversionToolbox — what is installed, without running anything
   });
 
   test('the PATH scan is BOUNDED — in stats AND in the string it splits', () => {
-    let calls = 0;
+    // Counted PER NAME. The probe now scans PATH for two executables —
+    // markitdown, and yt-dlp for the measured youtube state — so a single total
+    // doubled by design. The bound is a property of ONE scan, and asserting it
+    // per name keeps it as tight as before instead of loosening it to 2x.
+    const calls = { markitdown: 0, 'yt-dlp': 0, other: 0 };
     const io = {
-      statSync: () => { calls += 1; throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); },
+      statSync: (p) => {
+        const base = path.basename(String(p)).replace(/\.(exe|com)$/i, '');
+        calls[Object.hasOwn(calls, base) ? base : 'other'] += 1;
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      },
     };
     const sep = isWin ? ';' : ':';
     const huge = Array.from({ length: 5000 }, (_, i) => `/d${i}`).join(sep);
     probeConversionToolbox({ projectRoot: null, env: { PATH: huge }, fs: io });
     const perEntry = isWin ? 2 : 1; // .exe + .com on Windows
-    assert.ok(calls <= MAX_PATH_ENTRIES * perEntry, `${calls} stats for 5000 entries — not bounded`);
+    for (const name of ['markitdown', 'yt-dlp']) {
+      assert.ok(calls[name] > 0, `${name} was never looked for — the count below would be vacuous`);
+      assert.ok(calls[name] <= MAX_PATH_ENTRIES * perEntry, `${calls[name]} ${name} stats for 5000 entries — not bounded`);
+    }
+    assert.equal(calls.other, 0, 'the probe statted something that is neither of its two executables');
 
     // Counting stats alone was NOT enough: `split()` allocates every substring
     // before `slice()` discards them, so an entry cap bounds the I/O while the
@@ -541,7 +554,11 @@ describe('probeConversionToolbox — what is installed, without running anything
       assert.equal(/Remove-Item/.test(src), false, `${p} must not interpolate its own Remove-Item`);
       // …and the broken-marker branch must RETURN, not fall through into a
       // `python -m venv` that cannot replace what is already there.
-      assert.match(src, /Re-running[\s\S]{0,200}removalInstruction\(VENV_DIR\),\s*\);\s*return;/,
+      // `return` followed by at most a single-word outcome: install-markitdown
+      // now RETURNS what it did (`return 'broken-venv';`) so its behaviour can
+      // be asserted by route, install-docling still `return;`s. Either way the
+      // statement right after the advice must end the function.
+      assert.match(src, /Re-running[\s\S]{0,200}removalInstruction\(VENV_DIR\),\s*\);\s*return(?:\s+'[a-z-]+')?;/,
         `${p}: the broken-marker branch must bail`);
     }
   });
@@ -955,11 +972,15 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
     // Listing keys with `k in obj` cannot notice a REMOVED key that nobody
     // listed: `verified` was added to the code and left out of this check, so
     // deleting it again from one branch would have gone unseen.
+    // `youtube` added deliberately: the measured yt-dlp state that
+    // `toolsDegraded` is now computed from travels with it, so a reader can see
+    // WHY youtube_to_markdown is (or is not) listed there.
     const out = await listVaults(registry);
     assert.deepEqual(Object.keys(out.conversionToolbox).sort(), [
-      'available', 'hint', 'optedOut', 'path', 'toolsAffected', 'toolsDegraded', 'verified', 'via',
+      'available', 'hint', 'optedOut', 'path', 'toolsAffected', 'toolsDegraded', 'verified', 'via', 'youtube',
     ]);
     assert.equal(out.conversionToolbox.toolsAffected.length, MARKITDOWN_TOOLS.length);
+    assert.deepEqual(Object.keys(out.conversionToolbox.youtube).sort(), ['hint', 'path', 'verified', 'via', 'ytdlp']);
   });
 
   test('EVERY tier returns the same key set — a field cannot go missing on one branch', () => {
@@ -973,9 +994,13 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
       }),
       probeConversionToolbox({ projectRoot: '/r', env: { MARKITDOWN_PATH: 'x.cmd' }, fs: fsWith() }),
     ];
-    const expected = ['available', 'hint', 'optedOut', 'path', 'toolsAffected', 'toolsDegraded', 'verified', 'via'];
+    // `youtube` added deliberately — see the list_vaults shape test above. The
+    // throwing-getter branch is included so the catch-all shape is held too.
+    results.push(probeConversionToolbox({ get env() { throw new TypeError('boom'); } }));
+    const expected = ['available', 'hint', 'optedOut', 'path', 'toolsAffected', 'toolsDegraded', 'verified', 'via', 'youtube'];
     for (const [i, r] of results.entries()) {
       assert.deepEqual(Object.keys(r).sort(), expected, `branch ${i} has a different shape`);
+      assert.deepEqual(Object.keys(r.youtube).sort(), ['hint', 'path', 'verified', 'via', 'ytdlp'], `branch ${i}: youtube shape`);
     }
   });
 
@@ -1192,5 +1217,209 @@ describe('command / skill parity — the rule must not live in one of the two', 
       assert.equal(/10 tools dormant|Ten of the fifty tools/.test(text), false, `${p} still inflates the count`);
       assert.equal(/still works through its yt-dlp fallback/.test(text), false, `${p} over-promises yt-dlp`);
     }
+  });
+});
+
+describe('install-markitdown — the no-admin route (behaviour, not source text)', () => {
+  const exe = (n) => `${n}${isWin ? '.exe' : ''}`;
+  const HOME = path.resolve('/home/u');
+  const uvBin = path.join(HOME, '.local', 'bin');
+  const VENV = path.resolve('/r/.venv');
+  const venvPip = path.join(VENV, isWin ? 'Scripts' : 'bin', exe('pip'));
+  const PY_OK = async () => ({ ok: true, cmd: 'python3', version: '3.12', rejected: [], checked: true });
+  const ENSUREPIP_STDERR = 'The virtual environment was not created successfully because ensurepip is not\n'
+    + 'available.  On Debian/Ubuntu systems, you need to install the python3-venv\n'
+    + 'package using the following command.\n\n    apt install python3.12-venv\n';
+
+  /** A filesystem where `files` are runnable files; `onRun` may add more. */
+  function harness({ files = [], env = {}, runPlan = {} } = {}) {
+    const present = new Set(files.map(String));
+    const io = {
+      statSync: (p) => {
+        if (!present.has(String(p))) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        return { isFile: () => true, mode: 0o755 };
+      },
+      existsSync: (p) => present.has(String(p)),
+    };
+    const calls = [];
+    const out = { log: [], warn: [] };
+    const run = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      const plan = runPlan[args[0] === '-m' ? 'venv' : args[0] === 'tool' ? 'uv' : 'pip'];
+      if (plan?.creates) plan.creates.forEach((f) => present.add(String(f)));
+      if (plan?.fail) throw Object.assign(new Error(`${cmd} exited with code 1`), { exitCode: 1, stderr: plan.fail });
+      return { stderr: '' };
+    };
+    const deps = {
+      env: { HOME, USERPROFILE: HOME, PATH: '/nope', ...env },
+      venvDir: VENV,
+      isWin,
+      fs: io,
+      run,
+      findPython: PY_OK,
+      log: (m) => out.log.push(m),
+      warn: (m) => out.warn.push(m),
+    };
+    return { deps, calls, out, present };
+  }
+
+  test('ensurepip missing + uv on PATH → `uv tool install "markitdown[all]"`, and where it landed', async () => {
+    const uv = path.join('/tools', exe('uv'));
+    const md = path.join(uvBin, exe('markitdown'));
+    const h = harness({
+      files: [uv],
+      env: { PATH: '/tools' },
+      runPlan: { venv: { fail: ENSUREPIP_STDERR }, uv: { creates: [md] } },
+    });
+    const outcome = await installMarkitdown(h.deps);
+    assert.equal(outcome, 'installed-uv');
+    assert.deepEqual(h.calls[1], [uv, 'tool', 'install', 'markitdown[all]']);
+    assert.equal(h.calls.length, 2, 'venv attempt, then uv — nothing else');
+    assert.ok(h.out.log.some((l) => l.includes(md)), 'must say where markitdown landed');
+    // Not on PATH here (PATH is /tools only), so the router needs MARKITDOWN_PATH.
+    assert.ok(h.out.warn.some((l) => l.includes(`MARKITDOWN_PATH=${md}`)), h.out.warn.join('\n'));
+  });
+
+  test('uv installed by its standalone installer but not yet on PATH is still found', async () => {
+    const uv = path.join(uvBin, exe('uv'));
+    const md = path.join(uvBin, exe('markitdown'));
+    const h = harness({ files: [uv], runPlan: { venv: { fail: ENSUREPIP_STDERR }, uv: { creates: [md] } } });
+    assert.equal(await installMarkitdown(h.deps), 'installed-uv');
+    assert.equal(h.calls[1][0], uv);
+  });
+
+  test('ensurepip missing + NO uv → the no-admin way to get uv, and nothing downloaded or run', async () => {
+    const h = harness({ runPlan: { venv: { fail: ENSUREPIP_STDERR } } });
+    assert.equal(await installMarkitdown(h.deps), 'no-uv');
+    assert.equal(h.calls.length, 1, 'only the venv attempt — the installer never runs anything else');
+    const w = h.out.warn.join('\n');
+    assert.match(w, /astral\.sh\/uv\/install\.(sh|ps1)/);
+    assert.match(w, /no admin rights/);
+    assert.match(w, /uv tool install "markitdown\[all\]"/);
+    assert.equal(/pipx/.test(w), false, 'pipx is not suggested when it is not here');
+  });
+
+  test('pipx is kept as a SECONDARY suggestion when — and only when — it is present', async () => {
+    const pipx = path.join('/tools', exe('pipx'));
+    const h = harness({ files: [pipx], env: { PATH: '/tools' }, runPlan: { venv: { fail: ENSUREPIP_STDERR } } });
+    assert.equal(await installMarkitdown(h.deps), 'no-uv');
+    const w = h.out.warn.join('\n');
+    assert.ok(w.indexOf('uv tool install') < w.indexOf('pipx install'), 'uv first, pipx second');
+    assert.ok(w.includes(pipx));
+  });
+
+  test('a venv created WITHOUT pip takes the same uv route', async () => {
+    const uv = path.join('/tools', exe('uv'));
+    const h = harness({ files: [uv], env: { PATH: '/tools' } }); // venv "succeeds", no pip appears
+    assert.equal(await installMarkitdown(h.deps), 'installed-uv');
+    assert.deepEqual(h.calls[1], [uv, 'tool', 'install', 'markitdown[all]']);
+  });
+
+  test('any OTHER venv failure is not mistaken for the ensurepip case', async () => {
+    const uv = path.join('/tools', exe('uv'));
+    const h = harness({ files: [uv], env: { PATH: '/tools' }, runPlan: { venv: { fail: 'Error: [Errno 28] No space left on device' } } });
+    assert.equal(await installMarkitdown(h.deps), 'venv-failed');
+    assert.equal(h.calls.length, 1, 'uv is suggested, not run, for a failure it cannot fix');
+    assert.match(h.out.warn.join('\n'), /uv tool install "markitdown\[all\]"/);
+  });
+
+  test('the ordinary route still works: venv + pip install', async () => {
+    const h = harness({ runPlan: { venv: { creates: [venvPip] } } });
+    assert.equal(await installMarkitdown(h.deps), 'installed-venv');
+    assert.deepEqual(h.calls[1], [venvPip, 'install', '--quiet', '--disable-pip-version-check', 'markitdown[all]>=0.1.5']);
+  });
+
+  test('the opt-out runs nothing', async () => {
+    const h = harness({ env: { OBSIDIAN_ROUTER_SKIP_MARKITDOWN: '1' } });
+    assert.equal(await installMarkitdown(h.deps), 'skipped');
+    assert.equal(h.calls.length, 0);
+  });
+
+  test('uvExecutableDir follows uv\'s documented precedence', () => {
+    assert.equal(uvExecutableDir({ UV_TOOL_BIN_DIR: '/a', XDG_BIN_HOME: '/b', HOME: '/h' }, false), '/a');
+    assert.equal(uvExecutableDir({ XDG_BIN_HOME: '/b', XDG_DATA_HOME: '/d/share', HOME: '/h' }, false), '/b');
+    assert.equal(uvExecutableDir({ XDG_DATA_HOME: '/d/share', HOME: '/h' }, false), path.join('/d/share', '..', 'bin'));
+    assert.equal(uvExecutableDir({ HOME: '/h' }, false), path.join('/h', '.local', 'bin'));
+    assert.equal(uvExecutableDir({ USERPROFILE: 'C:/U', HOME: '/h' }, true), path.join('C:/U', '.local', 'bin'));
+  });
+});
+
+describe('toolsDegraded is MEASURED — youtube_to_markdown is degraded iff yt-dlp is not found', () => {
+  const sep = isWin ? ';' : ':';
+  const ytOnPath = path.join('/ytbin', `yt-dlp${isWin ? '.exe' : ''}`);
+  const venv = path.join('/root', venvRel);
+  const YT = 'youtube_to_markdown';
+
+  test('yt-dlp on PATH → not degraded, and the path is reported', () => {
+    const r = probeConversionToolbox({ projectRoot: '/r', env: { PATH: ['/nope', '/ytbin'].join(sep) }, fs: fsWith(ytOnPath) });
+    assert.equal(r.youtube.ytdlp, 'found');
+    assert.equal(r.youtube.via, 'path');
+    assert.equal(r.youtube.path, ytOnPath);
+    assert.equal(r.youtube.verified, true);
+    assert.equal(r.youtube.hint, null);
+    assert.deepEqual(r.toolsDegraded, []);
+    // markitdown is still missing here, so the hint exists — and it must not
+    // tell someone whose yt-dlp is installed that youtube depends on installing it.
+    assert.equal(r.available, false);
+    assert.match(r.hint, /yt-dlp was found/);
+    assert.equal(/not found either/.test(r.hint), false);
+  });
+
+  test('yt-dlp absent → degraded, with the install advice in youtube.hint', () => {
+    const r = probeConversionToolbox({ projectRoot: '/r', env: { PATH: '/nope' }, fs: fsWith() });
+    assert.equal(r.youtube.ytdlp, 'missing');
+    assert.deepEqual(r.toolsDegraded, [YT]);
+    assert.match(r.youtube.hint, /yt-dlp\[default,curl-cffi\]/);
+    assert.match(r.youtube.hint, /uv tool install/);
+    assert.match(r.hint, /only if yt-dlp is installed/);
+    assert.match(r.hint, /not found either/);
+  });
+
+  test('independent of markitdown: a working venv does NOT make youtube healthy, nor a missing one sick', () => {
+    const withVenv = probeConversionToolbox({ projectRoot: '/root', env: { PATH: '/nope' }, fs: fsWith(venv) });
+    assert.equal(withVenv.available, true);
+    assert.deepEqual(withVenv.toolsDegraded, [YT], 'markitdown never yields the transcript on this path');
+    const both = probeConversionToolbox({ projectRoot: '/root', env: { PATH: '/ytbin' }, fs: fsWith(venv, ytOnPath) });
+    assert.equal(both.available, true);
+    assert.deepEqual(both.toolsDegraded, []);
+  });
+
+  test('YTDLP_PATH is honoured through the runtime resolver, and verified when it is a path', () => {
+    const exe = path.resolve('/opt/yt', `yt-dlp${isWin ? '.exe' : ''}`);
+    const good = probeConversionToolbox({ projectRoot: '/r', env: { YTDLP_PATH: exe, PATH: '/nope' }, fs: fsWith(exe) });
+    assert.equal(good.youtube.ytdlp, 'found');
+    assert.equal(good.youtube.via, 'env-override');
+    assert.equal(good.youtube.verified, true);
+    assert.deepEqual(good.toolsDegraded, []);
+
+    // An override pointing at nothing MASKS a PATH install, exactly as the
+    // runtime does (resolveYtdlpPath never falls back) — so it must be missing.
+    const bad = probeConversionToolbox({ projectRoot: '/r', env: { YTDLP_PATH: exe, PATH: '/ytbin' }, fs: fsWith(ytOnPath) });
+    assert.equal(bad.youtube.ytdlp, 'missing');
+    assert.deepEqual(bad.toolsDegraded, [YT]);
+    assert.match(bad.youtube.hint, /YTDLP_PATH is set to/);
+
+    // A bare name is delegated to execFile's PATH search: taken on the user's word.
+    const bare = probeConversionToolbox({ projectRoot: '/r', env: { YTDLP_PATH: 'yt-dlp', PATH: '/nope' }, fs: fsWith() });
+    assert.equal(bare.youtube.ytdlp, 'found');
+    assert.equal(bare.youtube.verified, false);
+    assert.match(conversionHint('/r', { youtube: bare.youtube }), /not checked/);
+  });
+
+  test('Windows: a .cmd YTDLP_PATH is never "found" — Node refuses to spawn it', { skip: !isWin && 'the name rule is Windows-only' }, () => {
+    const r = probeConversionToolbox({ projectRoot: '/r', env: { YTDLP_PATH: 'C:/t/yt-dlp.cmd' }, fs: fsWith('C:/t/yt-dlp.cmd') });
+    assert.equal(r.youtube.ytdlp, 'missing');
+    assert.deepEqual(r.toolsDegraded, [YT]);
+  });
+
+  test('a probe that cannot run says "unknown" and keeps youtube listed as degraded', () => {
+    const r = probeConversionToolbox({ get env() { throw new TypeError('boom'); } });
+    assert.equal(r.youtube.ytdlp, 'unknown');
+    assert.deepEqual(r.toolsDegraded, [YT]);
+  });
+
+  test('findExecutableOnPath is the SAME bounded scan, for any name', () => {
+    assert.equal(readiness.findExecutableOnPath('yt-dlp', { env: { PATH: '/ytbin' }, fs: fsWith(ytOnPath) }), ytOnPath);
+    assert.equal(readiness.findExecutableOnPath('uv', { env: { PATH: '/ytbin' }, fs: fsWith(ytOnPath) }), null);
   });
 });

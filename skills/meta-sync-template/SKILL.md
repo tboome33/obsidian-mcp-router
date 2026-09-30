@@ -15,15 +15,16 @@ Interactive bulk propagation of the reference vault (typically `.template`) to o
 
 From `referenceVault` to each target vault:
 
-- **Plugin folders**: `.obsidian/plugins/<plugin-id>/` — full directory copy when the plugin is missing from the target, or a re-clone with `--force` that preserves the target's local `data.json`
-- **Plugin enablement**: `community-plugins.json` entries appended for newly synced plugins
+- **Plugin folders**: `.obsidian/plugins/<plugin-id>/` — full directory copy when the plugin is missing from the target, or a re-clone with `--force` that preserves the target's local `data.json`. A source folder may hold CODE (`main.js` + `manifest.json`) or only a settings pre-seed (`data.json`); the report tells them apart (see step 7).
+- **Plugin enablement**: `community-plugins.json` entries appended for every plugin copied for the first time — code or settings only — so a plugin switches on as soon as its code arrives. Those ids are listed on purpose and are **not** counted as synced.
 - **CSS snippets**: `.obsidian/snippets/*.css` + enabled in `appearance.json` (idempotent)
-- **Root docs**: `README.md`, `quick-reference-*.pdf`, `.claude/` (preserved if already present unless `--force`)
-- **Smart Connections** — **first-time only**: `.smart-env/smart_env.json` + embedding-model cache are cloned only when the target's `.smart-env/` directory is entirely missing (`scripts/setup-vault.mjs:853-856`, passes `force: false`). On an already-bootstrapped target, **`--sync-plugins --force` does NOT refresh `.smart-env`**. To push an updated Smart Connections config to an existing target, delete the target's `.smart-env/smart_env.json` before re-running, or re-bootstrap the vault.
+- **Root docs**: `README.md`, `Documentation/`, `.claude/` (preserved if already present unless `--force`). When the source is the **shipped skeleton** (the bundled `templates/reference-vault-skeleton`, or the one `--sync-from-github` extracts), its `README.md` is never copied — it documents the skeleton, not the vault.
+- **Smart Connections** — **first-time only**: `.smart-env/smart_env.json` + embedding-model cache are cloned only when the target's `.smart-env/` directory is entirely missing (`planSmartEnv()` / `syncPluginsMode()` in `scripts/setup-vault.mjs`, `force: false`). On an already-bootstrapped target, **`--sync-plugins --force` does NOT refresh `.smart-env`**, and `--lang` does not rewrite it either. To push an updated Smart Connections config to an existing target, delete the target's `.smart-env/smart_env.json` before re-running, or re-bootstrap the vault.
+- **Embedding model by language** — `--lang <code>` (on `--sync-plugins` and `--sync-all`) picks the model of the `.smart-env` the sync creates: `en` keeps `TaylorAI/bge-micro-v2`, any other language gets the multilingual `onnx-community/embeddinggemma-300m-ONNX` (`zh`: `Xenova/jina-embeddings-v2-base-zh`), and `language` is set to match. Without `--lang`, a language the vault already declares is used (the `bilingual` convention in its CLAUDE.md → `fr`, or `language` in Smart Connections' settings); otherwise the source's model is kept and a one-line hint says to pass `--lang` for a non-English vault. The keys come from Smart Connections' own adapter table — see `src/helpers/smart-env-language.mjs`.
 
 What it does **NOT** touch (intentional, per-vault):
 
-- The target's existing `obsidian-local-rest-api/data.json` (port + API key) — preserved across re-clones via `setup-vault.mjs:835-842`. For targets that don't have the plugin yet, the script refuses the copy entirely rather than importing the reference's `data.json` — see "Pre-flight info" in step 4.
+- The target's existing `obsidian-local-rest-api/data.json` (port + API key) — preserved across re-clones by `recloneVaultPluginPreservingConfig()` in `scripts/setup-vault.mjs`. For targets that don't have the plugin yet, the script refuses the copy entirely rather than importing the reference's `data.json` — see "Pre-flight info" in step 4.
 - `.smart-env/event_logs`, `smart_contexts/`, `smart_components/`, `multi/` (vault-specific runtime cache, not config)
 - The vault's actual notes
 
@@ -148,7 +149,11 @@ It prints a per-vault summary line then a final `Done. N synced, M skipped, K fa
 ```bash
 node scripts/setup-vault.mjs "<vault-path>" --sync-plugins
 node scripts/setup-vault.mjs "<vault-path>" --sync-plugins --force
+node scripts/setup-vault.mjs "<vault-path>" --sync-plugins --lang fr      # non-English vault, fresh .smart-env
+node scripts/setup-vault.mjs "<vault-path>" --sync-plugins --dry-run      # per-plugin plan, nothing written
 ```
+
+`--dry-run` prints, per plugin, `copy [code]` / `copy [settings only — code still to install]` with the files, `skip — already present`, `skip — target version is newer`, `deferred — credentialed plugin`, then `will enable: …`, `enabled but still without code afterwards: …`, the `.smart-env` model/language and the root docs. Offer it when the user wants to see before writing. Add `--container` when Obsidian runs in a container (e.g. linuxserver/obsidian) so the checklist gives the container reload.
 
 Track results from exit codes (0 = ok, including the "Refused first-time copy of credentialed plugin" warning case — the script exits 0 because the rest of the sync completed successfully). Aggregate ok/failed at the end for the user. If a mid-loop call exits non-zero with `--force`, stop and list the remaining untouched vaults so the user can re-run after diagnosing.
 
@@ -159,17 +164,23 @@ Track results from exit codes (0 = ok, including the "Refused first-time copy of
 
 ### 7. Report
 
-Echo the script's output to the user verbatim (it's already well-formatted). At the end, add:
+Echo the script's output to the user verbatim (it's already well-formatted). Per vault it reports plugins in three buckets — relay them as such, and **never call a plugin installed unless it is in the first one**:
 
-- **All synced**: ✅ N vault(s) updated from `<referenceVault>`. Vaults that were open in Obsidian during the sync need a **reload** (Ctrl+R / Cmd+R) to see new plugins.
+- `Code installed for N plugin(s)` — `main.js` + `manifest.json` are in the target after the copy.
+- `Settings only for N plugin(s) — code still to install` — only the settings pre-seed arrived.
+- `Enabled without code — N plugin(s)` — listed in the target's `community-plugins.json` (or enabled by the source) with no `main.js`, including ids the source enables and never ships. Listed on purpose, **not** counted as synced. Missing marketplace plugins come with the manual steps (Settings → Community plugins → Browse → Install → Enable) and the one-command alternative `obsidian-mcp-router --install-plugins "<vault>"`; GitHub-only ones (the bridge) are BRAT's job.
+
+After a vault that changed, the script prints `Next steps in Obsidian for <vault>` — relay it in order: reload Obsidian (desktop: Ctrl+P → "Reload app without saving"; container: the same palette command in the web UI, or `docker compose restart <service>`), turn off Restricted mode, check the plugins with code are enabled, run BRAT "Check for updates" (`obsidian42-brat:checkForUpdatesAndUpdate`) so it installs the bridge, install the missing marketplace plugins, then verify with `obsidian-mcp-router --plugin-health "<vault>"`.
+
+At the end, add:
+
+- **All ran**: ✅ N vault(s) processed from `<referenceVault>` (the `Done. N synced…` count is vaults, not plugins), with the per-vault bucket counts.
 - **Some failed**: list the failures with the per-vault error, then suggest re-running with `--force` for those specifically.
-
-If a vault is currently online (Obsidian was running) and a plugin was added, mention that the plugin will not appear in Obsidian until reload OR until the user toggles "Restricted mode" / "Community plugins" off-then-on.
 
 ## Don't
 
 - Don't pass `--force` silently. Ask once in step 5.
-- Don't try to update `data.json` (port + API key). That's per-vault state — for vaults that already have the plugin, the script preserves their own data.json across re-clones (`setup-vault.mjs:835-842`); for vaults missing the plugin, the script refuses to copy it at all and asks the user to bootstrap them first.
+- Don't try to update `data.json` (port + API key). That's per-vault state — for vaults that already have the plugin, the script preserves their own data.json across re-clones (`recloneVaultPluginPreservingConfig()`); for vaults missing the plugin, the script refuses to copy it at all and asks the user to bootstrap them first.
 - Don't gate on online status. Sync works offline; the status column in the picker is informational only.
 - Don't write to the router config file. This skill is **execution-only** — config edits live in `meta-attach-vault` / manual edits.
 - Don't try to bypass the script's safety refusals (e.g. by manually copying plugin folders to "fix" a REST-less vault). The script refuses these for a reason — bootstrap the target via plain `setup-vault.mjs "<path>"` first, then re-run the sync.
@@ -182,7 +193,7 @@ If a vault is currently online (Obsidian was running) and a plugin was added, me
 | `Sync source not found` (formerly `No reference vault configured`) | `config.json` has empty `referenceVault`, or its path no longer exists on disk | Run `node scripts/setup-vault.mjs --init-reference "<path>"` and pick a vault to be the template source |
 | Per-vault: `skip (path missing)` | The target path in `portRegistry` no longer exists on disk (vault moved/deleted) | Edit the router config (`$HOME/.claude/obsidian-mcp-router/config.json` or `$env:USERPROFILE\.claude\obsidian-mcp-router\config.json` on Windows) to remove the dead entry, OR move the vault back |
 | Per-vault: `skip (no .obsidian)` | The path exists but is not an Obsidian vault | Same as above — clean up the registry |
-| Plugin appears in `community-plugins.json` but not in Obsidian | Obsidian was open during sync, hasn't reloaded | User: Ctrl+R on the target vault, or close + reopen |
+| Plugin appears in `community-plugins.json` but not in Obsidian | Obsidian hasn't reloaded, Restricted mode is on, or the plugin has no code yet (reported under `Enabled without code`) | Follow the printed checklist: reload, Restricted mode off, BRAT "Check for updates" / `--install-plugins`, then `--plugin-health` |
 | User wants to roll back | The sync overwrote a plugin folder they had customized | The reference vault is now the source of truth — if customizations matter, port them back into `.template` then re-sync |
 
 ## Companion skills

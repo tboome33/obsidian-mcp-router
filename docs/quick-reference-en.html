@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— quick reference</span></h1>
-  <div class="meta">v0.95.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (54 slash commands · 54 MCP tools · 49 skills)<br>
+  <div class="meta">v0.95.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (54 slash commands · 55 MCP tools · 49 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -405,7 +405,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
 
 <div class="page-break"></div>
 
-<h2>The 54 MCP tools <span class="count">— what Claude actually calls under the hood</span></h2>
+<h2>The 55 MCP tools <span class="count">— what Claude actually calls under the hood</span></h2>
 
 <table class="config">
   <tr>
@@ -419,6 +419,10 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
   <tr>
     <td>write_file · append_to_file · patch_file · delete_file · set_frontmatter · merge_frontmatter · move_file</td>
     <td><strong>Writes &amp; file management.</strong> Create/replace; append; surgical patch by heading/block/frontmatter; guarded delete (<code>confirm: true</code>); one or many frontmatter keys; move/rename. <strong><code>ifMatch</code></strong>: replay <code>get_file</code>'s <code>contentSha256</code> and the write is refused (409) if the file changed since you read it — atomic with bridge ≥ 0.7.0, checked fallback otherwise.</td>
+  </tr>
+  <tr>
+    <td>install_conventions</td>
+    <td><strong>Conventions.</strong> Install library conventions into the vault's conventions file by id, in ONE compare-and-swap write — texts read from the package, never pasted; present ones skipped; file read back and <code>verified</code>. <code>dryRun</code> (<code>ids: []</code>) returns the library and what the file holds — the pickers' state.</td>
   </tr>
   <tr>
     <td>execute_template</td>
