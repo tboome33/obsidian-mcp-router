@@ -169,25 +169,33 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
-<h2>Le router en 30 secondes</h2>
+<h2>À quoi ça sert, en une minute</h2>
 
-<p>Un seul process MCP qui connaît <strong>tous tes vaults Obsidian</strong> (locaux + distants). Chaque outil prend un paramètre <code>vault</code> (ou utilise le défaut). Plus besoin d'enregistrer un serveur MCP par vault.</p>
+<p><strong>Le problème.</strong> Vous prenez vos notes dans <strong>Obsidian</strong> (un éditeur de notes en fichiers Markdown, rangés dans des dossiers appelés <em>vaults</em>). Vous travaillez avec <strong>Claude Code</strong> (l'assistant de programmation d'Anthropic, en ligne de commande ou dans l'application de bureau). Vous voudriez que Claude lise vos notes, en écrive, cherche dedans — dans <em>tous</em> vos vaults, pas un seul — sans lui donner un accès brut à votre disque et sans configurer un serveur par vault.</p>
 
-<ul>
-  <li><strong>Pourquoi HTTP plutôt que le filesystem</strong> : le router parle à un Obsidian <em>vivant</em> via sa propre API REST — jamais au markdown brut sur disque. Ça donne accès à ce que seule l'appli qui tourne peut produire (les embeddings de Smart Connections pour <code>search_smart</code>, le rendu réel de Templater pour <code>execute_template</code>, <code>workspace.openLinkText</code> pour le click-to-open), et une écriture passe par le pipeline de changement d'Obsidian lui-même au lieu de courir contre un humain qui édite le même fichier en direct. Le même appel HTTP atteint un vault sur un NAS ou derrière un tunnel WireGuard exactement comme un vault local — l'accès filesystem ne peut pas ça sans un montage réseau. Le prix : Obsidian doit tourner, avec un port + une clé API par vault à suivre (un outil filesystem-direct comme claude-obsidian s'en passe, au prix de toutes les capacités ci-dessus qui dépendent de l'appli qui tourne)</li>
-  <li><strong>Le plugin Claude Code embarque et lance le serveur</strong> — une installation = tout, une mise à jour = tout. Le serveur est déclaré dans le <code>.mcp.json</code> racine du plugin via <code>${CLAUDE_PLUGIN_ROOT}</code> ; <code>node_modules</code> auto-réparés au premier lancement. L'entrée manuelle <code>~/.claude.json</code> reste le parcours dev (Claude Desktop a son propre fichier, <code>claude_desktop_config.json</code>)</li>
-  <li><strong>Vaults locaux + distants</strong> traités à l'identique — URL + clé API dans la config, terminé</li>
-  <li><strong>Liaison workspace→vault</strong> (v0.90.0) : quel vault ouvre un dépôt cloné n'est plus décidé par son propre <code>.env</code> — c'est une liaison confirmée une fois par machine, dans <em>ton</em> <code>config.json</code> (<code>confirm_workspace_binding</code>, ou <code>setup-vault --attach</code>). Le <code>.env</code> d'un projet ne peut plus que <strong>proposer</strong> un vault ; le briefing de début de session dit à quoi ce workspace est rattaché et comment en changer</li>
-  <li><strong>Cross-vault</strong> : <code>vault: "*"</code> fan-out automatique sur tous les vaults</li>
-  <li><strong>Mode lock</strong> : restreint la session à un seul vault (sécurité, focus) · <strong>Auto-enrichissement</strong> : Claude propose des saves wiki à 3 moments naturels, 4 modes (<code>ClaudeAsk</code> / <code>Hybrid</code> / <code>FullAuto</code> / <code>off</code>)</li>
-  <li><strong>Boîte à outils de conversion</strong> : PDF / DOCX / XLSX / PPTX / image (OCR) / audio / YouTube / page web / dépôt git → markdown — backend <strong>MarkItDown opt-in</strong> (<code>npm run install-markitdown</code> ; les outils restent listés et renvoient un hint d'installation si le backend manque) ; <strong>Docling</strong> second opt-in (<code>npm run install-docling</code>) pour le PDF haute fidélité + <code>pdf_to_images</code> (le modèle <em>voit</em> une page de PDF) ; <strong>filtre de pertinence BM25</strong> qui retire les blocs hors-sujet avant synthèse</li>
-  <li><strong>Knowledge graph</strong> : graphe JSON typé + parcours de lecture + voisines + plus court chemin de liens ; export en <code>llms.txt</code> ou <strong>bundle OKF</strong> (Open Knowledge Format v0.1 de Google, avec l'un des premiers validateurs de l'écosystème)</li>
-  <li><strong>Analyse du wiki</strong> : <code>find_boundary_pages</code> classe les pages « frontière » (très liées, presque vides — celles qui valent d'être écrites) ; <code>find_twin_pages</code> repère les paires quasi-jumelles par cosinus sur les vecteurs Smart Connections, avec un seuil dérivé de la distribution propre à <em>votre</em> vault — et marche aussi sur les vaults distants (bridge ≥ 0.9.0)</li>
-  <li><strong>Click-to-open</strong> : liens cliquables dans le chat via la route <code>GET /open/&lt;path&gt;</code> du bridge ; <code>open_in_obsidian</code> fait pareil côté serveur (sans navigateur — idéal Claude Desktop). Le lien survit à la perte du disque du vault (<code>insecurePort</code> déclarable en config, exporté seulement sur <code>--with-click-to-open</code> explicite), et l'auto-test <code>GET /ping?v=&lt;vault&gt;</code> prouve en un clic <em>quel</em> vault répond sur un port</li>
-  <li><strong>Wizard de création de vault</strong> : <code>plan_vault</code> → ajustements → <code>provision_vault</code>, défauts d'abord (happy path = 1 interaction)</li>
-  <li><strong>Mode multi-tenant</strong> (opt-in) : scoper une instance par variables d'env — whitelist de vaults, lecture seule, audit d'écriture par utilisateur — pour les déploiements MCPHub/proxy</li>
-  <li><strong>11 hooks</strong> — 3 actifs d'office pour tout installeur du plugin (<code>hot-cache-load</code> + <code>decisions-recall</code> + <code>workspace-briefing</code>, via <code>hooks/hooks.json</code>) ; les 8 autres opt-in, auto-câblés en fin de bootstrap <code>setup-vault</code> (<code>--no-hooks</code> pour s'en passer) ou via <code>node scripts/setup-vault.mjs --install-hooks</code> : auto-journal de session, garde du hot-cache, autocommit wiki, linter de liens, détecteur de dérive doc, check de mise à jour…</li>
-</ul>
+<p><strong>La réponse.</strong> <code>obsidian-mcp-router</code> est un <strong>serveur MCP</strong> — MCP (<em>Model Context Protocol</em>) est le standard par lequel un assistant comme Claude appelle des « outils » extérieurs. Ce serveur expose 56 outils (lire une note, écrire, chercher, convertir un PDF, construire un graphe des liens…) et <strong>route</strong> chaque appel vers le bon vault : d'où le nom. Il parle à Obsidian par son API HTTP (le plugin communautaire <em>Local REST API</em>), jamais en lisant les fichiers directement. Il est livré sous forme de <strong>plugin Claude Code</strong> qui l'installe et le lance : une installation, tout est là.</p>
+
+<p><strong>Ce que vous en faites concrètement.</strong> Vous dites « trouve mes notes sur X », « sauvegarde cette conversation dans le wiki », « convertis ce PDF en note », « par où je commence dans ce vault ? » — et Claude enchaîne les bons outils. Le dépôt fournit aussi une méthode de <strong>wiki personnel tenu par l'assistant</strong> (à la manière décrite par Andrej Karpathy : un catalogue, un journal, un cache « chaud » des faits récents, des pages typées) et les commandes pour l'entretenir.</p>
+
+<h2>Le vocabulaire, pour lire la suite</h2>
+
+<table class="config">
+  <tr><td>Vault</td><td>Un dossier de notes Markdown ouvert dans Obsidian. Le routeur en connaît plusieurs, <strong>locaux</strong> (sur ce PC) ou <strong>distants</strong> (un Obsidian qui tourne ailleurs, joignable par le réseau). Chaque outil prend un paramètre <code>vault</code> ; sans lui, c'est le vault <em>par défaut</em> du workspace courant.</td></tr>
+  <tr><td>Serveur MCP</td><td>Le programme Node.js de ce dépôt (<code>bin/obsidian-mcp-router.mjs</code>). Claude Code le lance et lui parle sur son entrée/sortie standard (« stdio »). C'est lui qui porte les 56 outils.</td></tr>
+  <tr><td>Outil MCP</td><td>Une fonction que Claude peut appeler avec des arguments JSON (<code>get_file</code>, <code>write_file</code>, <code>search_smart</code>…). La liste complète est en dernière page.</td></tr>
+  <tr><td>Plugin Claude Code (<code>obsidian-router</code>)</td><td>Le paquet installé dans Claude Code depuis le marketplace du dépôt. Il contient le serveur MCP <em>et</em> ce qui apprend à Claude à s'en servir : 54 <strong>slash commands</strong>, 49 <strong>skills</strong>, 2 sous-agents, 11 <strong>hooks</strong>.</td></tr>
+  <tr><td>Slash command</td><td>Une commande que vous tapez dans Claude Code (<code>/obsidian-router:meta-status</code>), ou que Claude reconnaît dans une phrase en français ou en anglais (« diagnostique le router »). Chacune est une procédure écrite pour Claude, qui appelle un ou plusieurs outils.</td></tr>
+  <tr><td>Skill</td><td>La page de savoir-faire derrière une commande (<code>skills/&lt;nom&gt;/SKILL.md</code>) : la procédure détaillée, les pièges connus, les refus. Claude la charge quand la tâche s'y prête.</td></tr>
+  <tr><td>Hook</td><td>Un petit script que Claude Code exécute à un moment précis (au démarrage d'une session, à chaque message…). Le plugin en active 3 d'office : charger le cache chaud du vault, rappeler les décisions déjà prises, dire à quel vault ce workspace est rattaché.</td></tr>
+  <tr><td>Local REST API</td><td>Le plugin Obsidian (communautaire) qui ouvre une API HTTP sur chaque vault, avec un port et une clé. <strong>Obligatoire</strong> dans chaque vault : tout ce que le routeur lit ou écrit passe par lui.</td></tr>
+  <tr><td>Bridge (<code>mcp-router-bridge</code>)</td><td>Un second plugin Obsidian, écrit pour ce projet, qui ajoute à cette API ce qu'elle n'a pas : la recherche sémantique, l'exécution des templates, l'ouverture d'une note d'un clic, les écritures atomiques. <strong>Optionnel</strong> : sans lui, lire, écrire et chercher du texte marchent toujours.</td></tr>
+  <tr><td>Workspace</td><td>Le dossier dans lequel vous avez ouvert Claude Code (souvent un dépôt de code). Le routeur <strong>lie</strong> chaque workspace à un vault principal, éventuellement à des secondaires : c'est ce qui décide où atterrit une écriture faite sans nommer de vault.</td></tr>
+  <tr><td><code>config.json</code></td><td><code>~/.claude/obsidian-mcp-router/config.json</code> : la liste de vos vaults (chemin, port, clé), les vaults distants, les liaisons de workspaces. C'est <em>votre</em> fichier, sur votre machine — jamais dans un dépôt.</td></tr>
+  <tr><td>Wiki, <code>wiki-meta/</code></td><td>La structure de notes que les commandes <code>wiki-*</code> entretiennent dans un vault : les pages sous <code>wiki/</code>, et sous <code>wiki-meta/</code> quatre fichiers d'échafaudage — <code>catalog.md</code> (l'index), <code>journal.md</code> (l'historique), <code>hot.md</code> (le cache des faits récents, réécrit, jamais empilé), <code>overview.md</code> (la vue d'ensemble).</td></tr>
+  <tr><td>Conventions</td><td>Des sections du fichier <code>CLAUDE.md</code> d'un vault qui disent à Claude comment écrire <em>dans ce vault</em> (langues, provenance des sources, structure des titres…). Installables à l'unité depuis une bibliothèque de 14 snippets.</td></tr>
+  <tr><td>Smart Connections, Templater</td><td>Deux plugins Obsidian tiers. Le premier calcule des <em>embeddings</em> (des vecteurs qui rapprochent les notes par sens) : le routeur s'en sert pour la recherche sémantique et la détection de pages jumelles. Le second exécute des modèles de notes.</td></tr>
+  <tr><td>OKF</td><td><em>Open Knowledge Format</em> (v0.1, Google) : un format d'échange de bases de notes. Le routeur exporte un wiki en bundle OKF, valide un bundle, et génère la navigation OKF (index par dossier) dans le vault.</td></tr>
+</table>
 
 <h2>Comment les briques s'emboîtent <span class="count">— la chaîne de dépendances</span></h2>
 
@@ -197,77 +205,100 @@ SERVEUR MCP (obsidian-mcp-router) — process Node sur le PC
     ↑ MCP sur stdio, spawné par Claude Code
 PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre>
 
-<p><strong>Bridge</strong> — tourne <em>dans</em> Obsidian ; il greffe ses routes (<code>/search/smart</code>, <code>/templates/execute</code>, <code>/open/*</code>, <code>/ping</code>, <code>PUT /vault-cas/*</code> ≥ 0.7.0 — écritures <code>ifMatch</code> atomiques —, <code>GET /smart-env/sources</code> ≥ 0.9.0 — sert le magasin de vecteurs Smart Connections, un dot-répertoire que l'API REST refuse elle-même de servir, ce qui rend <code>find_twin_pages</code> possible sur un vault distant) sur le serveur HTTP de Local REST API. <strong>Optionnel</strong> : requis pour <code>search_smart</code>, <code>execute_template</code>/Templater, les liens click-to-open, les écritures conditionnelles atomiques et l'analyse de jumelles à distance (sans lui, <code>ifMatch</code> retombe sur un repli vérifié non atomique) — le CRUD de base marche toujours. Se met à jour via BRAT depuis les releases GitHub.</p>
+<p><strong>Lire le schéma de bas en haut.</strong> Vous parlez à Claude Code. Le plugin lui a appris les commandes et lance le serveur MCP. Le serveur reçoit un appel d'outil, choisit le vault, et envoie une requête HTTP au plugin Local REST API de cet Obsidian — ou au bridge, pour les capacités que seul un Obsidian <em>en marche</em> peut fournir.</p>
 
-<p><strong>Serveur MCP</strong> — process Node ≥ 20.19.0 sur le PC, spawné par Claude Code (via le plugin — le cas normal —, ou via une entrée manuelle <code>~/.claude.json</code> — setups dev). Requiert le plugin <strong>Local REST API</strong> dans <strong>chaque</strong> vault (obligatoire : tout le CRUD passe par lui) ; son registre vit dans <code>~/.claude/obsidian-mcp-router/config.json</code>.</p>
+<p><strong>Pourquoi HTTP plutôt que lire les fichiers sur le disque ?</strong> Parce que le routeur parle à un Obsidian <em>vivant</em>, pas à du Markdown inerte. Ça lui donne ce que seule l'application qui tourne possède : les embeddings de Smart Connections (recherche par le sens, <code>search_smart</code>), le rendu réel d'un template Templater (<code>execute_template</code>), l'ouverture d'une note dans la fenêtre (click-to-open). Une écriture passe par le pipeline de modification d'Obsidian lui-même, au lieu de risquer d'écraser un fichier qu'un humain édite au même moment. Et la même requête HTTP atteint un vault sur un NAS ou derrière un tunnel WireGuard exactement comme un vault local. Le prix : Obsidian doit tourner, et chaque vault a un port et une clé API à suivre — c'est ce que <code>config.json</code> et <code>setup-vault</code> gèrent pour vous.</p>
 
-<p><strong>Plugin Claude Code</strong> — ses commands/skills orchestrent les outils MCP du serveur ; deux hooks lisent le vault directement sur disque (<code>hot-cache-load</code>, <code>decisions-recall</code>). Il <strong>embarque et lance le serveur</strong> : une installation = tout, une mise à jour = tout.</p>
+<p><strong>Bridge</strong> — tourne <em>dans</em> Obsidian ; il greffe ses routes sur le serveur HTTP de Local REST API : <code>/search/smart</code> (recherche sémantique), <code>/templates/execute</code> (Templater), <code>/open/*</code> et <code>/ping</code> (click-to-open et auto-test « quel vault répond sur ce port »), <code>PUT /vault-cas/*</code> (≥ 0.7.0 — écritures conditionnelles <em>atomiques</em> : « n'écris que si le fichier n'a pas changé depuis ma lecture »), <code>GET /smart-env/sources</code> (≥ 0.9.0 — sert le magasin de vecteurs de Smart Connections, un dossier caché que l'API REST refuse de servir elle-même, ce qui rend l'analyse de pages jumelles possible sur un vault distant). <strong>Optionnel</strong> : sans lui, le CRUD de base marche ; les écritures <code>ifMatch</code> retombent sur un repli vérifié mais non atomique. Il se met à jour via BRAT depuis les releases GitHub.</p>
 
-<h2>Setup d'un vault</h2>
+<p><strong>Serveur MCP</strong> — process Node ≥ 20.19.0 sur le PC, lancé par Claude Code (via le plugin — le cas normal — ou via une entrée manuelle dans <code>~/.claude.json</code>, pour le développement). Requiert le plugin <strong>Local REST API</strong> dans <strong>chaque</strong> vault ; son registre de vaults vit dans <code>~/.claude/obsidian-mcp-router/config.json</code>.</p>
+
+<p><strong>Plugin Claude Code</strong> — ses commandes et ses skills orchestrent les outils du serveur ; deux de ses hooks lisent le vault directement sur disque, parce qu'ils tournent avant tout appel d'outil (<code>hot-cache-load</code>, <code>decisions-recall</code>). Il <strong>embarque et lance le serveur</strong> : une installation = tout, une mise à jour = tout.</p>
+
+<h2>Ce que le routeur sait faire <span class="count">— les grandes familles, et pourquoi elles existent</span></h2>
+
+<ul>
+  <li><strong>Un seul serveur pour tous vos vaults.</strong> Chaque outil prend un paramètre <code>vault</code> ; <code>vault: "*"</code> lance une recherche sur tous les vaults à la fois (« fan-out »). Fini un serveur MCP par vault.</li>
+  <li><strong>Vaults locaux et distants traités pareil.</strong> Un vault distant, c'est une URL et une clé API dans <code>config.json</code> — Obsidian peut tourner dans un conteneur sur un serveur, sur une autre machine du réseau. Depuis la v0.97.0, un vault distant dont les fichiers sont <em>aussi</em> visibles d'ici (un partage monté) peut le déclarer (<code>localPath</code>), ce qui permet d'installer ses plugins et de lire son cache chaud depuis cette machine.</li>
+  <li><strong>Liaison workspace → vault.</strong> Quel vault un dépôt de code ouvre-t-il ? Ce n'est plus son propre <code>.env</code> qui le décide (un dépôt cloné transporterait la décision de quelqu'un d'autre) : c'est une liaison confirmée une fois, sur <em>votre</em> machine, dans <code>config.json</code> (<code>confirm_workspace_binding</code>, ou <code>setup-vault --attach</code>). Le <code>.env</code> d'un projet ne peut que <strong>proposer</strong> ; le briefing de début de session dit à quoi ce workspace est rattaché et comment en changer.</li>
+  <li><strong>Mode lock.</strong> Restreint une session à un seul vault (sécurité, concentration) : tout appel vers un autre vault est refusé.</li>
+  <li><strong>Auto-enrichissement du wiki.</strong> À trois moments naturels d'une conversation (une réponse substantielle, une décision prise, un changement de sujet), Claude propose d'archiver dans le wiki. Quatre modes : <code>ClaudeAsk</code> (il demande, le défaut) · <code>Hybrid</code> · <code>FullAuto</code> (il sauvegarde sans demander) · <code>off</code>.</li>
+  <li><strong>Boîte à outils de conversion.</strong> PDF, DOCX, XLSX, PPTX, image (OCR), audio (transcription), vidéo YouTube (sous-titres), page web, dépôt git → Markdown, prêt à être écrit dans une note. Le moteur principal, <strong>MarkItDown</strong>, est un extra en Python à installer une fois (<code>npm run install-markitdown</code>) ; sans lui, les outils restent visibles et renvoient l'instruction d'installation. <strong>Docling</strong>, second extra (<code>npm run install-docling</code>), fait le PDF haute fidélité (tableaux, mise en page) et <code>pdf_to_images</code> rend des pages en images pour que le modèle les <em>voie</em>. Un <strong>filtre de pertinence</strong> (BM25, la formule classique des moteurs de recherche) retire les blocs hors sujet avant synthèse.</li>
+  <li><strong>Graphe de connaissances.</strong> Le routeur construit un graphe JSON typé des liens entre pages, en tire un parcours de lecture (« par où commencer »), les voisines d'une page, le plus court chemin entre deux pages ; il exporte le wiki en <code>llms.txt</code> ou en bundle OKF.</li>
+  <li><strong>Analyse du wiki.</strong> <code>find_boundary_pages</code> repère les pages « frontière » — très liées mais presque vides, celles qui méritent d'être écrites ; <code>find_twin_pages</code> repère les paires de pages quasi identiques par similarité de vecteurs, avec un seuil calculé sur <em>votre</em> vault — et marche aussi sur un vault distant (bridge ≥ 0.9.0).</li>
+  <li><strong>Click-to-open.</strong> Chaque écriture renvoie un lien ; un clic ouvre la note dans Obsidian (route <code>GET /open/&lt;path&gt;</code> du bridge). <code>open_in_obsidian</code> fait pareil sans navigateur (idéal dans Claude Desktop). Pour un vault dont le disque n'est pas visible, le port du lien se déclare dans la config (<code>insecurePort</code>), et <code>GET /ping?v=&lt;vault&gt;</code> prouve d'un clic <em>quel</em> vault répond sur un port.</li>
+  <li><strong>Assistant de création de vault.</strong> <code>plan_vault</code> (un plan lisible, avec les défauts et les avertissements) → ajustements → <code>provision_vault</code> (plugins, port, clé, wiki, registre) : dans le cas simple, une seule interaction.</li>
+  <li><strong>Mode multi-tenant</strong> (facultatif) : quand une instance du routeur sert plusieurs personnes (derrière un proxy, sur MCPHub), des variables d'environnement la cadrent — liste blanche de vaults, lecture seule, piste d'audit par utilisateur.</li>
+  <li><strong>11 hooks.</strong> 3 actifs d'office pour tout installeur du plugin (<code>hot-cache-load</code>, <code>decisions-recall</code>, <code>workspace-briefing</code>, déclarés dans <code>hooks/hooks.json</code>) ; les 8 autres sont à activer (câblés en fin de <code>setup-vault</code>, <code>--no-hooks</code> pour s'en passer, <code>node scripts/setup-vault.mjs --install-hooks</code> pour les ajouter plus tard) : journal automatique de session, garde de taille du cache chaud, autocommit du wiki, vérificateur de liens, détecteur de dérive de la doc, vérification de mise à jour…</li>
+</ul>
+
+<h2>Installer, puis attacher un vault <span class="count">— le parcours normal</span></h2>
 
 <ol>
-  <li><strong>Installer le plugin <code>obsidian-router</code> dans Claude Code</strong> = le serveur est livré et lancé automatiquement. Le clone + <code>npm link</code> (<code>/obsidian-router:meta-setup</code>) reste le parcours développeur uniquement.</li>
-  <li>Avoir Node.js ≥ 20.19.0. Outils de conversion : <strong>MarkItDown est opt-in</strong> (<code>npm run install-markitdown</code> · Docling : <code>npm run install-docling</code>) — Python 3.10+ requis seulement pour ces extras ; sans backend, les outils renvoient un hint d'installation actionnable.</li>
-  <li>Savoir si cet opt-in est fait <em>avant</em> qu'un appel échoue : chaque réponse de <code>list_vaults</code> porte <code>conversionToolbox</code> (<code>available</code>, <code>via</code>, <code>verified</code>, <code>hint</code>), et <code>meta-status</code> l'affiche en une ligne. <strong>Huit</strong> outils cessent de fonctionner sans markitdown ; <code>youtube_to_markdown</code> se rabat sur les sous-titres yt-dlp (seulement si yt-dlp est lui-même installé), et <code>git_repo_to_markdown</code> (repomix) et <code>pdf_to_markdown_docling</code> ne sont pas concernés. Pour ne plus se le faire proposer : <code>OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1</code>.</li>
-  <li><strong>Chemin le plus simple</strong> : <code>/obsidian-router:meta-attach-vault</code> — wizard interactif qui attache un vault à un workspace (cas courant), bootstrappe un vault autonome, ou enregistre un vault distant. Provisionne les plugins + scaffolde le wiki + lie le <code>.env</code> + picker de conventions.</li>
-  <li>Alternative CLI :
+  <li><strong>Installer le plugin <code>obsidian-router</code> dans Claude Code.</strong> C'est tout : le serveur MCP est livré dedans et lancé automatiquement. (Le clone du dépôt + <code>npm link</code>, via <code>/obsidian-router:meta-setup</code>, est le parcours des développeurs du routeur.)</li>
+  <li><strong>Avoir Node.js ≥ 20.19.0.</strong> Python 3.10+ n'est requis que pour les extras de conversion (<code>npm run install-markitdown</code>, <code>npm run install-docling</code>).</li>
+  <li><strong>Savoir si ces extras sont là <em>avant</em> qu'un appel échoue.</strong> Chaque réponse de <code>list_vaults</code> porte <code>conversionToolbox</code> (<code>available</code>, <code>via</code>, <code>verified</code>, <code>hint</code>) et <code>meta-status</code> l'affiche en une ligne. Huit outils s'arrêtent sans MarkItDown ; <code>youtube_to_markdown</code> se rabat sur les sous-titres via yt-dlp (s'il est installé) ; <code>git_repo_to_markdown</code> (repomix) et <code>pdf_to_markdown_docling</code> ne sont pas concernés. Pour ne plus se le faire proposer : <code>OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1</code>.</li>
+  <li><strong>Le chemin le plus simple : <code>/obsidian-router:meta-attach-vault</code>.</strong> Un assistant interactif qui attache un vault au workspace courant (le cas courant), crée un vault autonome, ou enregistre un vault distant. Il installe les plugins Obsidian nécessaires, met en place le wiki, écrit le <code>.env</code>, propose les conventions à installer, et termine par un <strong>état final vérifié</strong> : plugins, wiki, conventions — et la liste ordonnée de ce qui manque, s'il manque quelque chose.</li>
+  <li><strong>Alternative en ligne de commande :</strong>
     <pre>npm run setup-vault -- "C:\VAULTS\MonVault"</pre>
-    ⇒ installe/configure les plugins <strong>Local REST API</strong> + bridge, écrit le <code>.env</code>, alloue un port unique, ajoute au registre, câble les hooks routeur — 11 au total, dont 3 déjà actifs via le plugin (<code>--no-hooks</code> pour s'en passer, <code>--install-hooks</code> pour le faire plus tard).</li>
-  <li>Le <strong>bridge</strong> (<code>obsidian-mcp-router-bridge</code>) est requis pour <code>search_smart</code> (avec <strong>Smart Connections</strong>), pour <code>execute_template</code> (avec <strong>Templater</strong>) et pour les liens click-to-open (<code>/open/*</code>). Sans bridge : CRUD de base OK, ces trois capacités non.</li>
-  <li>Vérifier : <code>/obsidian-router:meta-status</code> ou dire simplement <em>« diagnostique le router »</em></li>
+    installe et configure les plugins <strong>Local REST API</strong> + bridge, écrit le <code>.env</code>, alloue un port unique, ajoute le vault au registre, câble les hooks (<code>--no-hooks</code> pour s'en passer, <code>--install-hooks</code> pour le faire plus tard). <code>--attach &lt;nom&gt;</code> lie le workspace courant à un vault déjà connu ; pour un vault distant dont les fichiers sont visibles d'ici, <code>--attach &lt;nom&gt; --local-path &lt;dossier&gt;</code> vérifie que le dossier est bien ce vault avant de l'enregistrer.</li>
+  <li><strong>Le bridge</strong> (<code>obsidian-mcp-router-bridge</code>) est requis pour la recherche sémantique (avec Smart Connections), l'exécution de templates (avec Templater) et les liens click-to-open. Sans lui : lire, écrire, chercher du texte fonctionnent ; ces trois capacités non. <code>--install-plugins &lt;vault&gt; --dry-run</code> montre ce qui manque, puis l'installe depuis les releases GitHub officielles avec le sceau que l'aperçu a imprimé ; <code>--plugin-health &lt;vault&gt;</code> dit ce qu'Obsidian a réellement chargé.</li>
+  <li><strong>Vérifier :</strong> <code>/obsidian-router:meta-status</code>, ou dire simplement <em>« diagnostique le router »</em>.</li>
 </ol>
 
-<h2>Configuration <span class="count">— le <code>.env</code> du workspace (v0.87.0+ : les SEULES clés que le router prend dans le fichier d'un dépôt — tout le reste y est ignoré et nommé sur le stderr du router)</span></h2>
+<h2>Configuration <span class="count">— le <code>.env</code> du workspace (les SEULES clés que le routeur prend dans le fichier d'un dépôt ; tout le reste y est ignoré et nommé sur sa sortie d'erreur)</span></h2>
+
+<p><strong>Pourquoi cette règle.</strong> Un <code>.env</code> voyage avec un dépôt cloné : ce qu'il contient a été écrit par quelqu'un d'autre, sur une autre machine. Le routeur n'y prend donc que des <em>préférences de lecture</em> et des <em>propositions</em> ; tout ce qui accorde un droit (écrire sans demander, verrouiller, cadrer une instance) vient de l'hôte MCP ou de votre <code>config.json</code>.</p>
 
 <table class="config">
   <tr>
     <td>VAULT_PATH</td>
-    <td>Chemin du vault courant. Auto-détection : s'il correspond à un vault enregistré, ce vault devient le défaut. Écrit par <code>setup-vault.mjs</code>.</td>
+    <td><strong>À quoi ça sert :</strong> dire quel vault ce workspace utilise, de façon portable. Chemin du vault courant ; s'il correspond à un vault enregistré, ce vault devient le défaut. Écrit par <code>setup-vault.mjs</code>.</td>
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_DEFAULT_VAULT</td>
-    <td>Override explicite du vault par défaut pour ce process — <strong>depuis l'HÔTE uniquement</strong> (déclaration du serveur MCP, lanceur, shell), où il gagne sur <code>VAULT_PATH</code> et <code>config.defaultVault</code>. La même variable dans le <code>.env</code> d'un projet est une <strong>proposition</strong> : rapportée par <code>list_vaults</code> dans <code>bindingHint</code> et jamais appliquée, parce qu'un workspace est très souvent un dépôt cloné. Ce qui décide, c'est la liaison confirmée du workspace dans ton propre <code>config.json</code> (<code>workspaceBindings</code>) — <code>confirm_workspace_binding</code> ou <code>setup-vault --attach</code> l'enregistre, et le briefing de début de session dit dans quel état tu es.</td>
+    <td><strong>À quoi ça sert :</strong> choisir le vault par défaut d'un process. <strong>Depuis l'hôte uniquement</strong> (déclaration du serveur MCP, lanceur, shell), où il gagne sur <code>VAULT_PATH</code> et <code>config.defaultVault</code>. La même variable dans le <code>.env</code> d'un projet est une <strong>proposition</strong> : rapportée par <code>list_vaults</code> dans <code>bindingHint</code>, jamais appliquée. Ce qui décide, c'est la liaison confirmée du workspace dans votre <code>config.json</code> (<code>workspaceBindings</code>) — <code>confirm_workspace_binding</code> ou <code>setup-vault --attach</code> l'enregistre.</td>
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_LOCKED</td>
-    <td>Verrouille le router sur un seul vault pour la session. Tout appel vers un autre vault échoue. Posé via <code>/obsidian-router:lock &lt;vault&gt; --persist</code>. <strong>Même règle d'origine</strong> : autorité depuis l'hôte, proposition depuis un fichier de projet — verrouiller est la façon la plus forte de choisir où atterrissent les écritures. <code>--persist</code> enregistre <code>locked: true</code> sur la liaison, que le redémarrage relit ; la ligne <code>.env</code> qu'il écrit aussi est un indice portable pour une autre machine.</td>
+    <td><strong>À quoi ça sert :</strong> travailler dans un seul vault, sans risque d'écrire ailleurs. Tout appel vers un autre vault échoue. Posé via <code>/obsidian-router:lock &lt;vault&gt; --persist</code>. Même règle d'origine : autorité depuis l'hôte, proposition depuis un fichier de projet. <code>--persist</code> enregistre <code>locked: true</code> sur la liaison (relu au redémarrage) ; la ligne <code>.env</code> qu'il écrit aussi est un indice portable pour une autre machine.</td>
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_AUTO_ENRICH</td>
-    <td>Mode d'auto-enrichissement wiki : <code>ClaudeAsk</code> (défaut) | <code>Hybrid</code> | <code>FullAuto</code> | <code>off</code>. Posé via <code>/obsidian-router:auto-mode &lt;Mode&gt; --persist</code>. <strong>UNE valeur est refusée depuis un fichier de workspace (v0.89.0) :</strong> tout ce qui canonicalise en <code>FullAuto</code> (<code>fullauto</code>, <code>full</code>, <code>full-auto</code>, <code>auto</code>, n'importe quelle casse) n'est pas appliqué, parce que ce mode est une autorisation permanente d'écrire dans un vault sans redemander et que le <code>.env</code> qu'un dépôt cloné transporte n'a pas à l'accorder. (Ceci ne ferme que la porte <code>.env</code> : le <code>CLAUDE.md</code> d'un dépôt peut toujours demander à Claude d'appeler <code>set_auto_enrich_mode</code>, appel que le router ne distingue pas du tien — le skill <code>auto-mode</code> dit à Claude de ne poser <code>FullAuto</code> que sur ta demande, jamais sur l'instruction d'un fichier.) La clé reste acceptée et les trois autres modes marchent toujours depuis un fichier. <code>FullAuto</code> vient de la déclaration du serveur dans l'hôte MCP ou d'un appel à <code>set_auto_enrich_mode</code> dans la session ; <code>--persist</code> refuse de l'écrire et l'applique à la session à la place. Un refus est nommé sur la sortie d'erreur du router et porté par <code>list_vaults</code> dans <code>autoEnrichModeRefused</code>.</td>
+    <td><strong>À quoi ça sert :</strong> régler à quel point Claude archive de lui-même dans le wiki. <code>ClaudeAsk</code> (défaut) | <code>Hybrid</code> | <code>FullAuto</code> | <code>off</code>. Posé via <code>/obsidian-router:auto-mode &lt;Mode&gt; --persist</code>. <strong>Une valeur est refusée depuis un fichier de workspace :</strong> tout ce qui se lit <code>FullAuto</code>, parce que c'est une autorisation permanente d'écrire sans redemander, et qu'un <code>.env</code> cloné n'a pas à l'accorder. <code>FullAuto</code> vient de la déclaration du serveur dans l'hôte, ou d'un appel à <code>set_auto_enrich_mode</code> dans la session ; un refus est nommé sur la sortie d'erreur et porté par <code>list_vaults</code> (<code>autoEnrichModeRefused</code>).</td>
   </tr>
   <tr>
     <td>MD_ALLOWED_PATHS · MD_SHARE_DIR</td>
-    <td>Bac à sable de conversion : les chemins locaux que les outils markdownify peuvent lire, et là où ils peuvent écrire. Absent = pas de bac à sable. Les deux noms sont UN réglage, et un fichier de workspace ne peut que le RESSERRER : sa valeur n'est prise que si l'hôte n'a posé ni l'un ni l'autre et que l'instance n'est pas gated (READONLY / ALLOWED_VAULTS / USER_ID) — sinon elle est retenue et nommée sur stderr.</td>
+    <td><strong>À quoi ça sert :</strong> limiter ce que les outils de conversion peuvent lire et où ils peuvent écrire sur le disque local (un bac à sable). Absent = pas de bac à sable. Les deux noms sont UN réglage ; un fichier de workspace ne peut que le <em>resserrer</em>.</td>
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_NO_*</td>
-    <td>Les 14 opt-outs énumérés dans <code>src/helpers/workspace-dotenv.mjs</code>, acceptés par nom et jamais par forme (un NO_* absent de la liste est ignoré) : NO_WATCH (hot-reload de la config), NO_HOT_CACHE_LOAD, NO_DECISIONS_RECALL, NO_WIKI_QUERY_FIRST, NO_WIKI_AUTOCOMMIT, NO_SESSION_JOURNAL, NO_HOT_CACHE_GUARD, NO_LINT_VAULT_LINKS, NO_DOC_STARTUP_CHECK, NO_DOC_PROPAGATION_CHECK, NO_UPDATE_CHECK, NO_AUTO_INSTALL_HOOKS, NO_AUTO_CONFORMANCE, NO_OKF_PROJECTIONS. Chacun coupe une commodité, aucun un garde ; tous acceptent <code>1</code>/<code>true</code>/<code>yes</code>/<code>on</code>.</td>
+    <td><strong>À quoi ça sert :</strong> couper une commodité (jamais un garde). Les 14 opt-outs énumérés dans <code>src/helpers/workspace-dotenv.mjs</code>, acceptés par nom : NO_WATCH (rechargement à chaud de la config), NO_HOT_CACHE_LOAD, NO_DECISIONS_RECALL, NO_WIKI_QUERY_FIRST, NO_WIKI_AUTOCOMMIT, NO_SESSION_JOURNAL, NO_HOT_CACHE_GUARD, NO_LINT_VAULT_LINKS, NO_DOC_STARTUP_CHECK, NO_DOC_PROPAGATION_CHECK, NO_UPDATE_CHECK, NO_AUTO_INSTALL_HOOKS, NO_AUTO_CONFORMANCE, NO_OKF_PROJECTIONS. Valeurs : <code>1</code>/<code>true</code>/<code>yes</code>/<code>on</code>.</td>
   </tr>
 </table>
 
-<h2>Configuration <span class="count">— variables d'hôte / de shell (jamais prises dans un <code>.env</code> de workspace : à poser dans la déclaration du serveur côté hôte MCP, dans le lanceur d'une instance servie, ou dans le shell)</span></h2>
+<h2>Configuration <span class="count">— variables d'hôte (jamais prises dans un <code>.env</code> de workspace : à poser dans la déclaration du serveur côté hôte MCP, dans le lanceur d'une instance servie, ou dans le shell)</span></h2>
 
 <table class="config">
   <tr>
     <td>OBSIDIAN_ROUTER_ALLOWED_VAULTS</td>
-    <td>Multi-tenant : whitelist des vaults visibles par cette instance (séparés par des virgules). Les autres sont skippés.</td>
+    <td><strong>À quoi ça sert :</strong> ne montrer à une instance qu'une partie des vaults (déploiement partagé). Liste blanche, séparée par des virgules ; les autres sont ignorés.</td>
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_READONLY</td>
-    <td>Multi-tenant : valeur truthy (<code>true</code>/<code>1</code>/<code>yes</code>/<code>on</code>) désactive les <strong>18 outils d'écriture</strong> (write_file, append_to_file, patch_file, set_frontmatter, merge_frontmatter, move_file, delete_file, execute_template, download_page_assets, pptx_extract_assets, build_wiki_graph, provision_vault, register_remote_vault, write_bundle, record_source, install_conventions, refresh_okf_projections, build_search_index) — filtrés de ListTools ET refusés à l'appel.</td>
+    <td><strong>À quoi ça sert :</strong> une instance qui ne peut rien modifier. Valeur vraie (<code>true</code>/<code>1</code>/<code>yes</code>/<code>on</code>) : les <strong>18 outils d'écriture</strong> (write_file, append_to_file, patch_file, set_frontmatter, merge_frontmatter, move_file, delete_file, execute_template, download_page_assets, pptx_extract_assets, build_wiki_graph, provision_vault, register_remote_vault, write_bundle, record_source, install_conventions, refresh_okf_projections, build_search_index) sont retirés de la liste des outils <em>et</em> refusés à l'appel.</td>
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_USER_ID</td>
-    <td>Multi-tenant : piste d'audit — chaque écriture réussie ajoute une ligne attribuée au <code>wiki-meta/journal.md</code> du vault touché. Masque aussi les outils local-only <code>plan_vault</code> + <code>provision_vault</code> (déploiements gated/multi-tenant).</td>
+    <td><strong>À quoi ça sert :</strong> savoir qui a écrit quoi quand plusieurs personnes passent par la même instance. Chaque écriture réussie ajoute une ligne attribuée au <code>wiki-meta/journal.md</code> du vault touché. Masque aussi les outils réservés au poste local (<code>plan_vault</code>, <code>provision_vault</code>).</td>
   </tr>
   <tr>
     <td>VAULT_&lt;NOM&gt;</td>
-    <td>Un vault entier défini dans une variable d'env (JSON : <code>name</code>, <code>baseUrl</code>, <code>apiKey</code>…) — éditable depuis le dashboard sur les déploiements MCPHub.</td>
+    <td><strong>À quoi ça sert :</strong> déclarer un vault sans fichier de config — pratique sur un serveur administré par un tableau de bord (MCPHub). Un vault entier en JSON : <code>name</code>, <code>baseUrl</code>, <code>apiKey</code>, et pour un vault distant <code>obsidianName</code> (son nom exact dans Obsidian, pour les liens d'ouverture).</td>
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_CONFIG · MARKITDOWN_PATH · DOCLING_PATH · REPOMIX_PATH · YTDLP_PATH · HTTPS_PROXY · HF_HOME…</td>
-    <td>Chemin de config et overrides d'outils : lus dans l'environnement de l'hôte uniquement (README § environment). Un outil lancé reçoit une allowlist nommée de variables, jamais l'environnement entier du router (v0.87.0).</td>
+    <td><strong>À quoi ça sert :</strong> dire où sont la config et les outils externes. Lus dans l'environnement de l'hôte uniquement (README § environment). Un outil lancé reçoit une liste nommée de variables, jamais l'environnement entier du routeur.</td>
   </tr>
 </table>
 
@@ -276,216 +307,224 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
 <table class="config">
   <tr>
     <td>~/.claude/obsidian-mcp-router/config.json</td>
-    <td>Config principale du router (vaults, registre de ports, defaultVault, disabledVaults, remoteVaults). Hot-reload actif.</td>
+    <td>La config principale du routeur : vaults et registre de ports, vault par défaut, vaults désactivés, vaults distants, liaisons de workspaces. Rechargée à chaud quand elle change.</td>
   </tr>
   <tr>
     <td>~/.claude.json</td>
-    <td>Parcours dev uniquement : le plugin déclare le serveur (clé <code>router</code>) dans son <code>.mcp.json</code> racine via <code>${CLAUDE_PLUGIN_ROOT}</code> — PAS en inline dans <code>plugin.json</code> (Claude Code 2.1.220 ignore cette forme). L'entrée manuelle <code>mcpServers.obsidian-router</code> = parcours dev ; garder les deux fait tourner <strong>deux process</strong> aux outils dupliqués — certains postes dev le font exprès ; <code>claude --plugin-dir &lt;checkout&gt;</code> remplace le plugin installé pour une session.</td>
+    <td>Parcours développeur uniquement. Le plugin déclare le serveur (clé <code>router</code>) dans son <code>.mcp.json</code> racine via <code>${CLAUDE_PLUGIN_ROOT}</code>. Une entrée manuelle <code>mcpServers.obsidian-router</code> en plus fait tourner <strong>deux process</strong> aux outils dupliqués (certains postes de dev le font exprès) ; <code>claude --plugin-dir &lt;checkout&gt;</code> remplace le plugin installé le temps d'une session.</td>
   </tr>
   <tr>
     <td>~/.claude/settings.json</td>
-    <td>Les <strong>8 hooks opt-in</strong> (sur 11) vivent ici — les 3 plugin-actifs (<code>hot-cache-load</code> + <code>decisions-recall</code> + <code>workspace-briefing</code>) viennent de <code>hooks/hooks.json</code> DANS le plugin (<code>hooks.example.json</code> garde un placeholder <code>&lt;router-repo&gt;</code> car <code>${CLAUDE_PLUGIN_ROOT}</code> ne s'expanse que dans les fichiers du plugin). Le plugin lui-même s'active <strong>par workspace</strong> via <code>&lt;workspace&gt;/.claude/settings.json</code> — 54 commandes + 49 skills ≈ 10k tokens de contexte, à ne charger que là où tu utilises Obsidian.</td>
+    <td>Les <strong>8 hooks à activer</strong> (sur 11) se déclarent ici ; les 3 actifs d'office viennent de <code>hooks/hooks.json</code> dans le plugin. Le plugin s'active <strong>par workspace</strong> via <code>&lt;workspace&gt;/.claude/settings.json</code> — 54 commandes + 49 skills ≈ 10 k tokens de contexte, à ne charger que là où vous utilisez Obsidian.</td>
   </tr>
   <tr>
     <td>&lt;workspace&gt;/.env</td>
-    <td>Auto-chargé au boot du router — mais seules les clés de workspace ci-dessus sont prises, et l'environnement parent gagne toujours ; toute autre clé est ignorée et nommée une fois sur le stderr du router, et les clés appliquées sont nommées aussi (v0.87.0+).</td>
+    <td>Lu au démarrage du routeur — mais seules les clés de workspace ci-dessus sont prises, l'environnement parent gagne toujours, et toute autre clé est ignorée et nommée une fois sur la sortie d'erreur.</td>
   </tr>
   <tr>
     <td>&lt;vault&gt;/CLAUDE.md</td>
-    <td>Consigne wiki du vault — chargée en contexte par Claude Code. Contient la consigne d'auto-enrichissement (4 modes) + les conventions installées.</td>
+    <td>Les consignes du vault, chargées en contexte par Claude Code quand la session est ouverte <em>dans</em> le vault : le mode d'auto-enrichissement et les conventions installées. Depuis un workspace de code, elles ne sont pas chargées : la première écriture du routeur dans le vault les renvoie (<code>vaultConventions</code>).</td>
   </tr>
   <tr>
     <td>&lt;vault&gt;/wiki-meta/{catalog,journal,hot,overview}.md</td>
-    <td>Scaffolds du LLM-wiki façon Karpathy (catalogue, journal append-only, cache chaud, vue d'ensemble) — sous <code>wiki-meta/</code> (les pages utilisateur vivent sous <code>wiki/</code>). Nommés <code>catalog</code>/<code>journal</code> plutôt qu'<code>index</code>/<code>log</code> car OKF réserve ces deux basenames ; les anciens noms restent lus. Scaffoldés par <code>/obsidian-router:wiki</code>.</td>
+    <td>L'échafaudage du wiki : catalogue, journal (ajouts seulement), cache chaud, vue d'ensemble — sous <code>wiki-meta/</code> ; les pages elles-mêmes sont sous <code>wiki/</code>. Nommés <code>catalog</code>/<code>journal</code> plutôt qu'<code>index</code>/<code>log</code> parce qu'OKF réserve ces deux noms ; les anciens restent lus. Créés par <code>/obsidian-router:wiki</code>.</td>
   </tr>
   <tr>
     <td>&lt;vault&gt;/wiki-meta/Sessions/</td>
-    <td>Journaux détaillés par session (écrits automatiquement par le hook <code>session-auto-journal</code> ; <code>journal.md</code> reste un index mince).</td>
+    <td>Le détail de chaque session (écrit par le hook <code>session-auto-journal</code>) ; <code>journal.md</code> n'en garde qu'une ligne.</td>
   </tr>
   <tr>
     <td>obsidian-mcp-router/docs/</td>
-    <td><code>auto-enrichment.md</code> (4 modes + 4 canaux de placement), <code>features/</code> (13 fiches en prose), <code>architecture.md</code>, ce PDF (FR + EN).</td>
+    <td><code>auto-enrichment.md</code> (les 4 modes et les 4 canaux de rangement), <code>features/</code> (13 fiches en prose), <code>architecture.md</code>, <code>remote-vaults.md</code> (vaults distants), cette page (FR + EN).</td>
   </tr>
 </table>
 
 <div class="page-break"></div>
 
 <div class="header">
-  <h1>54 slash commands <span class="subtitle">/obsidian-router:&lt;nom&gt; · auto-déclenchement en langage naturel (FR + EN)</span></h1>
+  <h1>54 slash commands <span class="subtitle">/obsidian-router:&lt;nom&gt; · reconnues aussi en langage naturel (FR + EN)</span></h1>
 </div>
 
-<div class="cat-header">🔧 17 wrappers MCP — un par outil de base du vault</div>
-<p style="font-size: 10pt; color: #666; margin: 1mm 0 2mm 0;">Catégories : <code>discover</code> · <code>read</code> · <code>write</code> · <code>manage</code> · <code>template</code> · <code>convert</code></p>
+<p>Une slash command est une procédure écrite pour Claude. Vous n'avez pas besoin de la taper : la troisième colonne donne une phrase qui la déclenche. Elles se répartissent en cinq groupes selon <em>ce que vous voulez faire</em>.</p>
+
+<div class="cat-header">🔧 17 wrappers MCP — une commande par outil de base du vault</div>
+<p style="font-size: 10pt; color: #666; margin: 1mm 0 2mm 0;"><strong>Quand :</strong> vous voulez une opération précise sur une note — lire, écrire, chercher, déplacer, convertir. Chaque wrapper appelle un outil et vous montre le résultat. Catégories : <code>discover</code> · <code>read</code> · <code>write</code> · <code>manage</code> · <code>template</code> · <code>convert</code></p>
 
 <table class="slash">
   <tr><th>Commande</th><th>Effet</th><th>Phrase déclencheuse (FR/EN)</th></tr>
-  <tr><td class="cmd">discover-list-vaults</td><td class="desc">Liste les vaults (online/latence/état du lock)</td><td class="trigger">« liste mes vaults » / "list my vaults"</td></tr>
+  <tr><td class="cmd">discover-list-vaults</td><td class="desc">Liste les vaults (en ligne ou non, latence, état du lock)</td><td class="trigger">« liste mes vaults » / "list my vaults"</td></tr>
   <tr><td class="cmd">discover-list-files</td><td class="desc">Liste les fichiers d'un dossier de vault</td><td class="trigger">« liste les fichiers de X » / "list files in Sessions"</td></tr>
-  <tr><td class="cmd">read-get</td><td class="desc">Lit un fichier (markdown + frontmatter)</td><td class="trigger">« montre-moi X » / "show me X"</td></tr>
-  <tr><td class="cmd">read-search</td><td class="desc">Recherche texte simple (substring)</td><td class="trigger">« trouve &lt;texte&gt; » / "grep for &lt;text&gt;"</td></tr>
-  <tr><td class="cmd">read-search-smart</td><td class="desc">Recherche sémantique (Smart Connections)</td><td class="trigger">« trouve mes notes sur X » / "find notes about X"</td></tr>
-  <tr><td class="cmd">read-frontmatter</td><td class="desc">Lit le frontmatter (objet ou une clé)</td><td class="trigger">« quel est le statut de X » / "metadata of X"</td></tr>
-  <tr><td class="cmd">write-create-or-replace</td><td class="desc">PUT — crée ou remplace un fichier</td><td class="trigger">« crée une note X » / "save this as X.md"</td></tr>
-  <tr><td class="cmd">write-append</td><td class="desc">POST — ajoute à la fin d'un fichier</td><td class="trigger">« ajoute à X » / "append to my journal"</td></tr>
-  <tr><td class="cmd">write-patch</td><td class="desc">PATCH chirurgical (heading/block/frontmatter)</td><td class="trigger">« édite la section X dans Y » / "edit X section in Y"</td></tr>
+  <tr><td class="cmd">read-get</td><td class="desc">Lit un fichier (Markdown + frontmatter)</td><td class="trigger">« montre-moi X » / "show me X"</td></tr>
+  <tr><td class="cmd">read-search</td><td class="desc">Recherche de texte simple (sous-chaîne)</td><td class="trigger">« trouve &lt;texte&gt; » / "grep for &lt;text&gt;"</td></tr>
+  <tr><td class="cmd">read-search-smart</td><td class="desc">Recherche par le sens (Smart Connections)</td><td class="trigger">« trouve mes notes sur X » / "find notes about X"</td></tr>
+  <tr><td class="cmd">read-frontmatter</td><td class="desc">Lit le frontmatter (tout, ou une clé)</td><td class="trigger">« quel est le statut de X » / "metadata of X"</td></tr>
+  <tr><td class="cmd">write-create-or-replace</td><td class="desc">Crée ou remplace un fichier</td><td class="trigger">« crée une note X » / "save this as X.md"</td></tr>
+  <tr><td class="cmd">write-append</td><td class="desc">Ajoute à la fin d'un fichier</td><td class="trigger">« ajoute à X » / "append to my journal"</td></tr>
+  <tr><td class="cmd">write-patch</td><td class="desc">Modification chirurgicale (un titre, un bloc, le frontmatter)</td><td class="trigger">« édite la section X dans Y » / "edit X section in Y"</td></tr>
   <tr><td class="cmd">write-frontmatter-set</td><td class="desc">Pose une clé de frontmatter</td><td class="trigger">« passe le statut de X à closed » / "tag this with X"</td></tr>
-  <tr><td class="cmd">write-frontmatter-merge</td><td class="desc">Pose plusieurs clés en séquence</td><td class="trigger">« sur X mets status=closed outcome=tp1 »</td></tr>
-  <tr><td class="cmd">write-bundle</td><td class="desc">Bundle multi-fichiers — application tout-ou-rien avec rollback journalisé</td><td class="trigger">« écris ces 4 pages d'un bloc » / "write these pages atomically"</td></tr>
+  <tr><td class="cmd">write-frontmatter-merge</td><td class="desc">Pose plusieurs clés d'un coup</td><td class="trigger">« sur X mets status=closed outcome=tp1 »</td></tr>
+  <tr><td class="cmd">write-bundle</td><td class="desc">Plusieurs fichiers d'un bloc — tout ou rien, avec retour arrière journalisé</td><td class="trigger">« écris ces 4 pages d'un bloc » / "write these pages atomically"</td></tr>
   <tr><td class="cmd">manage-move</td><td class="desc">Déplace ou renomme un fichier</td><td class="trigger">« renomme X en Y » / "move X to Y"</td></tr>
-  <tr><td class="cmd">manage-delete</td><td class="desc">Supprime un fichier (garde confirm en 2 étapes)</td><td class="trigger">« supprime X » puis « oui confirm=true »</td></tr>
+  <tr><td class="cmd">manage-delete</td><td class="desc">Supprime un fichier (confirmation en deux temps)</td><td class="trigger">« supprime X » puis « oui confirm=true »</td></tr>
   <tr><td class="cmd">template-execute</td><td class="desc">Exécute un template Templater</td><td class="trigger">« exécute le template daily » / "run X template"</td></tr>
-  <tr><td class="cmd">pdf-to-markdown</td><td class="desc">PDF local → markdown (MarkItDown, texte brut rapide)</td><td class="trigger">« convertis ce PDF en markdown » / "convert this PDF"</td></tr>
-  <tr><td class="cmd">pdf-to-markdown-docling</td><td class="desc">PDF → markdown haute fidélité (Docling, tableaux/mise en page, opt-in)</td><td class="trigger">« conversion haute fidélité » / "convert with docling"</td></tr>
+  <tr><td class="cmd">pdf-to-markdown</td><td class="desc">PDF local → Markdown (MarkItDown, texte brut, rapide)</td><td class="trigger">« convertis ce PDF en markdown » / "convert this PDF"</td></tr>
+  <tr><td class="cmd">pdf-to-markdown-docling</td><td class="desc">PDF → Markdown haute fidélité (Docling : tableaux, mise en page ; extra à installer)</td><td class="trigger">« conversion haute fidélité » / "convert with docling"</td></tr>
 </table>
 
-<div class="cat-header">🔒 4 commandes d'état du router (lock + auto-enrichissement + base de ports)</div>
+<div class="cat-header">🔒 4 commandes d'état du routeur (verrou, auto-enrichissement, base de ports)</div>
+<p style="font-size: 10pt; color: #666; margin: 1mm 0 2mm 0;"><strong>Quand :</strong> vous voulez changer comment le routeur se comporte pendant cette session — dans quel vault il travaille, à quel point il archive seul, quels ports il attribuera aux prochains vaults.</p>
 
 <table class="slash">
   <tr><th>Commande</th><th>Effet</th><th>Phrase déclencheuse (FR/EN)</th></tr>
-  <tr><td class="cmd">lock</td><td class="desc">Restreint la session à un vault (volatile ou <code>--persist</code>)</td><td class="trigger">« verrouille sur X » / "I only want to work on X"</td></tr>
-  <tr><td class="cmd">unlock</td><td class="desc">Lève le lock, restaure le routage multi-vault</td><td class="trigger">« déverrouille les vaults » / "unlock vaults"</td></tr>
+  <tr><td class="cmd">lock</td><td class="desc">Restreint la session à un vault (le temps de la session, ou <code>--persist</code>)</td><td class="trigger">« verrouille sur X » / "I only want to work on X"</td></tr>
+  <tr><td class="cmd">unlock</td><td class="desc">Lève le verrou, rétablit le routage multi-vault</td><td class="trigger">« déverrouille les vaults » / "unlock vaults"</td></tr>
   <tr><td class="cmd">auto-mode</td><td class="desc">Règle le mode d'auto-enrichissement (ClaudeAsk / Hybrid / FullAuto / off)</td><td class="trigger">« passe en mode Hybrid » / "switch to Hybrid mode"</td></tr>
-  <tr><td class="cmd">force-new-port-start</td><td class="desc">Tire une nouvelle base d'allocation pour les <strong>futurs</strong> vaults uniquement — plan scellé en deux phases, zéro port existant modifié</td><td class="trigger">« tire une nouvelle base de ports » / "draw a new port base"</td></tr>
+  <tr><td class="cmd">force-new-port-start</td><td class="desc">Tire une nouvelle base d'attribution de ports pour les <strong>futurs</strong> vaults uniquement — plan scellé en deux temps, aucun port existant modifié</td><td class="trigger">« tire une nouvelle base de ports » / "draw a new port base"</td></tr>
 </table>
 
 <div class="cat-header">🔗 2 commandes de liaison de workspace (dans quel vault ce projet écrit)</div>
+<p style="font-size: 10pt; color: #666; margin: 1mm 0 2mm 0;"><strong>Quand :</strong> vous ouvrez Claude Code dans un dossier de projet et voulez que « le vault » désigne le bon, sans le nommer à chaque appel — et décider ce que ce projet a le droit d'écrire dans d'autres vaults.</p>
 
 <table class="slash">
   <tr><th>Commande</th><th>Effet</th><th>Phrase déclencheuse (FR/EN)</th></tr>
-  <tr><td class="cmd">bind-workspace</td><td class="desc">Assistant — rattache ce workspace à un vault PRINCIPAL, puis éventuellement à des secondaires avec un palier d'écriture chacun ; nomme aussi une proposition du fichier dotenv du projet restée sans réponse, et enregistre un « non » comme un refus</td><td class="trigger">« à quel vault ce projet est-il rattaché » / "bind this workspace to a vault"</td></tr>
-  <tr><td class="cmd">configure-secondary-vaults</td><td class="desc">Le même assistant entré à son étape SECONDAIRES — déclare les secondaires et choisit chaque palier : lecture seule stricte / sur demande / lecture-écriture</td><td class="trigger">« ajoute un vault secondaire » / "make X read-only for this project"</td></tr>
+  <tr><td class="cmd">bind-workspace</td><td class="desc">Assistant — rattache ce workspace à un vault PRINCIPAL, puis éventuellement à des secondaires avec un palier d'écriture chacun ; nomme aussi une proposition du <code>.env</code> restée sans réponse, et enregistre un « non » comme un refus</td><td class="trigger">« à quel vault ce projet est-il rattaché » / "bind this workspace to a vault"</td></tr>
+  <tr><td class="cmd">configure-secondary-vaults</td><td class="desc">Le même assistant, entré à l'étape des SECONDAIRES : déclare les secondaires et choisit chaque palier — lecture seule stricte / écriture sur demande / lecture-écriture</td><td class="trigger">« ajoute un vault secondaire » / "make X read-only for this project"</td></tr>
 </table>
 
-<div class="cat-header">🩺 7 helpers conversationnels (setup + diagnostic)</div>
+<div class="cat-header">🩺 7 helpers conversationnels (installation + diagnostic)</div>
+<p style="font-size: 10pt; color: #666; margin: 1mm 0 2mm 0;"><strong>Quand :</strong> quelque chose est à installer, à vérifier ou à réparer — un vault à attacher, un plugin manquant, un vault injoignable, des conventions à propager.</p>
 
 <table class="slash">
   <tr><th>Commande</th><th>Effet</th><th>Phrase déclencheuse (FR/EN)</th></tr>
-  <tr><td class="cmd">meta-setup</td><td class="desc">Installation manuelle du router (clone + npm link) — parcours développeur ; une installation normale reçoit le serveur via le plugin</td><td class="trigger">« installe le router » / "setup obsidian-mcp-router"</td></tr>
-  <tr><td class="cmd">meta-attach-vault</td><td class="desc">Wizard — attache un vault à un workspace (courant), autonome, ou distant</td><td class="trigger">« attache un vault à ce workspace » / "connect my remote vault"</td></tr>
-  <tr><td class="cmd">meta-status</td><td class="desc">Health-check de tous les vaults avec pistes de fix</td><td class="trigger">« diagnostique le router » / "are my vaults reachable"</td></tr>
-  <tr><td class="cmd">meta-sync-template</td><td class="desc">Propage plugins/snippets/docs du vault de référence (picker interactif)</td><td class="trigger">« synchronise le template » / "sync the template to all vaults"</td></tr>
-  <tr><td class="cmd">sync-from-github</td><td class="desc">Met à jour un vault ou toute la flotte directement depuis le squelette GitHub (plugins, thèmes, snippets, docs) — sans repo de développement local</td><td class="trigger">« synchronise depuis GitHub » / "sync this vault from github"</td></tr>
-  <tr><td class="cmd">meta-audit-bridge-readiness</td><td class="desc">Audite le click-to-open (bridge, REST API, HTTP, probe /open live)</td><td class="trigger">« audite le bridge » / "is click-to-open ready"</td></tr>
-  <tr><td class="cmd">conventions</td><td class="desc">Installe/retire/liste/propage les conventions CLAUDE.md entre vaults</td><td class="trigger">« installe la convention X » / "install source-type on X"</td></tr>
+  <tr><td class="cmd">meta-setup</td><td class="desc">Installation manuelle du routeur (clone + npm link) — parcours développeur ; une installation normale reçoit le serveur par le plugin</td><td class="trigger">« installe le router » / "setup obsidian-mcp-router"</td></tr>
+  <tr><td class="cmd">meta-attach-vault</td><td class="desc">Assistant — attache un vault à un workspace (le cas courant), crée un vault autonome, ou enregistre un vault distant ; termine par l'état final vérifié</td><td class="trigger">« attache un vault à ce workspace » / "connect my remote vault"</td></tr>
+  <tr><td class="cmd">meta-status</td><td class="desc">Bilan de santé de tous les vaults, avec des pistes de correction ; dit aussi quelle version du routeur répond et si les hooks de la session ont tourné</td><td class="trigger">« diagnostique le router » / "are my vaults reachable"</td></tr>
+  <tr><td class="cmd">meta-sync-template</td><td class="desc">Propage plugins, snippets et docs du vault de référence vers d'autres vaults (sélection interactive)</td><td class="trigger">« synchronise le template » / "sync the template to all vaults"</td></tr>
+  <tr><td class="cmd">sync-from-github</td><td class="desc">Met à jour un vault ou toute la flotte depuis le squelette publié sur GitHub (plugins, thèmes, snippets, docs) — sans dépôt de développement local</td><td class="trigger">« synchronise depuis GitHub » / "sync this vault from github"</td></tr>
+  <tr><td class="cmd">meta-audit-bridge-readiness</td><td class="desc">Vérifie que le click-to-open est prêt (bridge, API REST, HTTP, sonde <code>/open</code> en direct)</td><td class="trigger">« audite le bridge » / "is click-to-open ready"</td></tr>
+  <tr><td class="cmd">conventions</td><td class="desc">Installe / retire / liste / audite / propage les conventions du <code>CLAUDE.md</code> d'un vault ; migre l'ancienne convention <code>bilingual</code> vers <code>languages</code></td><td class="trigger">« installe la convention X » / "install source-type on X"</td></tr>
 </table>
 
 <div class="page-break"></div>
 
-<div class="cat-header">📚 24 commandes de gestion de connaissances (LLM-wiki façon Karpathy)</div>
+<div class="cat-header">📚 24 commandes de gestion de connaissances (le wiki tenu par l'assistant)</div>
+<p style="font-size: 10pt; color: #666; margin: 1mm 0 2mm 0;"><strong>Quand :</strong> vous construisez et entretenez une base de notes avec Claude — y verser des sources, l'interroger, la vérifier, la compacter, la visualiser, l'exporter.</p>
 
 <table class="slash">
   <tr><th>Commande</th><th>Effet</th><th>Phrase déclencheuse (FR/EN)</th></tr>
-  <tr><td class="cmd">wiki</td><td class="desc">Scaffolde le wiki dans un vault (index, log, hot, overview)</td><td class="trigger">« scaffold un wiki » / "set up a wiki"</td></tr>
-  <tr><td class="cmd">wiki-ingest</td><td class="desc">Ingère une source → pages entité/concept + cross-refs</td><td class="trigger">« ingère cette URL » / "absorb this article"</td></tr>
-  <tr><td class="cmd">wiki-query</td><td class="desc">RAG 3 tiers sur le wiki (sans web)</td><td class="trigger">« que dit mon wiki sur X » / "based on my notes …"</td></tr>
-  <tr><td class="cmd">wiki-lint</td><td class="desc">Health check (orphelins, liens morts, dérive d'index)</td><td class="trigger">« lint le wiki » / "audit my wiki"</td></tr>
-  <tr><td class="cmd">wiki-fold</td><td class="desc">Rollup idempotent du log sous wiki/folds/</td><td class="trigger">« compacte le journal » / "fold the log"</td></tr>
-  <tr><td class="cmd">hot-compact</td><td class="desc">Recompacte un hot.md hors limite vers son contrat de cache (backup vérifié d'abord)</td><td class="trigger">« compacte le hot » / "compact the hot cache"</td></tr>
-  <tr><td class="cmd">save</td><td class="desc">Archive la conversation en note wiki typée (session/décision/ADR/…)</td><td class="trigger">« sauvegarde ça » / "save this"</td></tr>
-  <tr><td class="cmd">decision-consolidate</td><td class="desc">Compresse une page de décision tranchée à l'essentiel et déplace l'historique complet de la délibération vers une note d'archive vérifiée</td><td class="trigger">« consolide cette décision » / "consolidate this decision"</td></tr>
-  <tr><td class="cmd">autoresearch</td><td class="desc">Boucle autonome web→synthèse→archivage</td><td class="trigger">« fais une recherche web sur X » / "research X online"</td></tr>
-  <tr><td class="cmd">canvas</td><td class="desc">Crée/édite des fichiers .canvas Obsidian</td><td class="trigger">« crée un canvas pour X » / "create a canvas for X"</td></tr>
-  <tr><td class="cmd">defuddle</td><td class="desc">Retire le bruit des pages web avant ingestion</td><td class="trigger">« nettoie cette page » / "defuddle &lt;url&gt;"</td></tr>
-  <tr><td class="cmd">obsidian-bases</td><td class="desc">Crée/édite des fichiers .base Obsidian (vues database)</td><td class="trigger">« crée une base pour X » / "create a base for X"</td></tr>
-  <tr><td class="cmd">wiki-graph</td><td class="desc">Construit le knowledge-graph JSON typé (alimente le viewer natif)</td><td class="trigger">« construis le graphe » / "build the wiki graph"</td></tr>
-  <tr><td class="cmd">wiki-tour</td><td class="desc">Parcours de lecture pédagogique ordonné depuis la topologie de liens</td><td class="trigger">« par où je commence » / "give me a tour of this vault"</td></tr>
-  <tr><td class="cmd">wiki-neighbors</td><td class="desc">Voisines d'une page — liens sortants, backlinks, ou les deux</td><td class="trigger">« voisins de X » / "what links to X"</td></tr>
-  <tr><td class="cmd">wiki-path</td><td class="desc">Plus courte chaîne de liens entre deux pages</td><td class="trigger">« quel rapport entre X et Y » / "how is X connected to Y"</td></tr>
-  <tr><td class="cmd">wiki-export</td><td class="desc">Exporte le vault en llms.txt / llms-full.txt ou en bundle OKF</td><td class="trigger">« exporte le wiki » / "export the wiki as llms.txt"</td></tr>
-  <tr><td class="cmd">okf-export</td><td class="desc">Exporte un sous-ensemble du wiki en bundle OKF v0.1 partageable (conformité auto-vérifiée)</td><td class="trigger">« publie en bundle OKF » / "export this folder as an OKF bundle"</td></tr>
-  <tr><td class="cmd">okf-projections</td><td class="desc">Régénère la navigation OKF générée dans wiki/ (index racine + par répertoire, log newest-first) ; auto-rafraîchie après écritures ; --check = rapport de dérive</td><td class="trigger">« regénère les index du wiki » / "refresh the OKF projections"</td></tr>
+  <tr><td class="cmd">wiki</td><td class="desc">Met en place le wiki dans un vault (catalogue, journal, cache chaud, vue d'ensemble) et propose les conventions</td><td class="trigger">« scaffold un wiki » / "set up a wiki"</td></tr>
+  <tr><td class="cmd">wiki-ingest</td><td class="desc">Verse une source (URL, fichier, texte) dans le wiki → pages d'entités et de concepts, liées entre elles</td><td class="trigger">« ingère cette URL » / "absorb this article"</td></tr>
+  <tr><td class="cmd">wiki-query</td><td class="desc">Répond à partir du wiki (trois niveaux de recherche, sans le web)</td><td class="trigger">« que dit mon wiki sur X » / "based on my notes …"</td></tr>
+  <tr><td class="cmd">wiki-lint</td><td class="desc">Bilan de santé : pages orphelines, liens morts, catalogue en retard</td><td class="trigger">« lint le wiki » / "audit my wiki"</td></tr>
+  <tr><td class="cmd">wiki-fold</td><td class="desc">Compacte le journal en résumés périodiques sous <code>wiki/folds/</code> (rejouable sans doublon)</td><td class="trigger">« compacte le journal » / "fold the log"</td></tr>
+  <tr><td class="cmd">hot-compact</td><td class="desc">Ramène un <code>hot.md</code> trop gros à son contrat de cache (sauvegarde vérifiée d'abord)</td><td class="trigger">« compacte le hot » / "compact the hot cache"</td></tr>
+  <tr><td class="cmd">save</td><td class="desc">Archive la conversation en note typée (session, décision, ADR…)</td><td class="trigger">« sauvegarde ça » / "save this"</td></tr>
+  <tr><td class="cmd">decision-consolidate</td><td class="desc">Réduit une page de décision tranchée à l'essentiel et déplace la délibération complète dans une note d'archive vérifiée</td><td class="trigger">« consolide cette décision » / "consolidate this decision"</td></tr>
+  <tr><td class="cmd">autoresearch</td><td class="desc">Boucle autonome : recherche web → synthèse → archivage, jusqu'à épuisement des questions</td><td class="trigger">« fais une recherche web sur X » / "research X online"</td></tr>
+  <tr><td class="cmd">canvas</td><td class="desc">Crée ou modifie des fichiers <code>.canvas</code> Obsidian (tableaux visuels)</td><td class="trigger">« crée un canvas pour X » / "create a canvas for X"</td></tr>
+  <tr><td class="cmd">defuddle</td><td class="desc">Retire le bruit d'une page web (menus, publicités) avant de l'ingérer</td><td class="trigger">« nettoie cette page » / "defuddle &lt;url&gt;"</td></tr>
+  <tr><td class="cmd">obsidian-bases</td><td class="desc">Crée ou modifie des fichiers <code>.base</code> Obsidian (vues de type base de données)</td><td class="trigger">« crée une base pour X » / "create a base for X"</td></tr>
+  <tr><td class="cmd">wiki-graph</td><td class="desc">Construit le graphe des liens (JSON typé, lisible par le visualiseur natif d'Obsidian)</td><td class="trigger">« construis le graphe » / "build the wiki graph"</td></tr>
+  <tr><td class="cmd">wiki-tour</td><td class="desc">Un parcours de lecture ordonné, déduit de la topologie des liens</td><td class="trigger">« par où je commence » / "give me a tour of this vault"</td></tr>
+  <tr><td class="cmd">wiki-neighbors</td><td class="desc">Les voisines d'une page — liens sortants, liens entrants, ou les deux</td><td class="trigger">« voisins de X » / "what links to X"</td></tr>
+  <tr><td class="cmd">wiki-path</td><td class="desc">La plus courte chaîne de liens entre deux pages</td><td class="trigger">« quel rapport entre X et Y » / "how is X connected to Y"</td></tr>
+  <tr><td class="cmd">wiki-export</td><td class="desc">Exporte le vault en <code>llms.txt</code> / <code>llms-full.txt</code> ou en bundle OKF</td><td class="trigger">« exporte le wiki » / "export the wiki as llms.txt"</td></tr>
+  <tr><td class="cmd">okf-export</td><td class="desc">Exporte une partie du wiki en bundle OKF v0.1 partageable (conformité vérifiée)</td><td class="trigger">« publie en bundle OKF » / "export this folder as an OKF bundle"</td></tr>
+  <tr><td class="cmd">okf-projections</td><td class="desc">Régénère la navigation OKF dans <code>wiki/</code> (index racine et par dossier, journal du plus récent au plus ancien) ; rafraîchie automatiquement après les écritures ; <code>--check</code> = rapport de dérive</td><td class="trigger">« regénère les index du wiki » / "refresh the OKF projections"</td></tr>
   <tr><td class="cmd">okf-check</td><td class="desc">Valide n'importe quel bundle OKF contre les règles de conformité v0.1</td><td class="trigger">« ce bundle est-il conforme ? » / "validate this OKF bundle"</td></tr>
-  <tr><td class="cmd">wiki-refresh-digests</td><td class="desc">Régénère les digests sidecar par page (concepts/claims/keywords)</td><td class="trigger">« rafraîchis les digests » / "refresh the digests"</td></tr>
-  <tr><td class="cmd">build-search-index</td><td class="desc">Construit/rafraîchit l'index BM25 local (recherche sans plugin, idempotent)</td><td class="trigger">« construis l'index de recherche » / "build the search index"</td></tr>
-  <tr><td class="cmd">wiki-boundary</td><td class="desc">Classe les pages « frontière » — très liées mais presque vides, celles qui valent d'être écrites</td><td class="trigger">« qu'est-ce que je devrais écrire ensuite » / "frontier pages"</td></tr>
-  <tr><td class="cmd">who-is-speaking</td><td class="desc">Identifie le membre de la famille dans un vault partagé, lock le routage par membre</td><td class="trigger">« c'est Karine » / "who is speaking"</td></tr>
+  <tr><td class="cmd">wiki-refresh-digests</td><td class="desc">Régénère les résumés annexes de chaque page (concepts, affirmations, mots-clés)</td><td class="trigger">« rafraîchis les digests » / "refresh the digests"</td></tr>
+  <tr><td class="cmd">build-search-index</td><td class="desc">Construit ou rafraîchit l'index de recherche BM25 local (sans plugin ; rejouable)</td><td class="trigger">« construis l'index de recherche » / "build the search index"</td></tr>
+  <tr><td class="cmd">wiki-boundary</td><td class="desc">Classe les pages « frontière » — très liées mais presque vides, celles qui méritent d'être écrites</td><td class="trigger">« qu'est-ce que je devrais écrire ensuite » / "frontier pages"</td></tr>
+  <tr><td class="cmd">who-is-speaking</td><td class="desc">Dans un vault familial partagé, identifie qui parle et range ses notes dans son dossier</td><td class="trigger">« c'est Karine » / "who is speaking"</td></tr>
 </table>
 
 <div class="page-break"></div>
 
-<h2>Les 56 outils MCP <span class="count">— ce que Claude appelle réellement sous le capot</span></h2>
+<h2>Les 56 outils MCP <span class="count">— ce que Claude appelle réellement, et à quoi chacun sert</span></h2>
+
+<p>Vous n'appelez pas ces outils vous-même : les commandes et les skills le font. Cette table sert à comprendre ce qui se passe, et à lire les réponses. Chaque outil accepte <code>vault</code> ; les écritures acceptent <code>ifMatch</code> (voir « Écritures »).</p>
 
 <table class="config">
   <tr>
     <td>list_vaults · list_files</td>
-    <td><strong>Découverte.</strong> Catalogue des vaults avec état online + latence (à appeler en premier) ; listing de dossier.</td>
+    <td><strong>Découverte — savoir ce qui existe.</strong> <code>list_vaults</code> est l'appel à faire en premier : le catalogue des vaults, en ligne ou non, avec la latence, la version du routeur qui répond (<code>routerBuild</code>), si les hooks de la session ont tourné (<code>sessionHooks</code>), l'état des extras de conversion (<code>conversionToolbox</code>) et la liaison du workspace. <code>list_files</code> liste un dossier.</td>
   </tr>
   <tr>
     <td>get_file · search · search_smart · get_frontmatter</td>
-    <td><strong>Lectures.</strong> Fichier complet (renvoie <code>contentSha256</code> — le jeton <code>ifMatch</code>) ; recherche substring ; recherche sémantique (embeddings Smart Connections, scores cosinus) ; frontmatter typé. <code>vault: "*"</code> = fan-out cross-vault. <strong><code>search_smart</code> dit deux choses sur sa propre réponse.</strong> <code>freshness</code> signale chaque résultat dont la page a été modifiée depuis son indexation (<code>changed</code> / <code>touched</code>) ou a disparu (<code>page-missing</code>) — ouvre la page avant de citer un tel résultat ; un vault sans disque ici répond <code>checkable: false</code> au lieu de laisser croire à la fraîcheur. <code>folderExclusion</code> dit ce qui a été laissé de côté : <strong>par défaut <code>wiki-meta/Sessions</code></strong> (journaux chronologiques, 41,6 % des pages indexées du parc). <code>excludeFolders: []</code> les remet.</td>
+    <td><strong>Lectures.</strong> Le fichier complet (renvoie <code>contentSha256</code>, l'empreinte à rejouer en <code>ifMatch</code> pour écrire sans écraser) ; recherche de texte ; recherche par le sens (embeddings Smart Connections, scores cosinus) ; frontmatter typé. <code>vault: "*"</code> = sur tous les vaults. <code>search_smart</code> dit deux choses sur sa propre réponse : <code>freshness</code> signale un résultat dont la page a changé depuis son indexation (<code>changed</code>/<code>touched</code>) ou a disparu (<code>page-missing</code>) — ouvrez la page avant de la citer ; <code>folderExclusion</code> dit ce qui a été laissé de côté (par défaut <code>wiki-meta/Sessions</code>, les journaux chronologiques ; <code>excludeFolders: []</code> les remet).</td>
   </tr>
   <tr>
     <td>write_file · append_to_file · patch_file · delete_file · set_frontmatter · merge_frontmatter · move_file</td>
-    <td><strong>Écritures &amp; gestion de fichiers.</strong> Créer/remplacer ; append ; patch chirurgical par heading/block/frontmatter ; suppression gardée (<code>confirm: true</code>) ; une ou plusieurs clés de frontmatter ; déplacer/renommer. <strong><code>ifMatch</code></strong> : rejouez le <code>contentSha256</code> de <code>get_file</code> et l'écriture est refusée (409) si le fichier a changé depuis votre lecture — atomique avec bridge ≥ 0.7.0, repli vérifié sinon.</td>
+    <td><strong>Écritures et gestion de fichiers.</strong> Créer ou remplacer ; ajouter à la fin ; modifier un titre, un bloc ou le frontmatter ; supprimer (gardé par <code>confirm: true</code>) ; une ou plusieurs clés de frontmatter ; déplacer ou renommer. <strong><code>ifMatch</code></strong> : rejouez le <code>contentSha256</code> lu par <code>get_file</code> et l'écriture est refusée (409) si le fichier a changé entre-temps — c'est ce qui protège une note que quelqu'un d'autre édite ; atomique avec bridge ≥ 0.7.0, repli vérifié sinon. Un vault partagé entre plusieurs workspaces l'exige (<code>writesRequireIfMatch</code>).</td>
   </tr>
   <tr>
     <td>execute_template</td>
-    <td><strong>Templater.</strong> Rend un template, écrit optionnellement le résultat ; arguments via <code>tp.mcpTools.prompt("clé")</code>.</td>
+    <td><strong>Templater.</strong> Rend un template et écrit le résultat si demandé ; les valeurs sont passées via <code>tp.mcpTools.prompt("clé")</code>.</td>
   </tr>
   <tr>
     <td>lock_vault · unlock_vaults · set_auto_enrich_mode · confirm_workspace_binding · set_secondary_vault_mode</td>
-    <td><strong>État du router &amp; liaison de workspace.</strong> Isolation mono-vault ; bascule du mode d'auto-enrichissement ; confirme, refuse ou efface la liaison de ce workspace (<code>{ vault }</code>, <code>{ vault, also: [...] }</code> pour plusieurs, <code>{ refuse: true }</code> pour dire non à une proposition, <code>{ clear: true }</code> pour tous les vaults) — enregistrée dans ton propre <code>config.json</code>, jamais dans le projet. <code>set_secondary_vault_mode</code> règle le <strong>palier d'écriture</strong> d'un secondaire : <code>locked</code> (refus côté serveur, aucun outrepassement), <code>soft</code> (le défaut — refusé tant qu'il n'est pas confirmé une fois par <code>confirmSecondaryWrite</code>), <code>writable</code>. Sur un déploiement gated (<code>READONLY</code> / <code>ALLOWED_VAULTS</code> / <code>USER_ID</code>), les deux sont refusés : un seul répertoire sert tous les appelants, donc une réponse persistée parlerait pour tous.</td>
+    <td><strong>État du routeur et liaison du workspace.</strong> Isolation à un seul vault ; mode d'auto-enrichissement ; confirmer, refuser ou effacer la liaison de ce workspace (<code>{ vault }</code>, <code>{ vault, also: [...] }</code> pour plusieurs, <code>{ refuse: true }</code>, <code>{ clear: true }</code>) — enregistrée dans <em>votre</em> <code>config.json</code>, jamais dans le projet. <code>set_secondary_vault_mode</code> règle le <strong>palier d'écriture</strong> d'un secondaire : <code>locked</code> (refus côté serveur), <code>soft</code> (le défaut : refusé tant qu'une confirmation <code>confirmSecondaryWrite</code> n'a pas été donnée), <code>writable</code>. Sur une instance partagée (<code>READONLY</code> / <code>ALLOWED_VAULTS</code> / <code>USER_ID</code>), refusés : une réponse persistée parlerait pour tout le monde.</td>
   </tr>
   <tr>
     <td>plan_vault · provision_vault · register_remote_vault</td>
-    <td><strong>Provisionnement de vault.</strong> Plan read-only (défauts + questionnaire + avertissements) → création en un appel (plugins, port, clé API, scaffold wiki, registre). Local uniquement. <code>register_remote_vault</code> enregistre depuis une conversation un vault <em>distant</em> déjà en service (nom, <code>baseUrl</code>, <code>apiKey</code>) — toujours dans <code>config.json</code>, jamais dans le fichier dotenv d'un projet, et caché sur les déploiements gated.</td>
+    <td><strong>Créer ou déclarer un vault.</strong> Un plan en lecture seule (défauts, questions, avertissements) → création en un appel (plugins, port, clé, wiki, registre) — le vault est jugé sur son chemin réel, épinglé pour toute l'opération, et refusé si son arbre contient un lien. <code>register_remote_vault</code> enregistre depuis la conversation un vault distant déjà en service (nom, <code>baseUrl</code>, <code>apiKey</code>, et si ses fichiers sont visibles d'ici <code>localPath</code>) — dans <code>config.json</code>, jamais dans le <code>.env</code> d'un projet ; caché sur une instance partagée.</td>
   </tr>
   <tr>
     <td>pdf/docx/xlsx/pptx/image/audio_to_markdown</td>
-    <td><strong>Conversion locale</strong> (MarkItDown — opt-in : <code>npm run install-markitdown</code> ; les outils restent listés et renvoient un hint d'installation si le backend manque). Bureautique/PDF/OCR image/transcription audio → markdown ; chaîner avec <code>write_file</code>.</td>
+    <td><strong>Conversion locale</strong> (MarkItDown, extra à installer : <code>npm run install-markitdown</code> ; les outils restent listés et renvoient l'instruction d'installation s'il manque). Bureautique, PDF, OCR d'image, transcription audio → Markdown, à enchaîner avec <code>write_file</code>.</td>
   </tr>
   <tr>
     <td>pdf_to_markdown_docling · pdf_to_images</td>
-    <td><strong>PDF haute fidélité</strong> (Docling opt-in) : mise en page + structure de tableaux. <code>pdf_to_images</code> rend les pages en PNG pour que le modèle les <em>voie</em> (pages/octets plafonnés).</td>
+    <td><strong>PDF haute fidélité</strong> (Docling, extra) : mise en page et tableaux préservés. <code>pdf_to_images</code> rend des pages en PNG pour que le modèle les <em>voie</em> (nombre de pages et octets plafonnés).</td>
   </tr>
   <tr>
     <td>pptx_extract_assets</td>
-    <td><strong>Images d'un deck sur disque</strong>, sans Python (un PPTX est un ZIP) : chaque image embarquée écrite une fois, avec les positions des diapositives qui l'affichent (hors parties signalées dans <code>skipped</code>) — les octets que <code>pptx_to_markdown</code> ne peut pas rendre. <em>Outil d'écriture</em> : un <code>outdir</code> dans un vault subit le palier de ce vault, et <code>createOnly: true</code> sur un vault partagé ; hors de tout vault, seul le dossier temporaire est permis.</td>
+    <td><strong>Les images d'une présentation, sur disque</strong>, sans Python (un PPTX est un ZIP) : chaque image embarquée écrite une fois, avec les diapositives qui l'affichent — ce que <code>pptx_to_markdown</code> ne peut pas rendre. Outil d'écriture : un <code>outdir</code> dans un vault subit le palier de ce vault ; hors de tout vault, seul le dossier temporaire est permis.</td>
   </tr>
   <tr>
     <td>youtube/bing_search/webpage_to_markdown · git_repo_to_markdown</td>
-    <td><strong>Conversion distante.</strong> URL → markdown (garde SSRF) ; transcripts YouTube ; dépôt git → bundle markdown unique (repomix, compression Tree-sitter optionnelle). <code>webpage_to_markdown</code> accepte <code>relevanceQuery</code> (BM25) et <code>citations: true</code> — les liens inline passent en notes de bas de page numérotées avec une liste de références, une par destination, sans toucher au code, aux images ni aux wikilinks. Avec les deux, le filtre passe d'abord : marqueurs et définitions se correspondent un pour un.</td>
+    <td><strong>Conversion distante.</strong> URL → Markdown (avec une garde contre les adresses internes) ; sous-titres YouTube ; un dépôt git entier → un seul document (repomix, compression Tree-sitter en option). <code>webpage_to_markdown</code> accepte <code>relevanceQuery</code> (ne garder que ce qui répond à une question) et <code>citations: true</code> (les liens deviennent des notes de bas de page numérotées).</td>
   </tr>
   <tr>
     <td>filter_relevant_blocks</td>
-    <td><strong>Filtre de pertinence.</strong> 2ᵉ passe BM25 déterministe sur du markdown déjà acquis — retire les blocs hors-sujet, garde frontmatter/titres, plusieurs garde-fous no-op. Aucun fetch, aucun LLM.</td>
+    <td><strong>Filtre de pertinence.</strong> Une seconde passe BM25, déterministe, sur un Markdown déjà obtenu : retire les blocs hors sujet, garde frontmatter et titres. Aucun accès réseau, aucun modèle de langage.</td>
   </tr>
   <tr>
     <td>extract_page_metadata · propose_linked_sources · download_page_assets</td>
-    <td><strong>Support d'ingestion web.</strong> Métadonnées de page déterministes (JSON-LD/OpenGraph) ; candidats de liens à suivre scorés ; téléchargement d'images dans le vault.</td>
+    <td><strong>Aide à l'ingestion web.</strong> Les métadonnées d'une page (JSON-LD, OpenGraph) ; les liens qui valent d'être suivis, classés ; le téléchargement des images dans le vault.</td>
   </tr>
   <tr>
     <td>get_wiki_context_pack · build_wiki_graph · build_wiki_tour · get_page_neighbors · wiki_path</td>
-    <td><strong>Contexte &amp; graphe.</strong> Enveloppe de contexte structurée pour agents externes ; knowledge-graph typé ; parcours de lecture ; voisines par page ; plus court chemin de liens. Chaque élément du pack porte sa <code>source</code> — <code>index</code> (le catalogue du vault) et <code>graph</code> (un wikilink) sont de la <strong>navigation, qui fait autorité</strong> ; <code>semantic</code> est une augmentation, jamais l'unique support d'une affirmation factuelle. Un pack sans ancrage de navigation le dit : <code>answer-relies-on-semantic-only</code>.</td>
+    <td><strong>Contexte et graphe.</strong> Un paquet de contexte structuré pour un agent extérieur ; le graphe typé ; le parcours de lecture ; les voisines ; le plus court chemin. Chaque élément du paquet dit d'où il vient : <code>index</code> (le catalogue) et <code>graph</code> (un lien) sont de la <strong>navigation, qui fait foi</strong> ; <code>semantic</code> est un complément, jamais l'unique appui d'un fait. Un paquet sans ancrage de navigation le dit : <code>answer-relies-on-semantic-only</code>.</td>
   </tr>
   <tr>
     <td>find_boundary_pages · find_twin_pages</td>
-    <td><strong>Analyse du wiki.</strong> Pages « frontière » qui valent d'être écrites (très liées, presque vides) ; paires quasi-jumelles par cosinus sur les vecteurs Smart Connections, seuil dérivé de la distribution propre au vault, chaque paire portant les indices pour l'écarter. Quand ils ne peuvent pas regarder, les deux répondent <code>available: false</code> avec un motif (jamais un faux « 0 trouvé »). <code>find_twin_pages</code> marche aussi sur les <strong>vaults distants</strong> (bridge ≥ 0.9.0 sert le magasin de vecteurs).</td>
+    <td><strong>Analyse du wiki.</strong> Les pages « frontière » qui méritent d'être écrites ; les paires quasi jumelles (similarité de vecteurs, seuil calculé sur le vault), chacune avec les indices pour trancher. Quand ils ne peuvent pas regarder, les deux répondent <code>available: false</code> avec la raison — jamais un faux « 0 trouvé ». <code>find_twin_pages</code> marche aussi sur un vault distant (bridge ≥ 0.9.0).</td>
   </tr>
   <tr>
     <td>write_bundle · refresh_okf_projections · build_search_index</td>
-    <td><strong>Maintenance du wiki.</strong> Bundle multi-fichiers journalisé — application tout-ou-rien avec rollback ; régénération de la navigation OKF (<code>index.md</code> par répertoire + <code>log.md</code> antichronologique — fichiers générés, à ne jamais éditer à la main) ; index de recherche BM25 local (marche sur tous les vaults, aucun plugin requis).</td>
+    <td><strong>Entretien du wiki.</strong> Plusieurs fichiers d'un bloc, tout ou rien, avec retour arrière ; régénération de la navigation OKF (<code>index.md</code> par dossier, <code>log.md</code> du plus récent au plus ancien — fichiers générés, à ne jamais éditer à la main) ; index de recherche BM25 local (tous les vaults, aucun plugin requis).</td>
   </tr>
   <tr>
     <td>record_source · audit_sources</td>
-    <td><strong>Registre des sources.</strong> Consigne la provenance du contenu ingéré (URL, hash, date) ; audite les sources d'un vault (dérive, trous).</td>
+    <td><strong>Registre des sources.</strong> D'où vient ce qui a été ingéré (URL, empreinte, date) ; audit des sources d'un vault (dérives, trous).</td>
   </tr>
   <tr>
     <td>audit_vault_conventions</td>
-    <td><strong>Audit des conventions.</strong> Les conventions sous lesquelles un vault est réellement : le fichier que le router retient (ou les deux entre lesquels il ne peut pas choisir), les recommandées absentes, les copies du modèle et les sauvegardes héritées — chaque constat avec une réparation à approuver, jamais appliquée seule.</td>
+    <td><strong>Audit des conventions.</strong> Sous quelles conventions un vault est réellement : le fichier que le routeur retient (ou les deux entre lesquels il ne peut pas choisir), les recommandées absentes, les copies du modèle, les sauvegardes héritées — chaque constat avec une réparation à approuver, jamais appliquée seule.</td>
   </tr>
   <tr>
     <td>install_conventions</td>
-    <td><strong>Installateur de conventions.</strong> Installe des conventions de la bibliothèque, par id, dans le fichier de conventions du vault en UNE écriture compare-and-swap (textes lus dans le paquet, jamais recopiés), puis relit le fichier et vérifie ; <code>languages</code> prend la valeur propre au vault, une convention retirée est signalée et jamais écrite, <code>dryRun</code> rend l'état dont le picker a besoin.</td>
+    <td><strong>Installateur de conventions.</strong> Installe des conventions de la bibliothèque, par identifiant, dans le fichier de conventions du vault en UNE écriture protégée (textes lus dans le paquet, jamais recopiés par le modèle), puis relit le fichier et vérifie ; <code>languages</code> prend la valeur propre au vault, une convention retirée est signalée et jamais écrite, <code>dryRun</code> rend l'état dont le menu de sélection a besoin.</td>
   </tr>
   <tr>
     <td>build_open_link · open_in_obsidian · get_view_link</td>
-    <td><strong>Navigation.</strong> Liens click-to-open prêts à coller (chemin vérifié contre le vault ; sur un vault sans disque le lien est quand même construit, marqué <code>pathVerified: false</code>) ; ouverture côté serveur (fenêtre Obsidian au premier plan, ancre de titre optionnelle) — sans aller-retour navigateur ; view-link navigateur éphémère vers une GUI live pour les déploiements distants.</td>
+    <td><strong>Navigation.</strong> Un lien click-to-open prêt à coller (chemin vérifié contre le vault ; sur un vault sans disque, le lien est construit quand même, marqué <code>pathVerified: false</code>) ; ouverture côté serveur (la fenêtre Obsidian passe au premier plan, titre optionnel) ; lien de vue éphémère vers un Obsidian distant, pour les déploiements en conteneur.</td>
   </tr>
 </table>
 
 <div class="tips">
-<strong>Astuces</strong> · Tape <code>/obsidian-router:</code> dans Claude Code → autocomplete · Chaque commande accepte un argument <code>vault</code> (les wrappers retombent sur le défaut) · <code>vault: "*"</code> sur <code>search</code> / <code>search_smart</code> = fan-out cross-vault · Les phrases déclencheuses sont indicatives — Claude reconnaît les variantes · Les résultats d'écriture portent un <code>clickToOpenUrl</code> tout fait — un clic ouvre la note dans Obsidian · <strong>Préfixes runtime</strong> : mêmes outils, trois enregistrements — plugin : <code>mcp__plugin_obsidian-router_router__&lt;tool&gt;</code> · enregistrement manuel : <code>mcp__obsidian-router__&lt;tool&gt;</code> · MCPHub : <code>mcp__&lt;id&gt;__obsidian-router-&lt;vault&gt;-&lt;tool&gt;</code> ; les deux premiers coexistent (outils dupliqués, pas de dédup) si l'entrée manuelle est conservée · Doc complète : <code>README.md</code>, <code>docs/features/</code> (13 fiches), <code>docs/auto-enrichment.md</code> dans le repo.
+<strong>Astuces</strong> · Tapez <code>/obsidian-router:</code> dans Claude Code → complétion automatique · Chaque commande accepte un argument <code>vault</code> (sinon, le vault du workspace) · <code>vault: "*"</code> sur <code>search</code> / <code>search_smart</code> = tous les vaults · Les phrases déclencheuses sont indicatives, Claude reconnaît les variantes · Les résultats d'écriture portent un <code>clickToOpenUrl</code> tout fait — un clic ouvre la note dans Obsidian · <strong>Noms des outils selon l'installation</strong> : mêmes outils, trois préfixes — plugin : <code>mcp__plugin_obsidian-router_router__&lt;tool&gt;</code> · enregistrement manuel : <code>mcp__obsidian-router__&lt;tool&gt;</code> · MCPHub : <code>mcp__&lt;id&gt;__obsidian-router-&lt;vault&gt;-&lt;tool&gt;</code> ; les deux premiers coexistent (outils en double) si l'entrée manuelle est conservée · Doc complète : <code>README.md</code>, <code>docs/features/</code> (13 fiches), <code>docs/auto-enrichment.md</code>, <code>docs/remote-vaults.md</code> dans le dépôt.
 </div>
 
 </body>
