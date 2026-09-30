@@ -24,16 +24,39 @@ const CONTROL_RE = new RegExp(
     + String.fromCharCode(0x7f) + '-' + String.fromCharCode(0x9f) + ']',
 );
 
+// What Python's `str.strip()` removes — the view-agent's test is
+// `name == name.strip()`. Measured on CPython 3.12 (every code point for which
+// `chr(i).isspace()`), not taken from JS `trim()`: that one also strips U+FEFF,
+// which Python keeps, so borrowing it would refuse a label the agent accepts.
+const PYTHON_STRIP = new Set([
+  0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x85, 0xa0, 0x1680,
+  0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a,
+  0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
+]);
+
 /**
  * True when `v` can be a vault label: a non-blank string of at most 255
  * UTF-16 units, with no control character and no path separator — an
  * Obsidian vault is a folder, and a folder name holds neither `/` nor `\`.
+ *
+ * Never looser than the view-agent, which refuses the whole `/view` request
+ * with a 400 when `obsidian_name` fails ITS rule — and it validates the hints
+ * before it classifies the vault, so one bad label also costs the `rest` hint
+ * that would have found a container vault. Two gaps closed against its
+ * `normalize_hints`: a label with surrounding whitespace (the agent requires
+ * `name == name.strip()` — see PYTHON_STRIP), and a lone surrogate, which is
+ * not text — `URLSearchParams` would put U+FFFD on the wire in its place, i.e.
+ * a name other than the one configured.
  * @param {unknown} v
  * @returns {boolean}
  */
 export function isValidObsidianName(v) {
   if (typeof v !== 'string') return false;
-  if (v.trim().length === 0) return false;
+  // Empty only: a whitespace-only label is refused by the edge check below,
+  // with Python's notion of whitespace (JS trim() would also refuse U+FEFF).
+  if (v.length === 0) return false;
+  if (PYTHON_STRIP.has(v.charCodeAt(0)) || PYTHON_STRIP.has(v.charCodeAt(v.length - 1))) return false;
+  if (!v.isWellFormed()) return false;
   if (v.length > OBSIDIAN_NAME_MAX_LENGTH) return false;
   if (CONTROL_RE.test(v)) return false;
   if (v.includes('/') || v.includes('\\')) return false;

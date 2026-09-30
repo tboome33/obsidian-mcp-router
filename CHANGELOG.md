@@ -19,8 +19,9 @@ path, query or fragment can come along, and the API key is never read; a missing
 explicitly as the scheme default; only http and https), and `obsidian_name`, the vault's label inside Obsidian. A local
 vault's label is its folder name. A remote vault's label cannot be derived, so `remoteVaults[]`
 entries and `VAULT_*` variables accept a new optional field, `obsidianName`: a non-blank string of
-at most 255 UTF-16 code units, with no control character and no `/` or `\` (`null` counts as
-absent). Any other invalid value is dropped with a warning and the vault still loads. Also fixed
+at most 255 UTF-16 code units, with no control character, no `/` or `\`, no leading or trailing
+whitespace and no unpaired surrogate — never looser than the view-agent, which answers `400` to
+the whole request for a label it refuses (`null` counts as absent). Any other invalid value is dropped with a warning and the vault still loads. Also fixed
 in passing: the view-agent transport no longer follows a redirect, which would have replayed
 `X-View-Token` to wherever `Location` pointed; a 3xx is now reported as an error. The three callers — the write-time `viewLink`,
 `get_view_link` and `open_in_obsidian` — all pass the hints; a provider that ignores them sees
