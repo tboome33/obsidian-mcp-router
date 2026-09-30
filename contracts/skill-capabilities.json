@@ -168,14 +168,15 @@
         "vault:content"
       ],
       "tools": [
-        "append_to_file",
         "audit_vault_conventions",
         "get_file",
+        "install_conventions",
         "list_files",
         "list_vaults",
         "write_file"
       ],
       "toolsMentionedNotCalled": [
+        "append_to_file",
         "move_file"
       ],
       "writeMode": "mutating",
@@ -188,7 +189,7 @@
       },
       "verification": {
         "status": "declared",
-        "reason": "No harness executes a skill. The local:fs atoms are real and easy to miss: the snippet library lives in the PLUGIN INSTALL directory, which the skill both globs and (for `add`) writes into — outside every vault and outside the workspace. Since v0.94.3 the skill also calls list_files, to find WHICH conventions file a vault has before touching it — the fleet keeps it at three different paths, and the previous blind `get_file(\"CLAUDE.md\")` turned a 404 into a second, competing conventions file at the vault root. That widens the read set only: nothing about the write side changed, and the detection and section-cutting logic it now shares with the attach wizard is a pure helper (src/helpers/claude-md-conventions.mjs) that calls nothing."
+        "reason": "No harness executes a skill. The local:fs atoms are real and easy to miss: the snippet library lives in the PLUGIN INSTALL directory, which the skill both globs (offline fallback of `list`) and (for `add`) writes into — outside every vault and outside the workspace. Since v0.94.3 the skill also calls list_files, to find WHICH conventions file a vault has before touching it (the `remove` path) — the fleet keeps it at three different paths, and the previous blind `get_file(\"CLAUDE.md\")` turned a 404 into a second, competing conventions file at the vault root. `install`, `list` and `pick` now go through install_conventions (one compare-and-swap write per vault, texts read server-side, file read back and verified; `dryRun` for the state), so append_to_file is named only as what NOT to use — it carries no precondition and the shared-vault gate refuses it. `audit` calls audit_vault_conventions (read-only); the `ambiguous-conventions-file` repair it may propose is a move_file step handed to /obsidian-router:manage-move, so move_file is named but never called here. `mutating` stays because `remove` and `migrate-bilingual` rewrite the file with write_file."
       }
     },
     "decision-consolidate": {
@@ -456,26 +457,29 @@
         "workspace:files"
       ],
       "tools": [
-        "append_to_file",
+        "install_conventions",
         "list_vaults",
         "plan_vault",
         "provision_vault"
       ],
-      "toolsMentionedNotCalled": [],
+      "toolsMentionedNotCalled": [
+        "append_to_file"
+      ],
       "writeMode": "mutating",
       "requires": {
         "shell": true,
-        "network": false,
+        "network": true,
         "python": false,
         "obsidianPlugins": [],
         "binaries": [
           "git",
-          "node"
+          "node",
+          "obsidian-mcp-router"
         ]
       },
       "verification": {
         "status": "declared",
-        "reason": "No harness executes a skill. This is the widest contract in the set: it runs setup-vault.mjs through Bash, can `git init`, and writes four files in the workspace. It also invokes the `conventions` skill, so its reads/writes cover that closure too — the vault:content and local:fs atoms come from there, not from anything this page does itself. The preview-and-explain discipline the page describes is entirely procedural."
+        "reason": "No harness executes a skill. This is the widest contract in the set: it runs setup-vault.mjs through Bash, can `git init`, and writes four files in the workspace. It also invokes the `conventions` skill, so its reads/writes cover that closure too — the local:fs atoms come from there. The vault:content atoms now also come from this page itself: its conventions picker (1A.5, automatic at the end of every attach) reads the state with install_conventions `dryRun` and installs the checked conventions with ONE install_conventions call; append_to_file is named only as what not to use. The preview-and-explain discipline the page describes is entirely procedural."
       },
       "delegatesTo": [
         "conventions"
@@ -560,11 +564,11 @@
       ],
       "writeMode": "read-only",
       "requires": {
-        "shell": false,
+        "shell": true,
         "network": false,
         "python": false,
         "obsidianPlugins": [],
-        "binaries": []
+        "binaries": ["obsidian-mcp-router"]
       },
       "verification": {
         "status": "declared",
@@ -917,6 +921,7 @@
       "tools": [
         "append_to_file",
         "get_file",
+        "install_conventions",
         "list_files",
         "list_vaults",
         "move_file",
@@ -934,7 +939,7 @@
       },
       "verification": {
         "status": "declared",
-        "reason": "No harness executes a skill. Classed `destructive` because the scaffolding step relocates misplaced files with move_file. `local:fs` covers reading templates/wiki/CLAUDE.md from the plugin install directory, outside the vault."
+        "reason": "No harness executes a skill. Classed `destructive` because the scaffolding step relocates misplaced files with move_file. `local:fs` covers reading templates/wiki/CLAUDE.md from the plugin install directory, outside the vault. Step 6 runs the conventions picker automatically at the end of every wiki creation: install_conventions `dryRun` for the state, then ONE install_conventions call (append-only, compare-and-swap) — within the vault:content write atom already declared."
       }
     },
     "wiki-boundary": {

@@ -5,7 +5,8 @@
  * It began as the answer to one question — "what is this vault's slug?" — and
  * the name is from then. The remit is now every hand-editable `config.json`
  * value that names or locates a vault: `vaultNames`, `portRegistry`,
- * `defaultVault`, `disabledVaults`, `referenceVault`, `vaultsRoot`. They are
+ * `defaultVault`, `disabledVaults`, `referenceVault`, `vaultsRoot`, and
+ * `remoteVaults[].localPath`. They are
  * one class, they failed the same way, and splitting them across two modules
  * would recreate the duplication this file exists to end. See "The config's
  * OTHER answers about vaults" near the bottom for why they landed here rather
@@ -708,4 +709,59 @@ export function bindableVaultNames(cfg) {
       .map((r) => (typeof r?.name === 'string' ? r.name : null))
       .filter(Boolean),
   ]);
+}
+
+// ---------------------------------------------------------------------------
+// `remoteVaults[].localPath` — a remote vault whose files ALSO sit here
+// ---------------------------------------------------------------------------
+//
+// The case it serves, measured before it was written: Obsidian runs in a
+// container and is reached over its Local REST API (so the vault is REMOTE to
+// the router — every note goes through HTTP), but the container's volume is a
+// directory on the very machine the router and its hooks run on. Without a way
+// to say so, the hooks found no hot cache to load and `search_smart` declined
+// its freshness check as `no-local-disk`, both about a disk that was right
+// there.
+//
+// The field is the CONFIG'S WORD, typed once here like every other key this
+// module reads. What it may be used for is decided at each reader, and
+// deliberately narrowly — see `remoteVaultDescriptor` in src/registry.mjs,
+// which surfaces it as `diskPath` (never `path`: every `type === 'local' &&
+// path` test in the server keeps its meaning, and a server tool never reads a
+// note's CONTENT from this directory).
+
+/**
+ * An absolute directory spelling this router can use on either platform family:
+ * a drive-letter or UNC path (Windows), or a `/`-rooted one (POSIX). No NUL,
+ * no relative spelling — a relative `localPath` would be resolved against
+ * whichever cwd a hook happened to start in, which is a different directory
+ * per workspace.
+ *
+ * @param {unknown} p
+ * @returns {boolean}
+ */
+export function isAbsoluteLocalPath(p) {
+  if (typeof p !== 'string' || p === '' || p.includes('\0')) return false;
+  return isWindowsPath(p) || p.startsWith('/');
+}
+
+/**
+ * The declared local directory of the remote vault named EXACTLY `name`, or
+ * null. Exact, as the registry compares names; and only for an entry the
+ * registry would load at all (`name`, `baseUrl`, `apiKey` present, not
+ * `enabled: false`) — a directory attached to a vault the server skips would
+ * hand the hooks a vault the session cannot see.
+ *
+ * @param {unknown} cfg
+ * @param {unknown} name
+ * @returns {string|null}
+ */
+export function remoteVaultLocalPath(cfg, name) {
+  if (!cfg || typeof name !== 'string' || !name) return null;
+  for (const r of Array.isArray(cfg.remoteVaults) ? cfg.remoteVaults : []) {
+    if (!r || typeof r !== 'object' || r.name !== name) continue;
+    if (!r.baseUrl || !r.apiKey || r.enabled === false) return null;
+    return isAbsoluteLocalPath(r.localPath) ? r.localPath : null;
+  }
+  return null;
 }

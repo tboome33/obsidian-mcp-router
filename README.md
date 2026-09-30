@@ -85,7 +85,7 @@ Three independent env vars turn the router into a scoped instance — useful whe
 |---|---|---|
 | `OBSIDIAN_ROUTER_ALLOWED_VAULTS=a,b,c` | Whitelist of vault names this instance sees. Comma-separated, spaces tolerated. Vaults outside the list are moved to `skipped[]` with reason `"not in OBSIDIAN_ROUTER_ALLOWED_VAULTS whitelist"`. Applied **before** default-vault resolution, so `defaultVault` falls through to the filtered set. | All vaults visible |
 | `VAULT_<NAME>=<JSON>` | A vault defined entirely in an env var (JSON) — editable from the MCPHub dashboard. A 3rd config source merged after `portRegistry` + `remoteVaults` (overrides any same-name vault). Required: `name`, `baseUrl`, `apiKey` (the **bare token**). Optional: `description`, `tlsInsecure`, `timeoutMs`. Malformed entries are skipped with a redacted warning. See "[`VAULT_*` env-var config](#vault_-env-var-config-dashboard-editable)" below. | (none) |
-| `OBSIDIAN_ROUTER_READONLY=true` | Disable write tools. The 17 write tools (`write_file`, `append_to_file`, `patch_file`, `set_frontmatter`, `merge_frontmatter`, `move_file`, `delete_file`, `execute_template`, `download_page_assets`, `pptx_extract_assets`, `build_wiki_graph`, `provision_vault`, `register_remote_vault`, `refresh_okf_projections`, `write_bundle`, `record_source`, `build_search_index`) are filtered from `ListTools` **and** refused at `CallTool` time — even when a client knows the name and calls it directly. Truthy tokens: `true` / `1` / `yes` / `on` (case-insensitive). | Write tools enabled |
+| `OBSIDIAN_ROUTER_READONLY=true` | Disable write tools. The 18 write tools (`write_file`, `append_to_file`, `patch_file`, `set_frontmatter`, `merge_frontmatter`, `move_file`, `delete_file`, `execute_template`, `download_page_assets`, `pptx_extract_assets`, `build_wiki_graph`, `provision_vault`, `register_remote_vault`, `refresh_okf_projections`, `write_bundle`, `record_source`, `install_conventions`, `build_search_index`) are filtered from `ListTools` **and** refused at `CallTool` time — even when a client knows the name and calls it directly. Truthy tokens: `true` / `1` / `yes` / `on` (case-insensitive). | Write tools enabled |
 | `OBSIDIAN_ROUTER_USER_ID=<slug>` | Audit log: every **successful** write call appends a line `[claude-write by <slug>] YYYY-MM-DD HH:MM — <tool> path="<path>"` to the touched vault's `wiki-meta/journal.md`. Best-effort (audit failure logs to stderr, never blocks the write). Uses the REST client directly to avoid the recursion that would happen via the `append_to_file` tool wrapper. Setting it also marks the deployment as **gated**, which hides the local-only `plan_vault` / `provision_vault` tools. | No audit log |
 
 The three vars compose freely: an instance can be scoped to one vault (`ALLOWED_VAULTS=karine`) AND read-only (`READONLY=true`) AND attribute writes (`USER_ID=karine-guest`). Setting none = local mode exactly.
@@ -669,7 +669,12 @@ see which vaults are in that state rather than discovering it from a refusal.
 `register_remote_vault({ name, baseUrl, apiKey })` adds a vault served over the
 network to your own config without editing JSON by hand — the conversational
 half of the `remoteVaults` block documented below. It is hidden on multi-tenant
-deployments, where the config is shared.
+deployments, where the config is shared. An optional absolute `localPath` says
+the vault's files also sit on this machine (Obsidian in a container, say); the
+tool stores it as declared, and `obsidian-mcp-router --attach <name> --local-path
+<dir>` verifies it against the vault before recording it. Notes still travel over
+REST only — see [`docs/remote-vaults.md`](docs/remote-vaults.md) for what the
+field enables.
 
 ### Which hooks the plugin turns on by itself
 
@@ -716,7 +721,11 @@ obsidian-mcp-router --version
 obsidian-mcp-router --help
 obsidian-mcp-router --config /custom/path/config.json
 obsidian-mcp-router --no-watch     # disable hot-reload of the config file
+obsidian-mcp-router --plugin-health <vault> [--json]   # plugin code on disk vs. loaded by Obsidian
+obsidian-mcp-router --install-plugins <vault> --dry-run   # sealed plan; apply with --approved-plan-sha256 <seal>
 ```
+
+Both plugin commands work on the vault's folder (a local vault, or a remote one that declares `localPath`); details in [feature sheet 13](docs/features/13-installation-et-administration.md) (French).
 
 By default, the router watches the config file and reloads automatically when it changes — useful when paired with `setup-vault.mjs` adding new vaults, or with the future `Obsidian Cloudflare Tunnel` plugin auto-writing tunnel URLs into `remoteVaults`.
 
@@ -1089,7 +1098,7 @@ Full design — the seven decisions behind it, the migration's journal-and-resum
 | `register_remote_vault` | Add a vault served over the network (`{ name, baseUrl, apiKey }`) to your own config, without editing JSON by hand. Local-only (absent on gated deployments). |
 | `get_view_link` | Build a signed, expiring link that opens a vault page in the read-only view agent. |
 | `plan_vault` | **Read-only.** Plan the creation of a NEW local vault: returns computed defaults + a structured questionnaire (the 5 wiki modes, themes installed in the source, registered vaults to copy config from, plugin profiles) + warnings — without writing anything. Feeds the guided wizard; chain with `provision_vault`. Local-only (absent on gated deployments). |
-| `provision_vault` | Create a NEW local vault in one call from the wizard answers (typically `plan_vault` defaults + adjustments). Returns a step-by-step report + port, insecurePort, openUri and probe result. Refuses paths outside the known vault roots unless `allowOutsideRoots: true`; `--from-vault` copies config only (credentials excluded, port + API key regenerated). Local-only. |
+| `provision_vault` | Create a NEW local vault in one call from the wizard answers (typically `plan_vault` defaults + adjustments). Returns a step-by-step report + port, insecurePort, openUri and probe result. Refuses paths outside the known vault roots (judged on the real path, links resolved) unless `allowOutsideRoots: true`; the new vault's directory is pinned for the whole run, must be the one the gate approved, and is refused when its existing tree holds a link, junction or hard link (or a `.git` when `gitInit` is asked) (Windows: NTFS only); `--from-vault` copies config only (credentials excluded, port + API key regenerated). Local-only. |
 | `pdf_to_markdown` · `docx_to_markdown` · `xlsx_to_markdown` · `pptx_to_markdown` · `image_to_markdown` · `audio_to_markdown` | Convert a local file to markdown via the bundled `markitdown` Python CLI. Image OCR and audio transcription require the `[all]` extras (opt-in: `npm run install-markitdown`). Returns markdown text only — chain with `write_file` to persist. |
 | `pdf_to_markdown_docling` | Convert a local PDF to markdown via **Docling**'s standard pipeline (layout detection + TableFormer table-structure recognition). Higher fidelity than `pdf_to_markdown` on complex tables / multi-column layouts, at ~10× the CPU cost. **Opt-in** — requires the Docling extra (see *Conversion tools — runtime dependencies*). PDF only; for office formats keep `pdf_to_markdown`. |
 | `pdf_to_images` | **Render** a local PDF's pages to PNG images, returned as MCP image blocks so the model can visually **see** a page (not just read its text). Renders with **pypdfium2** (BSD) + Pillow from the same `.venv-docling` as Docling — returns an actionable install hint if absent. Params: `filepath`, `first_page`, `max_pages` (default 8, cap 30), `scale` (≈144 DPI). Hard page/byte caps bound token cost. Does not write to any vault. |
@@ -1121,7 +1130,8 @@ The `*_to_markdown` family is a JS/ESM port of [zcaceres/markdownify-mcp](https:
 - **You can find out before a tool call fails.** Every `list_vaults` response carries a `conversionToolbox` block — `available`, `via` (`bundled-venv` / `env-override` / `path`), `path`, `verified`, `optedOut`, `toolsAffected`, `toolsDegraded`, and a `hint` naming the command for *this* install — except where the install path contains characters a shell would reinterpret, in which case the hint deliberately falls back to generic wording rather than emit something unsafe to paste. `verified: false` means the answer was taken on your word rather than measured (a bare command name that `execFile` resolves through `PATH` at call time, or a UNC path that is unsafe to stat on this hot path) — read it as "configured", not "ready". `meta-status` renders it as one line. It runs **no subprocess** — but "no subprocess" is not the same as free: it stats a bounded slice of `PATH` synchronously, so a `PATH` entry on a **disconnected mapped drive or dead network mount** can make that call wait for an OS timeout. UNC entries are skipped; a dead `Z:\` looks like a local path and cannot be. The scan is also capped (64 KB of `PATH`, 128 entries), so on a pathological `PATH` it under-reports rather than over-promises. It is a *stat*, not a trial run, so a green tick is not a guarantee either: a POSIX file whose execute bit belongs to another user, or a Windows `.exe` that is not a valid image, still fails at spawn. The authoritative answer is always the conversion call itself.
 - `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1` makes the install script a no-op **and** silences that hint, for scripted environments and for anyone who has already answered the question.
 - To use a system-wide install instead of the bundled venv: `pipx install "markitdown[all]"` and set `MARKITDOWN_PATH=/abs/path/to/markitdown`.
-- `git_repo_to_markdown` uses `repomix` (Node, bundled as a normal npm dependency — no extra setup), so it is **unaffected** by all of the above. `youtube_to_markdown` falls back to yt-dlp captions when markitdown is absent — which keeps it working only where yt-dlp itself is installed, another thing the router does not install for you.
+- On a locked-down Linux server (no `ensurepip`, no sudo), `install-markitdown` installs with `uv tool install "markitdown[all]"` when uv is present and prints the `MARKITDOWN_PATH` line if needed; without uv it prints the no-admin uv installer command instead of downloading anything.
+- `git_repo_to_markdown` uses `repomix` (Node, bundled as a normal npm dependency — no extra setup), so it is **unaffected** by all of the above. `youtube_to_markdown` gets its transcript from yt-dlp — which keeps it working only where yt-dlp itself is installed, another thing the router does not install for you (recommended: `uv tool install "yt-dlp[default,curl-cffi]"`). `conversionToolbox.youtube` says whether yt-dlp was found, and `toolsDegraded` lists `youtube_to_markdown` only when it was not. Details, including the HTTP 429 / bot-check diagnosis: [feature sheet 5](docs/features/05-conversion-de-documents.md) (French).
 
 **High-fidelity PDF via Docling (opt-in).** `pdf_to_markdown_docling` uses [Docling](https://github.com/docling-project/docling) (IBM / LF AI & Data Foundation, MIT) instead of MarkItDown — its layout + TableFormer models reconstruct table structure and reading order that MarkItDown's `pdfminer.six` backend loses, at ~10× the CPU cost. Docling pulls torch/onnxruntime + model weights, so it is **not** installed by default. Disk footprint depends on the OS's default torch wheel: **~1.3 GB on Windows/macOS** (CPU-only torch) vs **~5.5 GB on Linux** (its default wheel bundles CUDA libraries, unused on a CPU-only box). The models (layout + TableFormer + OCR, a few hundred MB) download on first conversion into the Hugging Face cache (`HF_HOME`).
 
@@ -1136,7 +1146,9 @@ Optional sandbox env vars:
 |---|---|
 | `MARKITDOWN_PATH` | Absolute path to the `markitdown` executable. Override when not using the bundled venv. |
 | `REPOMIX_PATH` | Absolute path to the `repomix` executable. Override when not using the bundled `node_modules/.bin/repomix`. |
-| `YTDLP_PATH` | Absolute path to the `yt-dlp` executable, used by `youtube_to_markdown`'s caption fallback (when MarkItDown's YouTube path fails). When unset, `yt-dlp` is looked up on `PATH`; the fallback degrades with a clear install hint if it's absent. |
+| `YTDLP_PATH` | Absolute path to the `yt-dlp` executable, used by `youtube_to_markdown` for the transcript (when the page conversion fails or comes back without one). When unset, `yt-dlp` is looked up on `PATH`; the fallback degrades with a clear install hint if it's absent. |
+| `YTDLP_COOKIES` | Absolute path to a Netscape-format `cookies.txt`, for a machine whose IP YouTube blocks (HTTP 429, "Sign in to confirm you're not a bot"). yt-dlp gets a private copy, so your file is never rewritten. Read from the router's own environment only — a workspace `.env` cannot set it. |
+| `YTDLP_PROXY` | `http://`, `https://`, `socks4://`, `socks5://` or `socks5h://` proxy for yt-dlp, same case. Router environment only: a cloned repository's `.env` must not be able to route your traffic through its proxy. |
 | `OBSIDIAN_ROUTER_VIDEO_SUBLANGS` | yt-dlp `--sub-langs` value for the caption fallback (default `en.*,en`). Widen to fetch other subtitle languages. |
 | `MD_ALLOWED_PATHS` | `:`-separated (POSIX) or `;`-separated (Windows) list of directories the conversion tools are allowed to read. When unset (default), any absolute path is fair game. When set, the file-input conversion tools reject paths outside the listed directories, and the two asset writers (`download_page_assets`, `pptx_extract_assets`) reject an output directory outside them — a narrowing of their standing rule (a registered vault or the system temp directory, nothing else). A path that does not exist yet is judged through its nearest existing ancestor with links resolved, so a directory about to be created under a link that leaves the list is refused. |
 | `MD_SHARE_DIR` | Legacy single-directory alias for `MD_ALLOWED_PATHS`, kept for backward compatibility with markdownify-mcp setups. Prefer `MD_ALLOWED_PATHS`. |
@@ -1441,7 +1453,7 @@ Le router tourne en deux modes, pilotés uniquement par variables d'environnemen
 - **Mode multi-tenant (opt-in)** : des variables indépendantes qui composent librement —
   - `OBSIDIAN_ROUTER_ALLOWED_VAULTS=a,b,c` — whitelist des vaults que cette instance voit ;
   - `VAULT_<NOM>=<JSON>` — un vault défini entièrement en variable d'env (voir la section [Config `VAULT_*`](#config-vault_-en-variable-denvironnement-éditable-depuis-le-dashboard)) ;
-  - `OBSIDIAN_ROUTER_READONLY=true` — masque de `ListTools` **et** refuse au `CallTool` les **17 outils d'écriture** (`write_file`, `append_to_file`, `patch_file`, `set_frontmatter`, `merge_frontmatter`, `move_file`, `delete_file`, `execute_template`, `download_page_assets`, `pptx_extract_assets`, `build_wiki_graph`, `provision_vault`, `register_remote_vault`, `refresh_okf_projections`, `write_bundle`, `record_source`, `build_search_index`) ;
+  - `OBSIDIAN_ROUTER_READONLY=true` — masque de `ListTools` **et** refuse au `CallTool` les **18 outils d'écriture** (`write_file`, `append_to_file`, `patch_file`, `set_frontmatter`, `merge_frontmatter`, `move_file`, `delete_file`, `execute_template`, `download_page_assets`, `pptx_extract_assets`, `build_wiki_graph`, `provision_vault`, `register_remote_vault`, `refresh_okf_projections`, `write_bundle`, `record_source`, `install_conventions`, `build_search_index`) ;
   - `OBSIDIAN_ROUTER_USER_ID=<slug>` — journal d'audit de chaque écriture réussie dans le `wiki-meta/journal.md` du vault touché (masque aussi les outils local-only `plan_vault` / `provision_vault`).
 
 Tableau détaillé, exemple d'entrée MCPHub et recette de déploiement complète : voir la section anglaise « [Deployment modes](#deployment-modes) ».
@@ -1933,7 +1945,12 @@ découvrir sur un refus.
 `register_remote_vault({ name, baseUrl, apiKey })` ajoute à ta propre config un
 vault servi par le réseau, sans éditer de JSON à la main — la moitié
 conversationnelle du bloc `remoteVaults` documenté plus bas. L'outil est caché
-sur les déploiements multi-tenant, où la config est partagée.
+sur les déploiements multi-tenant, où la config est partagée. Un `localPath`
+absolu optionnel indique que les fichiers du vault sont aussi sur cette machine
+(Obsidian en conteneur, par exemple) ; l'outil l'enregistre tel que déclaré, et
+`obsidian-mcp-router --attach <nom> --local-path <dossier>` le vérifie contre le
+vault avant de l'enregistrer. Les notes passent toujours par REST uniquement —
+voir [`docs/remote-vaults.md`](docs/remote-vaults.md) pour ce que ce champ ouvre.
 
 ### Les hooks que le plugin active tout seul
 
@@ -1980,7 +1997,11 @@ obsidian-mcp-router --version
 obsidian-mcp-router --help
 obsidian-mcp-router --config /chemin/perso/config.json
 obsidian-mcp-router --no-watch     # désactive le hot-reload du fichier de config
+obsidian-mcp-router --plugin-health <vault> [--json]   # code des plugins sur le disque vs chargé par Obsidian
+obsidian-mcp-router --install-plugins <vault> --dry-run   # plan scellé ; appliquer avec --approved-plan-sha256 <sceau>
 ```
+
+Les deux commandes de plugins travaillent sur le dossier du vault (un vault local, ou un distant qui déclare `localPath`) ; détail dans la [fiche 13](docs/features/13-installation-et-administration.md).
 
 Par défaut, le router surveille le fichier de config et le recharge automatiquement à chaque modification — utile quand `setup-vault.mjs` ajoute de nouveaux vaults, ou quand le futur plugin `Obsidian Cloudflare Tunnel` écrit automatiquement des URLs de tunnel dans `remoteVaults`.
 
@@ -2329,7 +2350,7 @@ Design complet — les sept décisions qui le fondent, la mécanique de journal 
 | `register_remote_vault` | Ajoute à ta propre config un vault servi par le réseau (`{ name, baseUrl, apiKey }`), sans éditer de JSON à la main. Local uniquement (absent des déploiements gated). |
 | `get_view_link` | Construit un lien signé et expirant qui ouvre une page de vault dans l'agent de vue en lecture seule. |
 | `plan_vault` | **Read-only.** Planifie la création d'un NOUVEAU vault local : retourne les défauts calculés + un questionnaire structuré (les 5 modes wiki, les thèmes installés dans la source, les vaults enregistrés dont copier la config, les profils de plugins) + avertissements — sans rien écrire. Alimente le wizard guidé ; enchaîner avec `provision_vault`. Local uniquement (absent des déploiements gated). |
-| `provision_vault` | Crée un NOUVEAU vault local en un appel depuis les réponses du wizard (typiquement les défauts de `plan_vault` + ajustements). Retourne un rapport étape par étape + port, insecurePort, openUri et résultat de probe. Refuse les chemins hors des racines de vaults connues sauf `allowOutsideRoots: true` ; `--from-vault` copie la config seule (credentials exclus, port + clé API régénérés). Local uniquement. |
+| `provision_vault` | Crée un NOUVEAU vault local en un appel depuis les réponses du wizard (typiquement les défauts de `plan_vault` + ajustements). Retourne un rapport étape par étape + port, insecurePort, openUri et résultat de probe. Refuse les chemins hors des racines de vaults connues (jugés sur le chemin réel, liens résolus) sauf `allowOutsideRoots: true` ; le dossier du nouveau vault est épinglé pendant toute la création, doit être celui que la vérification a approuvé, et est refusé si son arborescence existante contient un lien, une jonction ou un lien dur (ou un `.git` quand `gitInit` est demandé) (Windows : NTFS seulement) ; `--from-vault` copie la config seule (credentials exclus, port + clé API régénérés). Local uniquement. |
 | `pdf_to_markdown` · `docx_to_markdown` · `xlsx_to_markdown` · `pptx_to_markdown` · `image_to_markdown` · `audio_to_markdown` | Convertit un fichier local en markdown via le CLI Python `markitdown`. OCR image et transcription audio nécessitent les extras `[all]` (opt-in : `npm run install-markitdown`). Retourne du texte markdown — chaîne avec `write_file` pour persister. |
 | `pdf_to_markdown_docling` | Convertit un PDF local en markdown via le pipeline standard de **Docling** (détection de mise en page + reconnaissance de structure de tableau TableFormer). Plus haute fidélité que `pdf_to_markdown` sur les tableaux complexes / mises en page multi-colonnes, à ~10× le coût CPU. **Opt-in** — nécessite l'extra Docling (voir la section anglaise « Conversion tools — runtime dependencies »). PDF uniquement ; pour les formats bureautiques, garder `pdf_to_markdown`. |
 | `pdf_to_images` | **Rend** les pages d'un PDF local en images PNG, renvoyées comme blocs image MCP pour que le modèle **voie** une page (pas seulement son texte). Rendu via **pypdfium2** (BSD) + Pillow, du même `.venv-docling` que Docling — renvoie un hint d'install si absent. Paramètres : `filepath`, `first_page`, `max_pages` (défaut 8, plafond 30), `scale` (≈144 DPI). Plafonds durs de pages/octets pour borner le coût en tokens. N'écrit dans aucun coffre. |

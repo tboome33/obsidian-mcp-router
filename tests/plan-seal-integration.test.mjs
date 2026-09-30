@@ -181,7 +181,9 @@ describe('provision_vault — sealed preview', () => {
     claudeWorkspace: false,
     warnings: [],
     steps: [],
-    context: { knownRoots: ['C:/VAULTS'] },
+    // realTarget / realRoots: what the dry-run's gate judged, which binds the
+    // real run (provision-vault.mjs refuses a plan without them).
+    context: { knownRoots: ['C:/VAULTS'], realTarget: 'C:/VAULTS/x', realRoots: ['C:/VAULTS'] },
   });
 
   const okProvisionResult = () => ({
@@ -298,7 +300,7 @@ describe('provision_vault — sealed preview', () => {
     const outsideRootsPlan = () => ({
       ...okPlan(),
       warnings: [{ code: 'no-known-roots', message: 'no roots configured' }],
-      context: { knownRoots: [] },
+      context: { knownRoots: [], realTarget: 'C:/VAULTS/outside/x', realRoots: [] },
     });
     const intent = { path: 'C:/VAULTS/outside/x', allowOutsideRoots: true };
 

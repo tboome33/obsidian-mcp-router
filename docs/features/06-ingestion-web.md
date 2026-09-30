@@ -10,7 +10,7 @@ Ramener le web dans le vault : convertir des pages et des vidéos en markdown, n
 
 - **`webpage_to_markdown`** — convertit une page web en markdown.
 - **`bing_search_to_markdown`** — convertit une page de résultats Bing en markdown (utile pour balayer rapidement ce qui existe sur un sujet).
-- **`youtube_to_markdown`** — récupère la transcription d'une vidéo YouTube. Si la voie standard échoue, un fallback via `yt-dlp` récupère les sous-titres (langues réglables via `OBSIDIAN_ROUTER_VIDEO_SUBLANGS`, `en.*,en` par défaut).
+- **`youtube_to_markdown`** — récupère la transcription d'une vidéo YouTube. Si la voie standard échoue, ou si elle renvoie la page sans transcription (le cas normal : MarkItDown reçoit un fichier HTML téléchargé, pas l'URL), un fallback via `yt-dlp` récupère les sous-titres (langues réglables via `OBSIDIAN_ROUTER_VIDEO_SUBLANGS`, `en.*,en` par défaut).
 
 **Comment l'utiliser.**
 

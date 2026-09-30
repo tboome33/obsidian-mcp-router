@@ -25,6 +25,8 @@ La conversion est déléguée à `markitdown` (l'outil open source de Microsoft)
 
 **À savoir.** Prérequis : **Python 3.10+** sur le `PATH`, puis `npm run install-markitdown` (crée le `.venv` et installe `markitdown[all]` ; s'il manque, le reste du router fonctionne quand même). Voir les variables d'environnement en fin de fiche pour les overrides.
 
+**Sur un serveur Linux verrouillé.** Sur Debian/Ubuntu sans le paquet `python3.X-venv` et sans sudo, le Python système n'a pas `ensurepip` et `python -m venv` échoue. `install-markitdown` ne s'arrête plus là : si **uv** est présent, il installe avec `uv tool install "markitdown[all]"` (uv apporte son propre Python, aucun droit admin) et donne la ligne `MARKITDOWN_PATH` à poser quand le `markitdown` installé n'est pas sur le `PATH` de l'hôte MCP. Sans uv, il **ne télécharge rien** : il affiche la commande de l'installeur officiel de uv, sans admin, à lire avant de la lancer. pipx n'est proposé que s'il est installé.
+
 ## `pdf_to_markdown_docling` — la voie haute fidélité pour les PDF complexes
 
 **Le besoin.** Sur un PDF à tableaux complexes ou à colonnes multiples, l'extraction rapide perd la structure : les cellules se mélangent, l'ordre de lecture se brouille. Pour ces documents-là, on veut une conversion qui **reconstruit** la mise en page.
@@ -100,6 +102,12 @@ Le résumé des prérequis et des points de réglage de toute la famille :
   fonctionner sans markitdown ; `youtube_to_markdown` se rabat sur ses
   sous-titres yt-dlp, et `git_repo_to_markdown` n'est pas concerné (il passe par
   repomix).
+- **yt-dlp est cherché, pas supposé.** `conversionToolbox.youtube` dit si yt-dlp
+  est `found` ou `missing` (`unknown` quand la recherche n'a pas pu tourner) —
+  sans rien exécuter, par une simple recherche sur le `PATH` ou dans `YTDLP_PATH`.
+  `toolsDegraded` est désormais **calculé** : il liste `youtube_to_markdown`
+  seulement quand yt-dlp n'est pas trouvé, quel que soit l'état de markitdown
+  (auparavant il le listait toujours). Voir la section yt-dlp ci-dessous.
 - Ne plus se le faire proposer : `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1`.
 - Utiliser une installation système plutôt que le venv embarqué : `pipx install "markitdown[all]"` + `MARKITDOWN_PATH=/chemin/vers/markitdown` (idem `DOCLING_PATH`, `PDF_IMAGES_PYTHON`).
 
@@ -110,5 +118,18 @@ Le résumé des prérequis et des points de réglage de toute la famille :
 | `MARKITDOWN_PATH` / `DOCLING_PATH` / `PDF_IMAGES_PYTHON` | Chemins explicites vers les exécutables quand on n'utilise pas les venvs embarqués. |
 | `OBSIDIAN_ROUTER_ENABLE_DOCLING` | `1` avant install = active le backend Docling. |
 | `OBSIDIAN_ROUTER_SKIP_MARKITDOWN` | `1` = rend `npm run install-markitdown` inopérant (environnements scriptés) **et** fait taire la proposition d'installation dans `list_vaults` / `meta-status`. Strictement la chaîne `"1"`. |
+| `YTDLP_PATH` | Chemin explicite vers l'exécutable yt-dlp. |
+| `YTDLP_COOKIES` | Chemin **absolu** vers un `cookies.txt` au format Netscape, pour une IP que YouTube bloque. yt-dlp reçoit une copie privée : votre fichier n'est jamais réécrit. Environnement du router uniquement (voir ci-dessous). |
+| `YTDLP_PROXY` | URL de proxy `http://`, `https://`, `socks4://`, `socks5://` ou `socks5h://`, pour la même raison. Environnement du router uniquement. |
+
+### `youtube_to_markdown` et yt-dlp
+
+**D'où vient la transcription.** Le router télécharge lui-même la page et donne à MarkItDown un **fichier HTML local** ; le convertisseur YouTube de MarkItDown ne s'exécute donc jamais sur ce chemin, et la page revient **sans** section `### Transcript`. La transcription vient de **yt-dlp**, seulement pour une vraie URL de vidéo : quand la conversion de la page échoue, ou quand elle réussit sans transcription. Si yt-dlp échoue aussi dans ce second cas, la page est quand même rendue, précédée d'un avertissement qui donne la raison. Un téléchargement de page qui échoue montre maintenant sa vraie cause réseau (délai, coupure, DNS…) au lieu d'un simple « fetch failed ».
+
+**Installer yt-dlp.** Le router ne l'installe pas. La consigne recommande `uv tool install "yt-dlp[default,curl-cffi]"` (ou `pipx install` avec le même paquet) : l'extra `default` apporte le résolveur des défis JavaScript que YouTube exige désormais, `curl-cffi` l'imitation de navigateur ; un `yt-dlp` nu n'installe ni l'un ni l'autre. Le router passe à yt-dlp le Node qui le fait tourner comme moteur JavaScript (`--js-runtimes node:<chemin>`, yt-dlp 2025.11.12 et plus) ; un yt-dlp plus ancien qui refuse l'option est relancé une fois sans elle, et le résultat conseille de le mettre à jour.
+
+**Quand YouTube bloque la machine.** Une réponse HTTP 429 ou « Sign in to confirm you're not a bot » — fréquente depuis une IP de datacenter — est diagnostiquée comme une **IP bloquée**, pas comme une vidéo sans sous-titres. Le message pointe vers deux variables : `YTDLP_COOKIES` (un `cookies.txt` exporté d'un navigateur connecté à YouTube) et `YTDLP_PROXY`. Une valeur invalide est refusée avec son explication plutôt qu'ignorée.
+
+**Pourquoi pas dans le `.env` du workspace.** Ces deux variables se lisent **uniquement dans l'environnement du router** (la déclaration du serveur MCP, un lanceur, un shell). Le `.env` d'un workspace ne les accepte pas : un dépôt cloné pourrait sinon faire passer toutes vos requêtes YouTube — et les cookies qui les accompagnent — par un proxy choisi par son auteur. C'est la même raison qui tient déjà `YTDLP_PATH` et `HTTPS_PROXY` hors des fichiers de workspace.
 
 Les outils orientés **URL** (`webpage_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `git_repo_to_markdown`) appartiennent à la même famille technique mais servent l'ingestion web — ils sont documentés en [fiche 6](06-ingestion-web.md).

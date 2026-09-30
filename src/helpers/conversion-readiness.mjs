@@ -43,6 +43,11 @@
  * working only if yt-dlp is installed" is the honest form — an over-promise
  * pointed the reassuring way is still an over-promise.
  *
+ * And since the probe can LOOK for yt-dlp as cheaply as for markitdown, it
+ * does: `toolsDegraded` is computed from that look (see
+ * {@link probeYtdlp}), not copied from `MARKITDOWN_DEGRADED_TOOLS`, which now
+ * only names the tools that CAN degrade.
+ *
  * ---------------------------------------------------------------------------
  * CHEAP WHERE IT IS HOT, THOROUGH WHERE IT MATTERS
  * ---------------------------------------------------------------------------
@@ -297,7 +302,7 @@ export function isRunnableFile(candidate, io) {
  * PATH tier entirely (the venv and the explicit override both answer without
  * scanning), not to add a timeout this API cannot express.
  */
-function onPath(env, io) {
+function onPath(env, io, name = 'markitdown') {
   const rawPath = typeof env.PATH === 'string' ? env.PATH : (typeof env.Path === 'string' ? env.Path : '');
   if (!rawPath) return null;
   // Truncate BEFORE splitting — see MAX_PATH_CHARS. A truncated tail may leave
@@ -320,12 +325,85 @@ function onPath(env, io) {
     for (const ext of exts) {
       // Missing, unreadable, a directory, or a file with no execute bit — none
       // of those is an answer. See `isRunnableFile`.
-      const candidate = path.join(dir, `markitdown${ext}`);
+      const candidate = path.join(dir, `${name}${ext}`);
       if (isRunnableFile(candidate, io)) return candidate;
     }
   }
   return null;
 }
+
+/**
+ * The same bounded, spawn-free PATH scan, for another executable name — ONE
+ * scan, so `yt-dlp` and the installer's `uv`/`pipx` lookups inherit every rule
+ * above (UNC skipped, `.cmd`/`.bat` refused on Windows, execute bit required on
+ * POSIX, both caps) instead of a second, weaker copy of it.
+ *
+ * @param {string} name  a bare executable name, without extension
+ * @param {{env?: object, fs?: object}} [opts]
+ * @returns {string|null}
+ */
+export function findExecutableOnPath(name, opts = {}) {
+  try {
+    return onPath((opts && opts.env) || process.env, (opts && opts.fs) || fs, name);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Is yt-dlp — the ONLY route by which `youtube_to_markdown` gets a transcript
+ * when MarkItDown fails — present in a form the router can run?
+ *
+ * Same rules, same order and same honesty as the markitdown override tier:
+ * `YTDLP_PATH` through the SAME resolver the runtime uses
+ * (`absolutizeExecutableOverride`, as `resolveYtdlpPath` does), the Windows
+ * name rule checked first, a filesystem path statted, a bare name or a UNC path
+ * taken on the user's word with `verified: false`. Without an override, the
+ * bounded PATH scan. NO SUBPROCESS, like everything else this probe does.
+ *
+ * WHY THIS EXISTS. `toolsDegraded` used to be a constant, so `list_vaults` said
+ * youtube_to_markdown was degraded on a machine where yt-dlp was installed and
+ * found — a claim about the machine that nobody had measured.
+ *
+ * @returns {{ytdlp: 'found'|'missing', via: 'env-override'|'path'|null, path: string|null, verified: boolean, hint: string|null}}
+ */
+export function probeYtdlp(env, io) {
+  const configured = env.YTDLP_PATH;
+  const override = typeof configured === 'string' && configured ? absolutizeExecutableOverride(configured) : null;
+  if (typeof override === 'string' && override) {
+    if (!isWindowsSpawnableName(override)) {
+      return {
+        ytdlp: 'missing', via: 'env-override', path: override, verified: true,
+        hint: `YTDLP_PATH is set to "${override}", which Windows cannot spawn directly (only a real .exe/.com can be launched). `
+          + 'Point YTDLP_PATH at yt-dlp.exe itself, or unset it to fall back to PATH.',
+      };
+    }
+    const verifiable = looksLikeFilesystemPath(override) && !isUncPath(override);
+    const usable = verifiable ? isRunnableFile(override, io) : true;
+    return {
+      ytdlp: usable ? 'found' : 'missing',
+      via: 'env-override',
+      path: override,
+      verified: verifiable,
+      hint: usable ? null : `YTDLP_PATH is set to "${override}", but nothing runnable is there `
+        + '(missing, a directory, or not executable). Fix the path or unset YTDLP_PATH to fall back to PATH.',
+    };
+  }
+  const found = onPath(env, io, 'yt-dlp');
+  if (found) return { ytdlp: 'found', via: 'path', path: found, verified: true, hint: null };
+  return { ytdlp: 'missing', via: null, path: null, verified: true, hint: YTDLP_INSTALL_HINT };
+}
+
+/**
+ * The one wording for "install yt-dlp". `[default,curl-cffi]` because the
+ * `default` extra brings `yt-dlp-ejs` (the JavaScript challenge solver YouTube
+ * now requires — yt-dlp 2025.11.12+) and `curl-cffi` browser impersonation;
+ * a bare `yt-dlp` package installs neither.
+ */
+export const YTDLP_INSTALL_HINT = 'youtube_to_markdown gets its transcript from yt-dlp, which is not installed '
+  + '(nor set through YTDLP_PATH). Install it without admin rights with '
+  + '`uv tool install "yt-dlp[default,curl-cffi]"` or `pipx install "yt-dlp[default,curl-cffi]"`, '
+  + 'or point YTDLP_PATH at an existing yt-dlp executable.';
 
 /**
  * What state the conversion toolbox is in, without running anything.
@@ -344,22 +422,36 @@ function onPath(env, io) {
  *   optedOut: boolean,
  *   toolsAffected: string[],
  *   toolsDegraded: string[],
+ *   youtube: {ytdlp: 'found'|'missing'|'unknown', via: 'env-override'|'path'|null,
+ *             path: string|null, verified: boolean, hint: string|null},
  *   hint: string|null,
  * }}
  */
 export function probeConversionToolbox(opts) {
-  const base = {
+  // `toolsDegraded` is MEASURED, not a constant. youtube_to_markdown's only
+  // transcript route is yt-dlp (MarkItDown is handed a downloaded HTML file,
+  // not the URL, so its YouTube transcript converter never runs), so the tool
+  // is degraded exactly when yt-dlp is not found — whatever markitdown's state.
+  // When the yt-dlp probe cannot run at all, `ytdlp: 'unknown'` and the tool is
+  // listed as degraded: the direction that costs one unnecessary hint rather
+  // than a false ✅ (see the note on the caps above).
+  const youtubeUnknown = { ytdlp: 'unknown', via: null, path: null, verified: false, hint: null };
+  const baseFor = (youtube) => ({
     toolsAffected: [...MARKITDOWN_TOOLS],
-    toolsDegraded: [...MARKITDOWN_DEGRADED_TOOLS],
-  };
+    toolsDegraded: youtube.ytdlp === 'found' ? [] : [...MARKITDOWN_DEGRADED_TOOLS],
+    youtube,
+  });
   const unknown = {
-    ...base, available: false, via: null, path: null, verified: false, optedOut: false, hint: null,
+    ...baseFor(youtubeUnknown), available: false, via: null, path: null, verified: false, optedOut: false, hint: null,
   };
   try {
     const o = opts || {};
     const env = o.env || process.env;
     const io = o.fs || fs;
     const projectRoot = typeof o.projectRoot === 'string' ? o.projectRoot : null;
+    let youtube = youtubeUnknown;
+    try { youtube = probeYtdlp(env, io); } catch { /* stays unknown */ }
+    const base = baseFor(youtube);
     // A STRING, strictly. `String(x)` coerced a numeric 1 — and anything whose
     // `toString()` returns "1" — into an opt-out, which the docs said was
     // impossible. Real `process.env` only holds strings; the injectable seam
@@ -455,7 +547,7 @@ export function probeConversionToolbox(opts) {
       optedOut,
       // Silent for someone who has explicitly said they do not want it — the
       // same courtesy the auto-update notice already extends.
-      hint: optedOut ? null : conversionHint(projectRoot),
+      hint: optedOut ? null : conversionHint(projectRoot, { youtube }),
     };
   } catch {
     // Unknown, and said as unknown rather than guessed either way.
@@ -550,21 +642,29 @@ function overrideBrokenHint(overridePath) {
     + `to the bundled .venv and PATH.`;
 }
 
-export function conversionHint(projectRoot = null) {
+export function conversionHint(projectRoot = null, { youtube = null } = {}) {
   const dead = MARKITDOWN_TOOLS.length;
   const script = projectRoot ? path.join(projectRoot, 'scripts', 'install-markitdown.mjs') : null;
   const command = isShellSafePath(script)
     ? `node "${script}"`
     : '`npm run install-markitdown` from the router install directory';
+  // The youtube sentence follows the MEASURED yt-dlp state when the caller has
+  // one. Without it (a caller that only wants the markitdown wording), the
+  // qualified form stays: NOT "still works" — yt-dlp is ANOTHER executable this
+  // package does not install, so claiming the tool is fine would be the same
+  // over-promise as the original "ten tools" miscount, pointed the other way.
+  let yt = `${MARKITDOWN_DEGRADED_TOOLS.join(', ')} falls back to yt-dlp captions, so it keeps `
+    + 'working only if yt-dlp is installed. ';
+  if (youtube && youtube.ytdlp === 'found') {
+    yt = `${MARKITDOWN_DEGRADED_TOOLS.join(', ')} falls back to yt-dlp captions, and yt-dlp was found`
+      + `${youtube.verified ? '' : ' (taken from YTDLP_PATH, not checked)'}. `;
+  } else if (youtube && youtube.ytdlp === 'missing') {
+    yt = `${MARKITDOWN_DEGRADED_TOOLS.join(', ')} falls back to yt-dlp captions, so it keeps `
+      + 'working only if yt-dlp is installed — and it was not found either (see `youtube.hint`). ';
+  }
   return `${dead} conversion tools (${MARKITDOWN_TOOLS.slice(0, 3).join(', ')}, …) `
     + `need the markitdown Python CLI; the router never installs it on its own. `
-    // NOT "still works". The fallback is yt-dlp, which is ANOTHER executable
-    // this package does not install — so on the fresh machine this hint is
-    // written for, it may be missing too. Claiming the tool is fine would be
-    // the same over-promise as the original "ten tools" miscount, pointed the
-    // other way.
-    + `${MARKITDOWN_DEGRADED_TOOLS.join(', ')} falls back to yt-dlp captions, so it keeps `
-    + `working only if yt-dlp is installed. `
+    + yt
     + `To enable them: ${command} (needs Python 3.10+), or set MARKITDOWN_PATH to an `
     + `existing install. Set ${SKIP_ENV}=1 to stop being told.`;
 }

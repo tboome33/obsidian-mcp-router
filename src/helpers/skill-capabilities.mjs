@@ -232,6 +232,12 @@ export const TOOL_WRITE_FLOOR = Object.freeze({
   build_wiki_graph:        { mode: 'cache', atom: 'vault:derived' },
   refresh_okf_projections: { mode: 'cache', atom: 'vault:derived' },
   record_source:           { mode: 'cache', atom: 'vault:derived' },
+  // Appends to authored content (a CLAUDE.md a human also edits) and never
+  // rewrites what is there — the new content is the old bytes plus snippets —
+  // but it may CREATE the file when none exists, which `append_to_file` also
+  // does by default. Same floor as append_to_file; `cache` would understate it
+  // (a CLAUDE.md is not regenerable), `mutating` would overstate it.
+  install_conventions:     { mode: 'append-only', atom: 'vault:content' },
   download_page_assets:    { mode: 'cache' },
   execute_template:        { mode: 'create-only' },
   provision_vault:         { mode: 'mutating' },

@@ -36,7 +36,7 @@ node scripts/setup-vault.mjs --bootstrap-reference <chemin>
 
 > « configure Obsidian pour ce projet », « attache un vault à ce workspace », « connecte mon vault distant » — ou `/obsidian-router:meta-attach-vault`
 
-**À savoir.** Le wizard fonctionne depuis **n'importe quel harness LLM**, pas seulement Claude Code : les deux outils MCP `plan_vault` (lecture seule, calcule le plan) et `provision_vault` (l'applique) sont appelables par tout agent — playbook dans [`docs/vault-wizard.md`](../vault-wizard.md). En direct au CLI : `node scripts/setup-vault.mjs "<chemin>" --dry-run --json` pour prévisualiser, puis sans `--dry-run` pour appliquer. Garde-fous : outils local-only (masqués sur les déploiements gated), chemins hors racines connues refusés, secrets toujours régénérés (jamais copiés d'un vault source).
+**À savoir.** Le wizard fonctionne depuis **n'importe quel harness LLM**, pas seulement Claude Code : les deux outils MCP `plan_vault` (lecture seule, calcule le plan) et `provision_vault` (l'applique) sont appelables par tout agent — playbook dans [`docs/vault-wizard.md`](../vault-wizard.md). En direct au CLI : `node scripts/setup-vault.mjs "<chemin>" --dry-run --json` pour prévisualiser, puis sans `--dry-run` pour appliquer. Garde-fous : outils local-only (masqués sur les déploiements gated), chemins hors racines connues refusés — jugés sur le chemin réel, liens résolus —, secrets toujours régénérés (jamais copiés d'un vault source). Quand c'est `provision_vault` qui crée le vault, le dossier est épinglé pendant toute la création, il doit être celui que la vérification a approuvé, et la création est refusée si le dossier cible contient déjà un lien, une jonction ou un lien dur (ou un `.git` quand `gitInit` est demandé) ; sous Windows, cela demande un disque NTFS (un vault sur une lettre FAT32 ou de lecteur cloud est refusé par cet outil — le CLI, lancé à la main, n'est pas concerné).
 
 ## `scripts/setup-vault.mjs` — le couteau suisse CLI
 
@@ -47,12 +47,60 @@ Le script qui sous-tend le wizard est utilisable directement, avec des sous-comm
 | `setup-vault.mjs "<chemin>"` | Bootstrapper/provisionner un vault (plugins clonés depuis la référence, `.env`, wiki, hooks). `--dry-run --json` pour prévisualiser, `--help` pour tous les flags. |
 | `--bootstrap-reference <chemin>` | Créer le vault de référence depuis le squelette livré. |
 | `--link-workspace <workspace> <vault>` | Associer un repo de code à un vault : enregistre la **liaison** dans `workspaceBindings` de votre `config.json` (ce qui décide) et écrit `OBSIDIAN_ROUTER_DEFAULT_VAULT` dans le `.env` du workspace (indice portable pour une autre machine). `--unlink-workspace` pour retirer. |
-| `--attach <vault> [--also <autre>]` | Même chose depuis le workspace courant, secondaires compris — les `--also` n'étaient jusqu'ici connus que du `CLAUDE.md`, pas du router. |
+| `--attach <vault> [--also <autre>]` | Même chose depuis le workspace courant, secondaires compris — les `--also` n'étaient jusqu'ici connus que du `CLAUDE.md`, pas du router. Accepte aussi un vault **distant** (`remoteVaults`), avec `--local-path <dossier>` quand ses fichiers sont sur cette machine, et se termine par un **état final** vérifié (voir ci-dessous). |
 | `--repair-binding <workspace>` | **Réparer** une liaison que le router ne sait plus lire, depuis un terminal — le chemin qui n'existait qu'en session MCP. `--dry-run` montre le plan et imprime un sceau ; l'application **exige** ce sceau (`--approved-plan-sha256`). Elle **garde** tout ce que l'entrée tient — secondaires, paliers locaux, verrou, champs inconnus, et l'ancien principal, rétrogradé en tête de `also`. `--primary <vault>` n'est nécessaire que si l'entrée ne nomme aucun principal liable ; `--locked` / `--no-locked` pour décider du verrou. Détail et garde-fous : [fiche 11](11-securite-et-isolation.md). |
 | `--sync-all` | Propager snippets/plugins de la référence vers **tous** les vaults (idempotent ; `--force` re-clone). |
+| `"<chemin>" --sync-plugins [--dry-run]` | Même chose pour un seul vault ; `--dry-run` détaille le plan plugin par plugin sans rien écrire. `--lang <code>` et `--container` : voir ci-dessous. |
+| `obsidian-mcp-router --install-plugins <vault>` | Télécharger le code des plugins qu'un vault active sans l'avoir — plan scellé, voir ci-dessous. |
+| `obsidian-mcp-router --plugin-health <vault> [--json]` | Dire, plugin par plugin, ce qui est sur le disque et ce qu'Obsidian a chargé. |
 | `--install-hooks` / `--hooks-status` / `--no-hooks` | Gérer les hooks ([fiche 12](12-hooks-et-automatisations.md)). |
 | `--status` | État des lieux (aussi : `npm run status`). |
 | `--migrate-wiki-meta` | Migrer un vault ancien vers la structure `wiki-meta/` (scaffolds séparés du contenu). |
+
+### Attacher un vault distant — jusqu'à « ready yes »
+
+**Le besoin.** Un vault servi par un Obsidian en conteneur (image linuxserver, Local REST API sur une adresse du réseau local) dont les fichiers sont pourtant sur la machine du router. Avant, `--attach` le refusait (« not in portRegistry »), la synchro annonçait des plugins qu'elle n'avait pas installés, rien ne disait de recharger Obsidian ni d'installer le bridge, les conventions n'étaient jamais proposées, et le bloc `CLAUDE.md` affirmait qu'un `hot.md` inexistant était chargé au démarrage. Chaque étape manquante se découvrait à la main.
+
+**Ce que ça fait.**
+
+- `--attach <nom>` cherche d'abord le nom parmi les vaults locaux, **puis** dans `remoteVaults` (jamais à la place), et lie le workspace au vault distant. Un vault distant qui n'a pas encore de wiki est attaché avec un avertissement, pas refusé.
+- `--attach <distant> --local-path <dossier-absolu>` **vérifie** que le dossier est bien ce vault : il compare le contenu d'un même fichier des deux côtés (`wiki-meta/catalog.md` d'abord, sinon une note de la racine, lue par l'API REST). S'ils diffèrent, ou si le dossier n'existe pas, la commande refuse **sans rien écrire** ; si rien ne peut être comparé, le dossier n'est pas enregistré. Vérifié, il est enregistré dans `remoteVaults[].localPath` ([`docs/remote-vaults.md`](../remote-vaults.md) dit ce que ce champ ouvre et n'ouvre pas).
+- Le bloc `CLAUDE.md` ne prétend plus que `hot.md` est « auto-chargé » quand il n'existe pas, ou quand le vault est distant sans dossier local vérifié ; `--attach` le signale dans les deux cas.
+- La commande se termine par **« État final / Final state »** : le vault et son type, le dossier local, le wiki (catalogue, `hot.md`), les plugins qui ont leur code parmi ceux qu'active le squelette de référence (et lesquels manquent, ou sont activés sans code), le bridge, les conventions installées et celles recommandées encore absentes. Tout cela est **lu sur le disque du vault** — le dossier d'un vault local, ou le `--local-path` vérifié d'un vault distant. Sans disque, plugins et conventions sont affichés `unknown` : la commande ne devine pas.
+- S'il manque quelque chose, elle imprime les **prochaines étapes, dans l'ordre** : `--install-plugins` (scellé) → recharger Obsidian + `--plugin-health` → `/obsidian-router:wiki` → le picker de conventions. Elle n'affiche `ready yes` que lorsque plugins, wiki et conventions sont tous vérifiés.
+
+**Comment l'utiliser.** Depuis le workspace, dans un terminal :
+
+```bash
+obsidian-mcp-router --attach "<nom>" --local-path <dossier-absolu>
+```
+
+`--local-path` seulement si les fichiers du vault sont sur cette machine (le volume d'un conteneur, par exemple). Le wizard `/meta-attach-vault` enchaîne lui-même tout le parcours distant : attach → plugins → wiki → conventions → nouvel attach, jusqu'à `ready yes`.
+
+### Les plugins d'un vault : `--install-plugins` et `--plugin-health`
+
+**Le besoin.** Un vault peut lister un plugin comme activé sans en avoir le code (squelette cloné sans binaires, synchro qui n'a copié que les réglages) : Obsidian n'affiche alors rien du tout. Et faire télécharger du code tiers par un agent qui improvise n'est pas acceptable.
+
+**Ce que ça fait.**
+
+- **`obsidian-mcp-router --plugin-health <vault> [--json] [--offline]`** — lecture seule. Par plugin : code sur le disque, activé, version et, quand l'API REST répond, chargé ou non par Obsidian (`GET /commands/`, plus une sonde de la route `/open/` du bridge). Nomme « enabled without code » et « bridge absent » avec leur remède. Code de sortie `1` quand Local REST API ou le bridge n'a pas son code ; `--offline` saute la vérification en direct.
+- **`obsidian-mcp-router --install-plugins <vault> --dry-run`** — résout chaque plugin manquant (ceux que le vault active, plus Local REST API et le bridge) via le registre officiel d'Obsidian (`obsidianmd/obsidian-releases`) et la dernière release GitHub du dépôt, en suivant les dépôts renommés ou déplacés (par exemple `obsidian-style-settings`, désormais sous `community-archive/`) et en montrant où ils ont abouti. Il imprime assets, tailles et destination, puis un **sceau**. L'application exige `--approved-plan-sha256 <sceau>` et refuse si quoi que ce soit a changé entre-temps : il n'existe pas d'application sans sceau. `--only id,id` restreint la liste.
+- **Garde-fous** : seuls les plugins de la liste autorisée sont téléchargés ; uniquement en HTTPS, depuis des hôtes GitHub vérifiés à **chaque** redirection ; tailles plafonnées ; l'`id` du manifeste doit correspondre. Un `main.js` existant est conservé sauf `--force` ; `data.json` n'est jamais touché. Le bridge vient de sa propre release GitHub et ne dépend donc plus de BRAT.
+- Un vault distant doit avoir un `localPath` : sans lui, les deux commandes refusent et le disent.
+
+**À savoir.** Après une installation, rechargez Obsidian (Ctrl+P → « Reload app without saving » ; dans un conteneur, la même commande dans l'interface web, ou `docker compose restart`), désactivez le mode restreint, puis relancez `--plugin-health`.
+
+### La synchro des plugins dit ce qu'elle a vraiment fait
+
+**Le besoin.** `--sync-plugins`, `--sync-all` et `--sync-from-github` annonçaient « Synced 4 new plugin(s) » alors que trois n'avaient reçu qu'un `data.json`, et ne disaient rien des plugins du marketplace que le squelette active sans les livrer.
+
+**Ce que ça fait.**
+
+- Le rapport a trois colonnes : **code installé** (`main.js` + `manifest.json` présents dans le vault après la copie), **réglages seulement (code encore à installer)**, et **activés sans code**. Les ids restent écrits dans `community-plugins.json`, pour qu'un plugin s'active dès que son code arrive — mais ils ne comptent plus comme synchronisés. Les plugins du marketplace manquants viennent avec les étapes manuelles et `obsidian-mcp-router --install-plugins <vault>`.
+- Une **check-list après synchro**, adaptée au vault : recharger Obsidian (palette sur le bureau, ou interface web du conteneur / `docker compose restart`), désactiver le mode restreint, activer les plugins, lancer « Check for updates » de BRAT, vérifier avec `--plugin-health`. `--container` choisit la variante conteneur.
+- `--dry-run` détaille chaque vault et chaque plugin : fichiers copiés, code ou réglages seulement, ce qui est sauté et pourquoi, ce qui est activé, ce qui reste sans code, `.smart-env` et documents racine. Nouveau : `<vault> --sync-plugins --dry-run`. Pour `--sync-from-github`, le sceau du plan couvre désormais ce plan par plugin et `--lang` ; il est vérifié après l'extraction de l'archive dans un dossier temporaire et avant de toucher le moindre vault.
+- `--lang <code>` choisit le modèle d'embedding d'un `.smart-env` **créé** par la synchro : `en` garde `TaylorAI/bge-micro-v2` ; les autres langues reçoivent le multilingue `onnx-community/embeddinggemma-300m-ONNX` (`zh` : `Xenova/jina-embeddings-v2-base-zh`). Sans `--lang`, la langue que le vault déclare déjà (convention bilingue, réglages de Smart Connections) est utilisée, sinon une indication est affichée. Un `.smart-env` existant n'est jamais écrasé.
+- Le `README.md` du squelette livré n'est plus copié dans les vaults (Smart Connections l'indexait comme une note de l'utilisateur). Le `README.md` d'un vault de référence à vous continue de voyager comme avant.
 
 ## Conformité des vaults — trois moments, et ce qu'ils ne couvrent pas
 
@@ -112,13 +160,13 @@ Le script qui sous-tend le wizard est utilisable directement, avec des sous-comm
 - **Concurrence multi-processus.** Le verrou par vault est un singleton **de processus**. Deux routers sur le même vault (deux sessions Claude, un MCPHub et un local) convergent — chacun recalcule tout depuis l'arbre — mais ne transigent pas : deux écritures peuvent se succéder là où une aurait suffi. Aucune corruption, du travail en double.
 - **Deux balayages par passage.** Les projections et l'index BM25 énumèrent et relisent l'arborescence **chacun de leur côté**. C'est une dette d'optimisation assumée (un instantané partagé la rembourserait), pas un défaut de correction : le coût réel est doublé sur un gros vault.
 - **« Un processus = une session ».** Le dédoublonnage « une fois par session » est en réalité « une fois par processus router ». C'est exact pour le cas nominal (Claude Code démarre un router par session) et faux pour un router long-vivant partagé : celui-là fait un passage par vault sur toute sa durée de vie, pas un par session cliente.
-- **`--attach` et `--sync-plugins` n'écrivent pas dans le vault.** `--attach` ne touche que le workspace ; `--sync-plugins` / `--sync-from-github` propagent des plugins. Aucun n'entretient les index — c'est délibéré. **Si un futur flux de sync se met à muter `wiki/`, il devra entretenir les deux index**, sans quoi il recréera exactement la dérive que ces quatre moments existent pour absorber.
+- **`--attach` et `--sync-plugins` n'écrivent pas dans le vault.** `--attach` ne touche que le workspace et la config du router (la liaison, et un `localPath` vérifié) ; `--sync-plugins` / `--sync-from-github` propagent des plugins et `--install-plugins` en télécharge le code dans `.obsidian/plugins/` — aucun n'écrit sous `wiki/`. Aucun n'entretient les index — c'est délibéré. **Si un futur flux de sync se met à muter `wiki/`, il devra entretenir les deux index**, sans quoi il recréera exactement la dérive que ces quatre moments existent pour absorber.
 
 ## `/meta-status` — le diagnostic
 
 **Le besoin.** « Ça ne marche pas » a une dizaine de causes possibles : Obsidian fermé, plugin REST désactivé, clé API manquante, port changé, vault désactivé. Il faut un diagnostic qui **nomme** la cause et le remède.
 
-**Ce que ça fait.** Pingue chaque vault configuré et rapporte en ligne/hors ligne/problème d'auth, avec une suggestion de correction **par type de problème**.
+**Ce que ça fait.** Pingue chaque vault configuré et rapporte en ligne/hors ligne/problème d'auth, avec une suggestion de correction **par type de problème**. Pour chaque vault dont le disque est lisible d'ici (local, ou distant avec `localPath`), il lance aussi `--plugin-health` — « l'API REST répond » ne dit pas « le vault a ses plugins » — et n'applique jamais `--install-plugins` sans que vous ayez vu et approuvé le plan. Il rapporte enfin l'état de la boîte à outils de conversion, yt-dlp compris ([fiche 5](05-conversion-de-documents.md)).
 
 **Comment l'utiliser.**
 
@@ -157,6 +205,8 @@ Le script qui sous-tend le wizard est utilisable directement, avec des sous-comm
 **Comment l'utiliser.**
 
 > « installe la convention source-type sur smile », « quelles conventions sont actives sur ce vault ? », « propage source-type à tous les vaults » — ou `/obsidian-router:conventions`
+
+**À savoir.** L'installation passe par l'outil MCP `install_conventions({ vault, ids, dryRun? })` : **une seule écriture** pour plusieurs conventions, nommées par leur id. Les textes sont lus côté serveur dans le paquet — le modèle ne les recopie plus dans ses appels. Le fichier de conventions est résolu par REST (deux candidats présents : refus ; aucun : `CLAUDE.md` est créé). Une convention déjà présente est sautée (`alreadyPresent`), un id inconnu signalé (`unknown`). L'écriture est un compare-and-swap sur les octets lus, donc elle fonctionne sur un vault partagé (`writesRequireIfMatch`), là où l'ancien ajout par `append_to_file` était refusé ; un 409 dit de relancer. Le fichier est relu après écriture : `verified: true` signifie que chaque convention demandée **et installable** y figure exactement une fois ; `satisfied: false` signale qu'un id nommé était inconnu ou retiré (`retired`, ex. `bilingual`) et n'a donc pas été installé. La convention `languages` porte la valeur du vault : `languages: ["fr", "en"]` est obligatoire pour l'installer (refus avant toute I/O sinon), et `vaultLanguages` dit ce que le fichier déclare. Le mode de l'écriture est dit : `casMode: "atomic"` quand le bridge expose sa route de compare-and-swap ; `"fallback"` sinon — le routeur relit le fichier, compare son hash, puis écrit : une écriture concurrente entre ces deux appels n'est pas exclue, et un vault qui exige l'atomicité doit avoir le bridge. `dryRun: true` avec `ids: []` renvoie la bibliothèque (conventions retirées marquées `retired: true`) et ce qui est détecté. `/meta-attach-vault` et `/obsidian-router:wiki` proposent désormais le picker, pré-coché, à la fin d'un attachement ou d'une création de wiki.
 
 ## Mises à jour — `check-router-update` et `/plugin update`
 

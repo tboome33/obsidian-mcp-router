@@ -6,12 +6,12 @@ Invoke the `conventions` skill to manage CLAUDE.md conventions in one or more Ob
 
 Sub-commands:
 - `list` — show available conventions + which are installed on the target vault(s)
-- `install <id> [on <vault>] [--all]` — append a convention's snippet to the target vault(s)' CLAUDE.md
+- `install <id>[,<id>…] [on <vault>] [--all]` — append one or more conventions to the target vault(s)' conventions file, one guarded `install_conventions` call per vault, verified by reading the file back (`languages` carries the vault's own value, so it is asked per vault and never installed with `--all`)
 - `remove <id> [on <vault>] [--all] [confirm:true]` — strip a convention's section from the target vault(s)' CLAUDE.md
 - `sync-all-vaults <id>` — convenience alias for `install <id> --all`
 - `migrate-bilingual [on <vault>]` — replace the retired `bilingual` convention with `languages` (the value is asked; preview, backup and `ifMatch` write, one vault at a time)
 
-Convention ids ship in `skills/conventions/snippets/<id>.md`. Initial library: `source-type`, `bilingual`, `heading-hierarchy`, `auto-enrichment`. Since 2026-09-26 `bilingual` is retired (`skills/conventions/retired/`, recognised and removable, never installed) and `languages` — which carries the vault's own list of languages — takes its place.
+Convention ids are the file names in `skills/conventions/snippets/<id>.md` (14 at the time of writing). The live list is what `install_conventions` with `dryRun: true` and `ids: []` returns in `catalogue` — the router reads it from its own package. Since 2026-09-26 `bilingual` is retired (`skills/conventions/retired/`, recognised and removable, never installed — the tool reports it in `retired`) and `languages` — which carries the vault's own list of languages — takes its place.
 
 ## ⚠️ Safety on `remove` (v0.8.12, NIT-4 + IMP-4)
 

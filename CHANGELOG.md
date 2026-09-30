@@ -10,6 +10,213 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### Review pass on the attach work: writes stay inside the vault, messages keep their secrets, and "ready" stops meaning "accepted every suggestion"
+
+Two reviewers (a Code Reviewer agent on the tree, codex on the diff) went over the attach-remote
+work after it was merged onto v0.96.0. What they found, and what changed:
+
+- `--install-plugins` refuses to write through a link. The chain `.obsidian/` → `plugins/` → `<id>/`
+  must be plain directories: a symlink or a Windows junction anywhere in it (planted between the
+  dry run and the apply — the window the seal does not cover, since the seal binds the lexical
+  path) now stops the whole apply before a byte is staged, and `community-plugins.json` is not
+  written when it or `.obsidian/` is a link. The CLI reports it as a refusal (exit 1), not a crash.
+- No URL in a plugin-download message carries its query or userinfo any more: a release asset
+  redirects to a CDN URL whose query is a signed token, and those messages reach reports. The
+  router config's JSON error no longer quotes the parser's message either (it can hold a slice of
+  the file, which holds API keys); yt-dlp's stderr is masked for the proxy URL before it is quoted.
+- `--attach`'s final state: the recommended conventions are an OFFER, not a gate. A vault with all
+  its plugin code and its wiki is `ready yes` even when the owner declined a recommended
+  convention, or has no conventions file yet (listed under `optional`, no longer a `next step` a
+  wizard would loop on).
+  What does gate it now: a `languages` section that declares nothing (the placeholder, an
+  unreadable value) is a blocking step. The install step names the missing ids with `--only`,
+  since the installer's own candidates (required + enabled) would never select an expected plugin
+  the vault has not enabled yet — the same step, forever.
+- The plugin CLIs build a remote vault's endpoint from `remoteVaultDescriptor` — the one mapping
+  the server and `--attach` use — instead of a second hand-written one (which had already lost
+  `timeoutMs`); a relative `localPath` is refused there as the registry refuses it, instead of
+  being resolved against whatever directory the terminal was in. `--attach --local-path` does not
+  read a note that is a symlink when comparing the directory with the vault.
+- `install_conventions`: an id present in both `snippets/` and `retired/` is retired (never
+  installed); a `languages` value given for a library that does not ship `languages` reports
+  `unknown` instead of "not among the ids"; every result carries `satisfied` — `false` when an id
+  named was unknown or retired, so "verified" (what could be installed was) is not read as
+  "everything asked for was installed". The tool's snippet loader is `loadConventionSnippets`,
+  no longer a second `loadConventionCatalogue` beside the helper's.
+- Pinned by test: the files in `src/` that read a remote vault's `diskPath` are exactly three
+  (`registry.mjs`, `helpers/embedding-staleness.mjs`, `helpers/vault-slug.mjs`); a fourth fails
+  `tests/no-vault-disk.test.mjs`. Documented, not changed: with `localPath`, the session journal
+  hooks write to that directory directly (not over REST) — `docs/remote-vaults.md` says what that
+  means for a container running as another user.
+- The wiki and attach pickers name `languages` (not the retired `bilingual`), hide retired
+  entries, and pass the value the owner gave; the sync report's suggested command carries
+  `--dry-run`, without which the command refuses to run.
+- Second pass, on the repairs themselves: the per-plugin link check runs right before the FIRST
+  write (the staging directory), not only before the renames — a link landing on `plugins/` while
+  an asset downloads is refused with nothing staged through it (measured: with that check removed,
+  the test goes red); a release asset URL that points outside its release is reported through
+  `displayUrl` too; an unparseable URL shows as `(malformed URL)`, never a slice of the input; a
+  redirect whose `Location` does not resolve is a controlled refusal; the note `--attach
+  --local-path` compares is refused when its REAL path (every component) leaves the directory.
+  Said plainly in the module: the link check narrows the window, it is not a lock.
+- Third pass and the first CI run of this work (it had never left the machine that wrote it):
+  the `--name` slug-collision guard (`buildProvisionPlan`, `setup-vault --provision`) compares
+  REAL paths, not spellings — the registry holds the path the pin resolved, and the Windows
+  runner composes the same folder from an 8.3 temp dir (`RUNNER~1`), so the legitimate re-run
+  under the same name was refused there; `jsRuntimeArg` recognises a node binary whatever the
+  path separator; the conventions tests read snippets as the loader does (LF) so a CRLF checkout
+  compares text with text; the Windows handle-count test skips, and says why, when the ACL deny
+  does not bite for an elevated token; `displayUrl` shows a path only for http(s) (a `data:`
+  URL's path is its payload); a note is not compared when the disk adapter cannot tell its real
+  path.
+
+### `install_conventions` knows the conventions that changed under it — `languages` takes a value, `bilingual` is retired
+
+The installer below was written before v0.96.0 retired `bilingual` and made `languages` a
+convention with a value; merged onto it, it now says so instead of writing the placeholder:
+
+- `install_conventions({ ids: ["languages"], languages: ["fr", "en"] })` renders the vault's value
+  into the section's one value line server-side (`renderLanguagesSection`); without a value the
+  call is refused before any I/O, and so is a value that is not ISO 639-1 codes, or a value given
+  for a call that does not name `languages`. A vault that already carries the section is "already
+  in place" whatever value is passed — the tool never changes a value. Every result carries
+  `vaultLanguages` (what the file declares), and `verified` also compares the value read back.
+- A retired id (`skills/conventions/retired/`, today `bilingual`) is never written: it is reported in
+  `retired`, and `dryRun` flags it `retired: true` in `catalogue` while `detection` still finds its
+  heading in a file — a vault to migrate stays visible to the picker.
+- The attach picker's recommended set names `languages` in place of `bilingual`; the `--lang`
+  detection of a template sync reads the `languages` convention first (its first code), then the
+  retired `bilingual` (`fr`), then Smart Connections' own setting.
+- The `CLAUDE.md` block written by `--attach` conditions "auto-loaded" on the hooks having run
+  (`list_vaults` → `sessionHooks.status`) in every case, and promises nothing when the hot cache
+  was not measured.
+
+### Attaching a blank remote vault ends verified — plugins, wiki, conventions — with no step found by hand
+
+Reported from a real install: a vault served by Obsidian in a linuxserver container (Local REST API
+at a LAN address, files on the machine the router runs on). `--attach` refused it, the sync reported
+plugins it had not installed, nothing said to reload Obsidian or install the bridge, the conventions
+were never offered, and the CLAUDE.md block claimed a hot.md was auto-loaded that did not exist. Each
+entry below fixes one of those; this one ties them together.
+
+- `--attach` now ends with **"État final / Final state"**: plugins with code out of those the
+  reference skeleton enables (and which are missing or enabled without code), the bridge, the wiki,
+  the conventions installed and the recommended ones still absent — read from the vault's disk (a
+  local vault's folder, or a remote vault's verified `--local-path`). When anything is missing it
+  prints the **ordered next steps**: `--install-plugins` (sealed) → reload + `--plugin-health` →
+  `/obsidian-router:wiki` → the conventions picker. It prints `ready yes` only when all of it is
+  verified; without a disk it says `unknown` rather than guessing.
+- A **blank** remote vault gets the wiki step FIRST: its folder cannot be verified yet (the check
+  compares a note served over REST with the same file on disk, and a blank vault has none), so
+  "declare `--local-path`" first was a loop. The wiki is written over REST and creates that note.
+- `--plugin-health` now probes a remote vault's bridge `/open/` route at its declared address; it
+  was never probed, so "bridge loaded" rested on the bridge having registered a command.
+- `meta-attach-vault`'s remote flow no longer stops at registration: it chains attach → plugins →
+  wiki → conventions → re-attach until `ready yes`.
+- New test `tests/e2e-attach-blank-remote-vault.test.mjs` drives that whole chain against a fake
+  Local REST API backed by a temp directory; `tests/attach-readiness.test.mjs` covers each step rule.
+
+### A remote vault can be attached to a workspace — and one whose files also sit here says so
+
+`--attach <name>` now resolves names in `remoteVaults` too (after the local lookup, never instead of
+it) and binds them; before, a vault served by a containerised Obsidian was refused as "not in
+portRegistry". A remote vault whose wiki does not exist yet is attached with a warning, not refused.
+
+- `--attach <remote> --local-path <abs-dir>` checks the directory against the vault (same text for
+  `wiki-meta/catalog.md` or a root note, fetched over REST and compared after UTF-8 decoding) and records it as
+  `remoteVaults[].localPath`. A mismatch refuses with nothing written; a directory that cannot be
+  checked is not recorded.
+- With `localPath`, the session hooks load that vault's hot cache from the directory, and
+  `search_smart` / `get_wiki_context_pack` check index freshness instead of declining
+  `no-local-disk`. Notes are still read and written over REST only: the server exposes the
+  directory as `diskPath`, never `path`, so the HTTP-only rule for note content holds.
+- `register_remote_vault` accepts an optional absolute `localPath`, stored as declared (the server
+  cannot verify it; `--attach --local-path` does).
+- The CLAUDE.md block no longer claims hot.md is "Auto-loaded at session start" when it does not
+  exist, or when the vault is remote with no local directory; `--attach` warns in both cases.
+
+### Plugin sync says what it actually installed — and what you still have to do
+
+`--sync-plugins`, `--sync-all` and `--sync-from-github` reported "Synced 4 new plugin(s)" when three
+of them had received only a `data.json`, and said nothing about the seven marketplace plugins the
+skeleton enables without shipping. The report now has three buckets: **code installed**
+(`main.js` + `manifest.json` in the vault after the copy), **settings only (code still to
+install)**, and **enabled without code**. Ids are still written to `community-plugins.json` so a
+plugin switches on as soon as its code arrives — they are no longer counted as synced. Missing
+marketplace plugins come with the manual steps and `obsidian-mcp-router --install-plugins <vault>`.
+
+- A post-sync checklist tailored to the vault: reload Obsidian (desktop palette, or container web UI
+  / `docker compose restart`), turn off Restricted mode, enable plugins, run BRAT "Check for
+  updates", verify with `--plugin-health`. `--container` selects the container variant.
+- `--dry-run` details every vault and plugin: files copied, code vs settings only, skips and why,
+  what gets enabled, what stays without code, `.smart-env` and root docs. The `--sync-from-github`
+  plan seal now covers that per-plugin plan and `--lang`; it is verified after the archive is
+  extracted to a temp dir and before any vault is touched. New: `<vault> --sync-plugins --dry-run`.
+- `--lang <code>` picks the embedding model of a newly created `.smart-env`: `en` keeps
+  `TaylorAI/bge-micro-v2`; other languages get the multilingual
+  `onnx-community/embeddinggemma-300m-ONNX` (`zh`: `Xenova/jina-embeddings-v2-base-zh`), taken from
+  Smart Connections' own adapter list. Without it, a language the vault declares (bilingual
+  convention, Smart Connections settings) is used, or a hint is printed. An existing `.smart-env`
+  is never overwritten.
+- The shipped skeleton's `README.md` is no longer copied into vaults (Smart Connections indexed it
+  as if it were the user's note).
+
+### `--install-plugins` and `--plugin-health`: a vault's missing plugin code, from one named command
+
+- **`obsidian-mcp-router --plugin-health <vault> [--json]`** reports, per plugin: code on disk,
+  enabled, version and, when the REST API answers, whether Obsidian loaded it (`GET /commands/`,
+  plus the bridge `/open/` probe). It names "enabled without code" and "bridge absent" with their
+  fix, and exits 1 when Local REST API or the bridge has no code.
+- **`obsidian-mcp-router --install-plugins <vault> --dry-run`** resolves each missing plugin through
+  Obsidian's official registry (`obsidianmd/obsidian-releases`) and the repo's latest GitHub
+  release, following renamed or moved repositories (e.g. `obsidian-style-settings`, now under
+  `community-archive/`) and showing where they landed. It prints assets, sizes and destination,
+  then a seal; the apply needs `--approved-plan-sha256 <seal>` and refuses if anything changed.
+  One named command the user can authorize, instead of ad-hoc downloads of third-party code.
+- Only plugins on the network allowlist are downloaded, from GitHub hosts checked on every redirect
+  hop, HTTPS only, with size caps. The manifest id must match. An existing `main.js` is kept unless
+  `--force`; `data.json` is never touched. The bridge comes from its own GitHub release, so it no
+  longer depends on BRAT.
+- A remote vault needs `localPath`; without it both commands refuse and say so.
+
+### install_conventions — one guarded write for many conventions, verified by reading it back
+
+New MCP tool `install_conventions({ vault, ids, dryRun? })`. It installs library conventions by id
+into the vault's conventions file (resolved over REST; two candidates present is refused, none
+creates `CLAUDE.md`). The texts are read server-side from the package, so the model no longer
+copies ~31 KB of rules into tool calls. Present conventions are skipped (`alreadyPresent`), unknown
+ids reported (`unknown`), a malformed id refused before any I/O.
+
+- One write, compare-and-swap on the bytes read, create-only when absent: it works on shared vaults
+  (`writesRequireIfMatch`), where the old `append_to_file` path was refused. A 409 says to re-run.
+- Checked before writing (each requested convention detectable exactly once) and after (read-back →
+  `verified`). `dryRun: true` with `ids: []` returns the library and its detection.
+- `meta-attach-vault` (1A.5) and `wiki` (new step 6) now run the conventions picker automatically at
+  the end of an attach or a wiki creation, pre-checked, then install with one call. Stale
+  id/heading table, "initial library" line and "eight" count fixed.
+
+### youtube_to_markdown and install-markitdown work on a locked-down Linux server
+
+- `install-markitdown` no longer dead-ends when the system Python has no `ensurepip`
+  (Debian/Ubuntu without `python3.X-venv`, no sudo): it installs with
+  `uv tool install "markitdown[all]"` when uv is present and gives the `MARKITDOWN_PATH` line when
+  needed; without uv it prints the no-admin uv installer command instead of downloading anything.
+  pipx is suggested only when installed.
+- yt-dlp gets this Node as its JavaScript runtime (`--js-runtimes node:<path>`, yt-dlp
+  2025.11.12+), retried once without it on an older yt-dlp. The install hint recommends
+  `yt-dlp[default,curl-cffi]`.
+- HTTP 429 / "Sign in to confirm you're not a bot" (typical of datacenter IPs) is diagnosed as a
+  blocked IP, pointing at two new variables: `YTDLP_COOKIES` (absolute path to a Netscape
+  cookies.txt, passed as a private copy so your file is never rewritten) and `YTDLP_PROXY`
+  (http/https/socks4/socks5[h]). Both come from the router's own environment only — a workspace
+  `.env` cannot set them, so a cloned repository cannot route your traffic through its proxy.
+- When the page conversion succeeds without a `### Transcript` section (always, on this path:
+  MarkItDown is handed a downloaded HTML file, so its YouTube converter never runs), a video URL now
+  falls back to yt-dlp; if that fails too, the page comes back headed by a warning with the reason.
+- A failed page fetch shows its real network cause instead of a bare "fetch failed".
+- `list_vaults` looks for yt-dlp without running anything: `conversionToolbox.youtube` reports
+  `found`/`missing`, and `toolsDegraded` lists `youtube_to_markdown` only when yt-dlp is missing —
+  it used to list it unconditionally.
 ### View links: the router sends the vault hints `rest` and `obsidian_name`
 
 A view-link provider can now serve a vault nobody declared to it. Every `GET /view` carries two
@@ -245,6 +452,99 @@ request/result pair split by a resume (not reproduced). Parallel tool calls whos
 differ from their request order were measured instead of guarded (2026-09-26, 440 transcripts): for
 writes, results never came back out of request order — 0 of 553 pairs targeting a hot.md or a
 wiki/ note, while 181 batches of reads did — so no rule was added.
+
+### `provision_vault`: the new vault is judged on its real path, pinned for the whole run, and refused when its tree holds a link
+
+The sweep of the output-directory class found a third writer. Measured against the real engine
+(`scripts/setup-vault.mjs`) before the fix, with no race needed for the first two:
+
+- **The known-roots gate was lexical.** A junction under a known root, pointing anywhere, passed:
+  a whole vault — `.env` with its API key, `.obsidian`, `wiki` — was created where it pointed,
+  without `allowOutsideRoots`. `isPathWithinRoots` now compares real paths (links folded, through the
+  nearest existing ancestor).
+- **A link at a name inside an existing target was written through.** A dangling `.env` link made
+  the engine write the API key where it pointed (`existsSync` answered "absent", `writeFileSync`
+  followed the link); a `.obsidian` junction sent the plugins and their `data.json` elsewhere. The
+  real run now refuses a target whose existing tree holds ANY symlink or junction — the engine
+  writes by path everywhere below the vault, the OKF projections into every wiki directory.
+- **A swap between the dry-run gate and the real run redirected the whole vault.** The real run
+  (only when provision_vault drives it: `--pin-target`, added by the engine) now pins the target
+  with `openPinnedOutputDir`, asks the roots gate again on the PINNED real path before creating any
+  missing level of the target or writing any of the vault's content (on Windows the pin's own probe
+  is created first, in the nearest existing ancestor — it is what proves where that ancestor is),
+  holds the pin until the process exits, and writes to that real path — the result's `path` is the
+  real path.
+
+Codex's first review round of this change found four more holes, all fixed:
+
+- **The skeleton source skipped the pin.** Its branch returned before the pin ran; the pin now runs
+  before any source branch.
+- **The real run could pin a different target than the one gated.** A name-only request is
+  recomposed by the real run from the config, which may have changed since the dry-run. The pin
+  must now land exactly on the approved target's real path (`--expected-target`, compared as given —
+  a first version re-resolved it at pin time, which followed the very swap it exists to catch, and a
+  test caught it). Where that real path comes from was changed again in round 3, below.
+- **The walk exempted any unlistable `.router-pin-*` directory**, which another program holding
+  its own such directory could use to hide a subtree. Only the pin's own probe is exempt now, by
+  exact path; any other directory that cannot be listed refuses the run.
+- **An existing `.git` with `gitInit`**: a `.git` FILE can send git to a repository outside the
+  vault. Refused. And a file with a second name (a hard link) in the existing tree is refused too:
+  an in-place write there would change its other name, possibly outside.
+
+A refusal after the pin releases it at once. Directories the pin created for a missing target are
+not rolled back when the run is then refused: they stay where the gate approved them (outside the
+roots when `allowOutsideRoots` was given), and hold whatever someone else put there meanwhile.
+
+Codex's second round attacked those repairs and confirmed four of them. It found one more hole
+and two limits, now handled:
+
+- **Hard-link count on Windows.** `lstat` by path can, in libuv, fall back to directory metadata
+  that reports one name. Codex found this in libuv's source; it did not reproduce here (Node 24.13,
+  libuv 1.51, Windows 11: 2 names reported even with the file's attribute-read right denied). On
+  Windows the count is now asked of an open handle, and a file that cannot be opened refuses the
+  run.
+- **A root replaced by a link after the dry-run.** Round 2 declared this open, arguing that a
+  snapshot of the roots would only move the window. Round 3 broke that argument: an attacker blocked
+  until the dry-run ends (a legitimate program holding the root open) can still act after it, and a
+  snapshot then refuses. Fixed in round 3, below.
+- **A missing level created meanwhile with another letter case** refuses the run (the approved path
+  is compared exactly). Plan again.
+
+Codex's third round broke the round-2 argument on roots, and found that the target binding had the
+same gap. Both are fixed by one change: **the dry-run now reports the REAL target and the REAL
+roots its gate judged** (`judgeRoots` — one resolution, used for the verdict and reported), and
+the real run's pin must land on that target and inside those roots, compared as given
+(`--expected-target`, `--approved-roots`). The server no longer resolves the target itself after
+the dry-run. A root, or a junction inside a root, re-pointed after the dry-run is then refused.
+The current config's roots are still asked as well; both must agree. A plan that does not report
+them is refused before the real run. Still open: a root replaced by a link before the dry-run
+RESOLVES it moves the root, since the config names a root by its path (the dry-run resolves the
+target and the roots one after the other, not as one atomic snapshot).
+
+Codex's fourth round found no P1 and two more holes, both fixed:
+
+- **An approved preview did not bind where the vault lands.** `plan_vault`'s seal covered the
+  path's spelling, the steps and the warnings — a junction re-pointed between the preview and
+  `provision_vault` changed none of them, and the seal passed. The sealed core now includes the
+  real target and the real roots; a destination or a root moved in between is a plan drift.
+- **"Inside a root" ignored letter case.** On Windows `path.relative` lowercases both sides, and an
+  NTFS directory can have case sensitivity turned on, where `Root` and `root` are two distinct
+  siblings: a target under `root` passed as being inside the known root `Root` (measured with
+  `fsutil file setCaseSensitiveInfo`, which needs no administrator right here). Containment is now
+  an exact comparison of the two real paths (`isInsideRealPath`), for the dry-run's verdict and for
+  both of the pin's root checks. A missing tail written in another case than its root is refused.
+  The same `path.relative` containment is used elsewhere in the repository (the asset writers'
+  temp-directory check among them); that sweep is not part of this change.
+
+Scope, decided by Roland (2026-09-23): targeted, not a rewrite of the engine's ~100 writes. Stated
+as still open: a link planted INSIDE the vault during the run by a program able to write there; on
+Linux the pin holds a descriptor, which does not stop a rename of the path during the run; macOS has
+no pin. On Windows the pin needs koffi and an NTFS volume, as for the asset writers — a new vault on
+a FAT32 or cloud-drive letter is refused there. The CLI (`setup-vault.mjs` run by hand) is unchanged.
+Mutations: 38/38 rules killed as declared (37 on Windows, 1 on Linux), each on a private copy of the
+repository — the bench no longer writes the shared working tree. One of them, "the Windows
+count comes from a handle", is killed by the unopenable-file test: it proves the handle path runs,
+not that libuv's fallback would be caught, since that fallback did not reproduce here.
 
 ### The two asset writers: the output directory is pinned, and must be a vault or the temp directory
 

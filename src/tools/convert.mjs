@@ -150,14 +150,42 @@ function mathPreservingTransform(buffer, ctx = {}) {
 /* ---------- URL-input tools (YouTube, Bing, generic webpage) ---------- */
 
 /**
- * YouTube → markdown with a yt-dlp caption fallback.
+ * Does this markdown carry a transcript?
  *
- * The primary path is MarkItDown's YouTubeConverter (page scrape +
- * youtube-transcript-api), which is fragile — it returns "fetch failed" on
- * videos that DO have captions (observed twice on watch?v=iYG5tiFfK3E). When
- * it throws, we retry via yt-dlp, which is far more robust at reaching caption
- * tracks. The contract is unchanged: still a plain markdown string, still no
- * vault writes (yt-dlp writes only to a private temp dir, cleaned up after).
+ * MarkItDown's YouTube converter writes it under a `### Transcript` heading:
+ * `f"\n### Transcript\n{transcript_text}\n"` in
+ * packages/markitdown/src/markitdown/converters/_youtube_converter.py
+ * (https://github.com/microsoft/markitdown). Our yt-dlp fallback has no such
+ * heading but is, by construction, a transcript — it is never passed here.
+ *
+ * A heading with nothing under it (the next line is another heading, or the
+ * end) is NOT a transcript. `##` is accepted too, so a converter that promotes
+ * the section one level still counts.
+ */
+export function markdownHasTranscript(md) {
+  return /^#{2,3}[ \t]+Transcript[ \t]*\r?\n(?:[ \t]*\r?\n)*(?!#)[ \t]*\S/m.test(String(md ?? ''));
+}
+
+/**
+ * YouTube → markdown, with yt-dlp as the transcript source.
+ *
+ * WHAT THE PRIMARY PATH REALLY RETURNS. `convertUrl` downloads the page
+ * itself (the pinned-IP `safeFetch`) and hands MarkItDown a LOCAL HTML FILE.
+ * MarkItDown's YouTubeConverter only accepts an input whose URL yields a video
+ * id (`_get_video_id(url)` in its `accepts()`), and a file path carries no
+ * URL — so on this path the generic HTML converter runs and NO transcript is
+ * produced. The page text alone is what the primary gives.
+ *
+ * So yt-dlp runs in two cases, both only for a real YouTube VIDEO URL:
+ *   - the primary THROWS ("fetch failed" was observed twice on
+ *     watch?v=iYG5tiFfK3E) → the yt-dlp transcript, or both errors;
+ *   - the primary SUCCEEDS WITHOUT A TRANSCRIPT ({@link markdownHasTranscript})
+ *     → the yt-dlp transcript with a note saying why it ran; if yt-dlp fails
+ *     too, the primary's page text is still returned — it is a result, not an
+ *     error — with a warning saying no transcript could be obtained and why.
+ * The order stays markitdown → yt-dlp (user decision). The contract is
+ * unchanged: a plain markdown string, no vault writes (yt-dlp writes only to a
+ * private temp dir, cleaned up after).
  *
  * `assertString` runs BEFORE the try so a missing `url` fails cleanly with the
  * standard "Missing required argument" error instead of triggering a fallback
@@ -168,8 +196,9 @@ export async function youtubeToMarkdown(_registry, { url } = {}, _deps = {}) {
   assertString(url, 'url');
   const primary = _deps.primary || ((u) => convertUrl(u));
   const fallback = _deps.fallback || ((u) => fetchYoutubeTranscriptViaYtdlp(u));
+  let primaryResult;
   try {
-    return await primary(url);
+    primaryResult = await primary(url);
   } catch (primaryErr) {
     // Only escalate to the yt-dlp fallback for real YouTube VIDEO URLs (a
     // parseable 11-char id — not just a youtube.com host, which still exposes
@@ -188,6 +217,22 @@ export async function youtubeToMarkdown(_registry, { url } = {}, _deps = {}) {
           `yt-dlp fallback also failed: ${fallbackErr?.message ?? 'Unknown error'}`,
       );
     }
+  }
+  // The primary SUCCEEDED. Same video-URL gate as above: channels, playlists
+  // and non-YouTube pages are returned exactly as MarkItDown made them.
+  if (!isYoutubeVideoUrl(url) || markdownHasTranscript(primaryResult)) return primaryResult;
+  try {
+    const transcript = await fallback(url);
+    return `${transcript.replace(/\s+$/, '')}\n\n`
+      + '> _Note: the page conversion (MarkItDown) produced no transcript, so the transcript above '
+      + 'was fetched with yt-dlp._\n';
+  } catch (fallbackErr) {
+    // A page without its transcript is still a result — returned, with the
+    // reason in plain sight rather than an error that would discard it.
+    return `> **Warning: no transcript could be obtained for this video.** The page conversion `
+      + 'produced none, and the yt-dlp fallback failed: '
+      + `${String(fallbackErr?.message ?? 'Unknown error').replace(/\s*\n\s*/g, ' ')}\n\n`
+      + String(primaryResult ?? '');
   }
 }
 

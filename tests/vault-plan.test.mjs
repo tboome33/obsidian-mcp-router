@@ -81,6 +81,23 @@ test('isPathWithinRoots: inside allowed, sibling-prefix rejected', () => {
   assert.equal(isPathWithinRoots(path.resolve('/etc/passwd'), [root]), false);
 });
 
+test('isPathWithinRoots judges REAL paths: a junction under a root pointing outside is outside', (t) => {
+  // Lexical before 2026-09-23: provision_vault then created a whole vault,
+  // API key included, wherever the junction pointed (measured).
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'vault-plan-real-')));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const root = path.join(dir, 'root');
+  const outside = path.join(dir, 'outside');
+  fs.mkdirSync(root);
+  fs.mkdirSync(outside);
+  fs.symlinkSync(outside, path.join(root, 'alias'), process.platform === 'win32' ? 'junction' : 'dir');
+  assert.equal(isPathWithinRoots(path.join(root, 'alias', 'new-vault'), [root]), false);
+  assert.equal(isPathWithinRoots(path.join(root, 'plain', 'new-vault'), [root]), true, 'control: a plain subdirectory');
+  // And the other way round: a ROOT spelled through a link still admits its real inside.
+  fs.symlinkSync(root, path.join(dir, 'root-alias'), process.platform === 'win32' ? 'junction' : 'dir');
+  assert.equal(isPathWithinRoots(path.join(root, 'x'), [path.join(dir, 'root-alias')]), true);
+});
+
 // Phase 1 item 3 of the portee-ergonomie-refus roadmap (decision ergonomie-
 // creation-liaison-vaults §1): "Node handles UNC paths natively, but nothing
 // verifies it" — this is that verification, not a new mechanism.

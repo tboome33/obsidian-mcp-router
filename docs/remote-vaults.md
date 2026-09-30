@@ -103,6 +103,35 @@ The port number itself is not a secret: it is not an authentication credential, 
 
 One more consequence: `build_open_link` normally *verifies* a path against the local disk and corrects or refuses a wrong one. It cannot do that for a vault with no disk, so its result carries **`pathVerified: false`** and a `verification` sentence. The URL is well-formed; it is not proof the file exists.
 
+### Optional — `localPath`, when the vault's files also sit on this machine
+
+A common shape: Obsidian runs in a container (the linuxserver image, say), its Local REST API is published on a LAN or WireGuard address, and the container's volume is a directory on the very machine the router runs on. The vault is still **remote** to the router — every note goes over HTTP — but some things only need a disk, and the disk is right there. Declare it:
+
+```json
+{ "name": "notes", "baseUrl": "http://10.8.0.1:27180", "apiKey": "…", "localPath": "/srv/obsidian/notes" }
+```
+
+The value must be an absolute directory. Two ways to set it:
+
+- **Verified, from a terminal (recommended)**, in the workspace you are binding:
+
+  ```
+  obsidian-mcp-router --attach notes --local-path /srv/obsidian/notes
+  ```
+
+  Before anything is written, the CLI compares the same file on both sides — `wiki-meta/catalog.md` (or its legacy name), else a note from the vault root — as served over REST and as found in the directory, both decoded as UTF-8 the way the router decodes REST responses. Same text: the directory is recorded in `remoteVaults[].localPath`, in the same locked config write as the binding. A different text, a file one side has and the other lacks, or a directory that does not exist: the command refuses **with nothing written**. Nothing to compare (an empty vault) or a REST side that cannot be read: nothing is recorded, and the command says why. A mismatch on a `localPath` already in the config is reported loudly on re-attach, never silently rewritten.
+- **Declared, from a conversation**: `register_remote_vault({ …, localPath })` stores it **as declared**. The server does not read a vault's disk, so it cannot check the directory; its result says `status: "declared"` and names the `--attach --local-path` command that verifies it.
+
+**What it enables.**
+
+- The session hooks load that vault's `wiki-meta/hot.md` from the directory, as for a local vault — and the `CLAUDE.md` block that `--attach` writes stops claiming a hot cache is auto-loaded when it is not.
+- `search_smart` and `get_wiki_context_pack` check their index freshness against the directory instead of declining with `no-local-disk`.
+- `--install-plugins` and `--plugin-health` can reach the vault's `.obsidian/` folder. Without `localPath`, both refuse and say so.
+- `--attach` can read plugins and conventions from the disk for its "Final state" report instead of printing `unknown`.
+
+**What it does not enable.** Notes are still read and written **over REST only**. The server exposes the directory as `diskPath`, never as `path`, precisely so that none of its "read or write this vault through its disk" branches can fire for a remote vault: the HTTP-only rule for note content holds (`tests/no-vault-disk.test.mjs`, which also pins the list of `diskPath` readers in `src/`). Click-to-open does not read the container's `data.json` either — the port there is the one inside the container — so `insecurePort` above stays the only way to get links.
+
+**One thing to know about the session hooks.** The hooks are not the server: with `localPath`, the session journal hooks (`session-auto-journal`, `session-reconcile`) treat the directory like a local vault's and **write** `wiki-meta/journal.md` and the session notes to it directly, not over REST. On a vault served by a container that runs as another user (linuxserver's PUID), files created from the host may not be writable by Obsidian, and a write from both sides at once is not arbitrated. `--attach --local-path` verifies that a note READS the same on both sides; it does not probe writability. If that setup is yours, watch the journal for permission errors, or leave `localPath` out and accept `unknown` for plugins and conventions in the final state.
 ### Optional — `obsidianName`, the vault's label inside Obsidian
 
 When a view-link provider is configured (`OBSIDIAN_ROUTER_VIEW_AGENT_URL`), every `GET /view` the router sends carries two optional *vault hints* defined by the provider contract (`docs/CONTRACT.md`, section "Vault hints", in [obsidian-mcp-router-view-agent](https://github.com/tboome33/obsidian-mcp-router-view-agent)):

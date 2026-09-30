@@ -17,6 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolvePluginsToClone } from './plugin-resolver.mjs';
+import { realPathWithMissingTail, isInsideRealPath } from '../src/helpers/real-path.mjs';
 import {
   defaultNameFromPath,
   referenceVaultPath,
@@ -86,16 +87,40 @@ export function knownVaultRoots(cfg) {
   return [...roots];
 }
 
-/** True when `abs` is inside (or equal to) one of the given roots. */
+/**
+ * True when `abs` is inside (or equal to) one of the given roots — judged on
+ * REAL paths, links folded, through the nearest existing ancestor for a path
+ * not created yet. The first version compared `path.resolve` spellings: a
+ * junction under a known root pointing anywhere passed, and provision_vault
+ * then created a whole vault — API key included — outside every root,
+ * without `allowOutsideRoots` (measured 2026-09-23, no race needed). The same
+ * defect the asset-directory gate had.
+ */
 export function isPathWithinRoots(abs, roots) {
-  const a = path.resolve(abs);
-  for (const root of roots) {
-    const r = path.resolve(root);
-    if (a === r) return true;
-    const rel = path.relative(r, a);
-    if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return true;
-  }
-  return false;
+  return judgeRoots(abs, roots).within;
+}
+
+/**
+ * The roots verdict AND the real paths it was reached on, resolved once. The
+ * dry-run hands `realTarget` and `realRoots` to provision_vault, whose real run
+ * compares its pinned target against THESE values without resolving them
+ * again: a root or a target swapped for a link after this verdict would
+ * otherwise be judged, later, on where it points by then (Codex review,
+ * round 3 — an attacker blocked until the dry-run is over can still act after
+ * it). The resolutions themselves are one after the other, not one atomic
+ * snapshot: a root replaced by a link between them is captured as it points
+ * then (Codex review, round 4) — the guarantee starts at each resolution.
+ * @returns {{ realTarget: string, realRoots: string[], within: boolean }}
+ */
+export function judgeRoots(abs, roots) {
+  const realTarget = realPathWithMissingTail(abs);
+  const realRoots = roots.map((root) => realPathWithMissingTail(root));
+  return { realTarget, realRoots, within: realRoots.some((r) => isInsideRealPath(realTarget, r)) };
+}
+
+/** `real` is `root` or below it — both already real, compared exactly (see isInsideRealPath). */
+export function isInsideReal(real, root) {
+  return isInsideRealPath(real, root);
 }
 
 /**
@@ -186,6 +211,22 @@ export function copyableVaults(cfg = {}) {
 }
 
 /**
+ * "The same registered path?" — judged on REAL paths, not spellings. The
+ * registry holds the real path the pin resolved (a long name); the caller may
+ * compose the same folder from an 8.3 spelling (`RUNNER~1`, the Windows CI
+ * runner's temp dir), a different case, or a link. A textual `!==` called
+ * those two different vaults and refused the legitimate re-run under the same
+ * name. A path that does not exist yet is resolved as far as it exists.
+ */
+export function sameRegisteredPath(a, b) {
+  const real = (p) => {
+    try { return realPathWithMissingTail(p); } catch { return path.resolve(String(p)); }
+  };
+  const fold = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+  return fold(real(a)) === fold(real(b));
+}
+
+/**
  * Build the complete, resolved provisioning plan (read-only). This is what
  * `--dry-run [--json]` prints and what `provision_vault` executes.
  */
@@ -195,9 +236,9 @@ export function buildProvisionPlan({ vaultPath, opts = {}, cfg = {}, requiredPlu
   const name = opts.name || defaultNameFromPath(abs);
   const slug = (opts.name ? opts.name : defaultNameFromPath(abs)).toLowerCase();
 
-  // Slug collision (against a DIFFERENT registered path).
+  // Slug collision (against a DIFFERENT registered path — real paths compared).
   const slugs = existingSlugs(cfg);
-  if (slugs.has(slug) && path.resolve(slugs.get(slug)) !== abs) {
+  if (slugs.has(slug) && !sameRegisteredPath(slugs.get(slug), abs)) {
     warnings.push({
       code: 'slug-collision',
       message: `Slug "${slug}" already maps to ${slugs.get(slug)}. Pass a distinct --name, or the router will not be able to disambiguate the two vaults.`,
@@ -254,13 +295,18 @@ export function buildProvisionPlan({ vaultPath, opts = {}, cfg = {}, requiredPlu
   //  - roots exist but the target is outside them → path-outside-known-roots
   //  - NO roots at all (empty/fresh config) → no-known-roots
   // provision_vault refuses on EITHER unless allowOutsideRoots is passed.
+  // One resolution, used for the verdict below AND carried to the real run
+  // (provision_vault binds its pin to these values — see judgeRoots).
+  const judged = judgeRoots(abs, context.knownRoots);
+  context.realTarget = judged.realTarget;
+  context.realRoots = judged.realRoots;
   if (!context.knownRoots.length) {
     warnings.push({
       code: 'no-known-roots',
       message: `No known vault roots configured (no referenceVault, no registered vaults, no vaultsRoot). ` +
         `The CLI allows any path; the MCP provision_vault tool refuses one unless allowOutsideRoots is set.`,
     });
-  } else if (!isPathWithinRoots(abs, context.knownRoots)) {
+  } else if (!judged.within) {
     warnings.push({
       code: 'path-outside-known-roots',
       message: `Target ${abs} is outside all known vault roots. The CLI allows it; the MCP provision_vault tool refuses it unless explicitly opted in.`,

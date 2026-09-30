@@ -82,13 +82,18 @@ If the user didn't say, ask in one short question. Don't enumerate all modes —
    - The "always use obsidian-router MCP" reminder
    - The list of available `/obsidian-router:wiki-*` workflows
 
-   **It no longer embeds any library convention**, and that is deliberate — decision `conventions-livrees-par-le-modele` (2026-09-11). The template does not seed `auto-enrichment`, `heading-hierarchy`, `source-type` or `description-frontmatter`; the conventions picker offers them **pre-checked**, so the user refuses rather than discovers, and a vault whose owner accepts them ends up carrying them exactly as before. What stays in the template is navigation: how to read the wiki, the MCP reminder, the workflow list.
+   **This block embeds no library convention**, and that is deliberate — decision `conventions-livrees-par-le-modele` (2026-09-11). Two different things are called "the template", and they are not in the same state:
+
+   - `templates/wiki/CLAUDE.md` (this block) and `templates/reference-vault-skeleton/CLAUDE.md` in the plugin carry **zero** library conventions — `scripts/conventions-drift.mjs` pins both at an empty expectation, so one reappearing fails the suite.
+   - the reference **`.template` vault** on the user's machine, whose root docs provisioning copies into a new vault, ships the **four core** conventions — `roadmap-discipline`, `default-vault-health-check`, `wiki-query-first`, `path-disambiguation` — per the same decision. A vault born from it already carries them; a vault scaffolded by this skill alone carries none.
+
+   Nothing here needs to know which case it is in: the picker (step 6) reads the vault's file first, so present conventions arrive checked and labelled "already in place". The stylistic ones — `auto-enrichment`, `heading-hierarchy`, `source-type`, `languages` (which carries the vault's own value), `description-frontmatter` — are in no template; the picker offers them **pre-checked**, so the user refuses rather than discovers, and a vault whose owner accepts them ends up carrying them exactly as before. What stays in this block is navigation: how to read the wiki, the MCP reminder, the workflow list.
 
    This page used to say the opposite, and told you to **add the auto-enrichment section yourself if it was missing** — which would have put the convention back one scaffolded vault at a time, silently undoing the decision.
 
    **The `description` requirement is NOT one of the optional ones.** The template states it unconditionally, in its "Required frontmatter — `description`" paragraph, so it reaches every scaffolded vault without anyone opting in. That split is deliberate: the FIELD is a data contract the code acts on (the lint reports pages missing it, the generated indexes publish the sentence), while the `description-frontmatter` convention adds only the authoring guide — what to say, how long, how to quote it. Of the 16 vaults with a conventions file inspected on 2026-09-11, **none contained that guide**, though the lint applied to their pages.
 
-   **After scaffolding, offer the conventions picker**: it is the only thing that installs the optional conventions.
+   **After scaffolding, the conventions picker RUNS (step 6)** — it is the only thing that installs the optional conventions, so it is not offered, it is shown.
 
    If you cannot read the template file, inline by hand **everything the list above names** — the navigation rules, the MCP reminder, the workflow list — **and the `description` requirement paragraph**, which is part of the block and not a convention. Do NOT add a convention section to make the block look complete: an absent convention here is the intended state, and installing one is `/obsidian-router:conventions install <id>`, which owns the detection and the safe append.
 
@@ -99,9 +104,18 @@ If the user didn't say, ask in one short question. Don't enumerate all modes —
    - YYYY-MM-DD HH:MM — scaffold — catalog.md, journal.md, hot.md, overview.md, CLAUDE.md — initial wiki bootstrap (mode: <mode>)
    ```
 
-6. Confirm to the user:
+6. **Conventions picker — automatic, at the end of every wiki creation.** Do not ask whether the user wants it; show it. (Exception: when this skill runs inside `meta-attach-vault`, the wizard's own step 1A.5 is this picker — run it once, there.)
+
+   1. `install_conventions({ vault, ids: [], dryRun: true })` — writes nothing; returns the resolved conventions file (`path`), the library (`catalogue`; entries flagged `retired: true` are recognised, never offered), `detection` (installed / duplicate per convention) and `vaultLanguages`. If it refuses because two conventions files exist, name them and ask which is the user's; do not pick.
+   2. `AskUserQuestion` with `multiSelect: true`, one option per `catalogue` entry **not flagged `retired`** (several questions if one cannot hold them all). **Pre-checked = every convention `detection` marks installed (suffix `— déjà en place` / `— already in place`) + the recommended ones**: the four core (`roadmap-discipline`, `default-vault-health-check`, `wiki-query-first`, `path-disambiguation`) and `source-type`, `languages`, `heading-hierarchy`, `auto-enrichment`, `description-frontmatter`. A present convention is ALWAYS pre-checked, whatever the recommended list says — unchecking a present one means removing it, and a default may never propose a removal. Describe what each one DOES (the `meta-attach-vault` page has the reviewed wording). A retired convention `detection` finds installed (`bilingual`) is not an option: propose `/obsidian-router:conventions migrate-bilingual` after the picker.
+   3. Checked and absent → **ONE** call: `install_conventions({ vault, ids: [<all of them>] })` — with `languages: ["<codes>"]` when `languages` is among them: ask the owner the value first (default `fr`; ISO 639-1 codes, primary first), the tool refuses the whole call without it. Never paste snippet text, never `append_to_file` for this (no precondition — refused on shared vaults). Unchecked but present → do NOT remove silently: ask, then go through `/obsidian-router:conventions remove <id>` with its guards.
+   4. Show the verified result: `installed`, `alreadyPresent` ("already in place", never "installed"), `unknown`, `retired`, `verified` and `satisfied` (`false` when an id named was unknown or retired — say which). `verified: false` → show `problems` and say the install is NOT confirmed. A conflict (409) → nothing was written; run the same call again. Link the file with `clickToOpenUrl`.
+   5. If the user skips the picker, name what is missing in the final message, with `/obsidian-router:conventions install <id>`.
+
+7. Confirm to the user:
    - Vault scaffolded
    - List of files created (4 + CLAUDE.md update)
+   - Conventions: installed / already in place / verified (from step 6)
    - Suggested next step: "ingest your first source with `wiki-ingest`" or "ask me a question — I'll start filling the wiki as we go"
 
 ## Anti-patterns
@@ -117,4 +131,5 @@ End your turn with a compact summary:
 
 > ✅ Wiki scaffolded in vault `<name>` (mode: `<mode>`).
 > Created: `wiki-meta/catalog.md`, `wiki-meta/journal.md`, `wiki-meta/hot.md`, `wiki-meta/overview.md`, `CLAUDE.md` updated.
+> Conventions: installed `<installed>` · already in place `<alreadyPresent>` · verified `<yes|no>`.
 > Next: try `wiki-ingest <source>` to file your first source, or just start asking questions — I'll grow the wiki as we go.

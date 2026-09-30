@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— quick reference</span></h1>
-  <div class="meta">v0.96.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (54 slash commands · 55 MCP tools · 49 skills)<br>
+  <div class="meta">v0.96.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (54 slash commands · 56 MCP tools · 49 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -257,7 +257,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_READONLY</td>
-    <td>Multi-tenant: truthy (<code>1</code>/<code>true</code>/<code>yes</code>/<code>on</code>) hides the <strong>17</strong> write tools — write_file, append_to_file, patch_file, set_frontmatter, merge_frontmatter, move_file, delete_file, execute_template, download_page_assets, pptx_extract_assets, build_wiki_graph, provision_vault, register_remote_vault, write_bundle, record_source, refresh_okf_projections, build_search_index — filtered from ListTools AND refused at call time.</td>
+    <td>Multi-tenant: truthy (<code>1</code>/<code>true</code>/<code>yes</code>/<code>on</code>) hides the <strong>18</strong> write tools — write_file, append_to_file, patch_file, set_frontmatter, merge_frontmatter, move_file, delete_file, execute_template, download_page_assets, pptx_extract_assets, build_wiki_graph, provision_vault, register_remote_vault, write_bundle, record_source, install_conventions, refresh_okf_projections, build_search_index — filtered from ListTools AND refused at call time.</td>
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_USER_ID</td>
@@ -405,7 +405,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
 
 <div class="page-break"></div>
 
-<h2>The 55 MCP tools <span class="count">— what Claude actually calls under the hood</span></h2>
+<h2>The 56 MCP tools <span class="count">— what Claude actually calls under the hood</span></h2>
 
 <table class="config">
   <tr>
@@ -475,6 +475,10 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
   <tr>
     <td>audit_vault_conventions</td>
     <td><strong>Conventions audit.</strong> Which conventions a vault is really under: the file the router resolves (or the two it cannot choose between), the recommended ones missing, template copies and inherited backups — each finding with a repair to approve, never applied on its own.</td>
+  </tr>
+  <tr>
+    <td>install_conventions</td>
+    <td><strong>Conventions installer.</strong> Install library conventions by id into the vault's conventions file in ONE compare-and-swap write (texts read from the package, never pasted), then read the file back and verify; <code>languages</code> takes the vault's own value, a retired convention is reported and never written, <code>dryRun</code> returns the picker's state.</td>
   </tr>
   <tr>
     <td>build_open_link · open_in_obsidian · get_view_link</td>

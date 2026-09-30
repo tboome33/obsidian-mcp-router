@@ -77,6 +77,11 @@ export const FIXED_TARGET_TOOLS = new Set([
   // `request.params.arguments` is an open record at runtime — and misattribute
   // a config.json write to a forged vault path in the audit journal.
   'register_remote_vault',
+  // install_conventions RESOLVES its target among the three conventions-file
+  // candidates (CLAUDE.md, wiki-meta/CLAUDE.md, Documentation/CLAUDE.md); the
+  // caller names ids, never a path. None of the three is wiki content, so the
+  // projections scheduler wants nothing either.
+  'install_conventions',
 ]);
 
 /**

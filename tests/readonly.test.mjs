@@ -83,7 +83,7 @@ describe('WRITE_TOOL_NAMES', () => {
     }
   });
 
-  test('contains the 17 documented write tools', () => {
+  test('contains the 18 documented write tools', () => {
     const expected = [
       'write_file',
       'append_to_file',
@@ -112,6 +112,10 @@ describe('WRITE_TOOL_NAMES', () => {
       // C6 — writes wiki-meta/source-ledger.json. `audit_sources` is read-only
       // and is deliberately NOT gated.
       'record_source',
+      // Appends library conventions to the vault's conventions file (one
+      // compare-and-swap write). Its read-only `dryRun` is hidden with it: the
+      // tool as a whole writes.
+      'install_conventions',
       // C2 — runs several write tools as one journaled operation, and writes its
       // own rollback journal under wiki-meta/write-journal/. Gated wholesale:
       // its read-only `recover:true` listing goes with it, which costs nothing

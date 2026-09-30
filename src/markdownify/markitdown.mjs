@@ -70,13 +70,15 @@ export const DEFAULT_PROJECT_ROOT = path.resolve(__dirname, '..', '..');
  * Returns `{ text }` on success. Throws a wrapped `Error` on failure — the
  * message is safe to forward as-is to the MCP client.
  */
-export async function toMarkdown({ filePath, url, projectRoot = DEFAULT_PROJECT_ROOT, transformContent } = {}) {
+export async function toMarkdown({ filePath, url, projectRoot = DEFAULT_PROJECT_ROOT, transformContent } = {}, _deps = {}) {
   let inputPath;
   let isTemporary = false;
 
   try {
     if (url) {
-      const response = await safeFetch(url);
+      // `_deps` is a test seam only (fetch + DNS resolution), so the network
+      // error path can be exercised without a network. Production passes nothing.
+      const response = await safeFetch(url, 10, _deps);
       const extension = inferExtensionFromUrl(url);
       // Stream the body with a byte budget instead of `response.arrayBuffer()`,
       // which would buffer the entire response into memory before we get a
@@ -386,7 +388,46 @@ async function saveToTempFile(content, suggestedExtension) {
  * against slowloris-style endpoints that would otherwise hang the MCP call
  * indefinitely.
  */
-async function safeFetch(url, maxRedirects = 10) {
+/**
+ * Undici's `fetch` rejects with a bare `TypeError: fetch failed` and puts the
+ * real reason in `err.cause` — a connect timeout, a reset, a DNS miss, a TLS
+ * failure. Surfacing only `err.message` told the user "fetch failed" and
+ * nothing they could act on. This walks the cause chain (and an
+ * AggregateError's `errors`, which is what a dual-stack connect produces) and
+ * names the codes and messages found there.
+ *
+ * Bounded: at most 5 levels and 4 distinct parts, each clipped, so a
+ * pathological cause chain cannot turn an error line into a wall of text.
+ *
+ * @param {unknown} err
+ * @returns {string}
+ */
+export function describeFetchFailure(err) {
+  const head = err?.name === 'TimeoutError'
+    ? 'timed out after 30 s'
+    : String(err?.message ?? err ?? 'Unknown error');
+  const parts = [];
+  const seen = new Set([err]);
+  const add = (e) => {
+    if (!e || typeof e !== 'object' || seen.has(e)) return;
+    seen.add(e);
+    const code = typeof e.code === 'string' ? e.code : '';
+    const msg = typeof e.message === 'string' ? e.message.trim().slice(0, 160) : '';
+    const text = code && msg && !msg.includes(code) ? `${code}: ${msg}` : (msg || code);
+    if (text && text !== head && !parts.includes(text) && parts.length < 4) parts.push(text);
+  };
+  let cur = err?.cause;
+  for (let depth = 0; cur && typeof cur === 'object' && depth < 5; depth += 1) {
+    add(cur);
+    if (Array.isArray(cur.errors)) cur.errors.slice(0, 3).forEach(add);
+    cur = cur.cause;
+  }
+  return parts.length ? `${head} (${parts.join('; ')})` : head;
+}
+
+async function safeFetch(url, maxRedirects = 10, deps = {}) {
+  const fetchImpl = deps.fetch || fetch;
+  const resolveHost = deps.resolveHost || resolveAndAssertPublic;
   let currentUrl = url;
   for (let i = 0; i < maxRedirects; i++) {
     validateUrl(currentUrl);
@@ -396,7 +437,7 @@ async function safeFetch(url, maxRedirects = 10) {
     // TOCTOU window between the validating lookup and fetch's own
     // getaddrinfo. bug_018 from /ultrareview on v0.11.0 release.
     const hostname = new URL(currentUrl).hostname;
-    const { address, family } = await resolveAndAssertPublic(hostname);
+    const { address, family } = await resolveHost(hostname);
     const dispatcher = new Agent({
       connect: {
         // `lookup` is called by undici's connector with `(host, opts, cb)`.
@@ -405,11 +446,19 @@ async function safeFetch(url, maxRedirects = 10) {
         lookup: (_host, _opts, cb) => cb(null, address, family),
       },
     });
-    const response = await fetch(currentUrl, {
-      dispatcher,
-      redirect: 'manual',
-      signal: AbortSignal.timeout(30_000),
-    });
+    let response;
+    try {
+      response = await fetchImpl(currentUrl, {
+        dispatcher,
+        redirect: 'manual',
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (e) {
+      // The host is named (not the full URL — a query string can carry a
+      // token) together with the pinned address, so "which machine did we
+      // fail to reach" is answered too.
+      throw new Error(`fetching ${hostname} (${address}) failed: ${describeFetchFailure(e)}`);
+    }
     if (
       response.status >= 300 &&
       response.status < 400 &&

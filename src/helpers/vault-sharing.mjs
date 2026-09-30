@@ -261,6 +261,13 @@ export const IF_MATCH_EXEMPT = new Map([
     + 'writeFile now enforces router-side (the server ignored the header — Fable 5.1 round). It is '
     + 'already the discipline this gate exists to impose; a caller-supplied precondition would be a '
     + 'second, weaker one.'],
+  ['install_conventions',
+    'Does its OWN compare-and-swap, exactly like record_source: it reads the conventions file\'s raw '
+    + 'bytes itself and writes the appended content with writeFileIfMatch(contentSha256(those bytes)) '
+    + '(src/tools/install-conventions.mjs); when no conventions file exists it creates one with '
+    + '`applyIfContentPreexists: false`. A concurrent edit is a 409 and nothing is written. The caller '
+    + 'never holds the content (the texts come from the package), so a caller-supplied ifMatch would '
+    + 'only be a second, weaker precondition over bytes the tool re-reads anyway.'],
 ]);
 
 /**

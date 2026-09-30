@@ -104,6 +104,8 @@ function printHelp() {
 USAGE
   obsidian-mcp-router [options]
   obsidian-mcp-router --attach <vault-slug> [--also <slug>]...
+  obsidian-mcp-router --install-plugins <vault> (--dry-run | --approved-plan-sha256 <seal>)
+  obsidian-mcp-router --plugin-health <vault> [--json]
 
 SETUP
       --attach <slug>   Bind the CURRENT directory to vault(s) that already
@@ -118,6 +120,23 @@ SETUP
                         --no-claude-md, --no-gitignore.
                         Run \`node scripts/setup-vault.mjs --help\` for the
                         full vault-creation toolbox.
+
+      --install-plugins <vault> --dry-run
+      --install-plugins <vault> --approved-plan-sha256 <seal>
+                        Download the code of the plugins the vault ENABLES
+                        but lacks (plus Local REST API and the bridge), from
+                        their GitHub releases, into .obsidian/plugins. Only
+                        plugins on the network allowlist; the bridge from its
+                        own release. The dry run prints the plan and a seal;
+                        the apply needs that seal. --only id,id narrows it,
+                        --force reinstalls code already on disk. data.json is
+                        never touched.
+
+      --plugin-health <vault> [--json] [--offline]
+                        Per plugin: code on disk, enabled, version, and —
+                        when the REST API answers — loaded by Obsidian. Names
+                        "enabled without code" and "bridge absent" with their
+                        fix. Exit 1 when a required plugin has no code.
 
 OPTIONS
   -c, --config <path>   Path to config file. Default:
@@ -232,21 +251,44 @@ function printVersion() {
 // plugin is enabled per-workspace by one of the very writes below — so they
 // cannot be the entry point without a bootstrap paradox. `obsidian-mcp-router`
 // is on PATH the moment the package is installed.
-if (process.argv[2] === '--attach') {
+//
+// ── `--install-plugins` / `--plugin-health` passthroughs ─────────────
+// Same pattern, same place, same reasons, for the two plugin commands:
+// `--install-plugins <vault>` downloads the code of the plugins a vault has
+// enabled but lacks (sealed: --dry-run, then --approved-plan-sha256), and
+// `--plugin-health <vault>` reports what is on disk and what Obsidian loaded.
+// They are subcommands of THIS binary because Claude Code blocks ad-hoc
+// third-party code downloads: one named command is something the user can
+// authorise; an agent improvising a download is not. And they run in a CHILD,
+// not here, for a second reason besides the entrypoint check: this process
+// carries the server mark (its first import), and both scripts read vault
+// disk, which the mark forbids. The child's environment is built from the
+// allowlist, which does not pass the mark on.
+//
+// ONE spawn site for the three commands, not three: the subprocess-env guard
+// counts spawn sites, and a table keeps the count honest about what this file
+// does — start one of its own scripts under the `setup-vault` profile.
+const PASSTHROUGH_SCRIPTS = {
+  '--attach': 'setup-vault.mjs',
+  '--install-plugins': 'install-plugins.mjs',
+  '--plugin-health': 'plugin-health.mjs',
+};
+if (Object.prototype.hasOwnProperty.call(PASSTHROUGH_SCRIPTS, process.argv[2])) {
   // Spawned rather than imported on purpose: setup-vault.mjs runs its CLI only
   // when it IS the process entrypoint (it compares import.meta.url to argv[1]),
   // so an in-process import would define helpers and do nothing at all. The
   // child inherits stdio, receives the `setup-vault` allowlist as its
   // environment (subprocess-env.mjs — not this shell's, whole), and its exit
   // code is propagated verbatim.
-  const setupScript = join(packageRoot, 'scripts', 'setup-vault.mjs');
-  if (!existsSync(setupScript)) {
+  const flag = process.argv[2];
+  const script = join(packageRoot, 'scripts', PASSTHROUGH_SCRIPTS[flag]);
+  if (!existsSync(script)) {
     process.stderr.write(
-      `[obsidian-mcp-router] --attach needs ${setupScript}, which is missing from this install.\n`,
+      `[obsidian-mcp-router] ${flag} needs ${script}, which is missing from this install.\n`,
     );
     process.exit(1);
   }
-  const res = spawnSync(process.execPath, [setupScript, ...process.argv.slice(2)], subprocessOptions('setup-vault', {
+  const res = spawnSync(process.execPath, [script, ...process.argv.slice(2)], subprocessOptions('setup-vault', {
     stdio: 'inherit',
   }));
   process.exit(res.status === null ? 1 : res.status);

@@ -58,6 +58,7 @@ import {
   alsoWritableEntries,
   alsoLockedEntries,
   bindableVaultNames,
+  isAbsoluteLocalPath,
 } from './helpers/vault-slug.mjs';
 import { isVaultReachable } from './helpers/vault-reach.mjs';
 import { buildBindingProposal, declarationRequiredError, canOpenLocally } from './helpers/binding-proposal.mjs';
@@ -122,6 +123,75 @@ export function resolveConfigPath({ configPath } = {}) {
 /** A valid TCP port, or null. Used for both ports, from all three sources. */
 function asPort(n) {
   return Number.isInteger(n) && n > 0 && n <= 65535 ? n : null;
+}
+
+/**
+ * The registry descriptor of one well-formed `remoteVaults` entry. Exported so
+ * the CLI (`setup-vault.mjs --attach`) talks to a remote vault through the
+ * SAME descriptor the server builds — a second, hand-written mapping of these
+ * fields would drift from this one the first time a field is added.
+ *
+ * The caller has already checked `name`, `baseUrl` and `apiKey`.
+ *
+ * @param {object} r a `remoteVaults` entry from the config
+ * @returns {object}
+ */
+export function remoteVaultDescriptor(r) {
+  return {
+    name: r.name,
+    type: 'remote',
+    baseUrl: r.baseUrl.replace(/\/$/, ''),
+    apiKey: r.apiKey,
+    description: r.description,
+    tlsInsecure: r.tlsInsecure === true,
+    timeoutMs: r.timeoutMs ?? 10000,
+    // extraHeaders are merged into every request — used for things like
+    // Cloudflare Access service tokens (CF-Access-Client-Id +
+    // CF-Access-Client-Secret) when the vault is fronted by an auth
+    // gateway. See docs/cloudflare-tunnel.md for the typical recipe.
+    extraHeaders:
+      r.extraHeaders && typeof r.extraHeaders === 'object'
+        ? { ...r.extraHeaders }
+        : undefined,
+    // OPTIONAL, and it only ever buys back a click-to-open link. A vault with
+    // no local disk has no data.json to read the plaintext port from, so
+    // without this field the 13 tools that emit `clickToOpenUrl` emit `null`
+    // for it. DECLARING IT IS AN ASSERTION: the emitted link is always
+    // `http://127.0.0.1:<port>/…`, so it only works for a reader sitting at
+    // the machine running that vault's Obsidian. `baseUrl` says nothing about
+    // that — it describes the router's own hop — so it is not consulted.
+    // `gen-remote-config.mjs` therefore requires `--with-click-to-open`
+    // rather than adding this wherever it finds a port. v0.79.0, lot 2.
+    insecurePort: asPort(r.insecurePort),
+    // OPTIONAL: the vault's label inside Obsidian, sent to the view-link
+    // provider as the `obsidian_name` hint. A local vault's label is its
+    // folder name; a remote one's cannot be derived here, so it is declared.
+    // Validated by the same rule the `VAULT_*` loader applies (never looser
+    // than the view-agent's); an invalid value is dropped with a warning.
+    obsidianName: declaredObsidianName(r.obsidianName, `remoteVault "${safeForMessage(String(r.name), 80)}"`),
+    // THE VAULT'S FILES, WHEN THEY ALSO SIT ON THIS MACHINE (`localPath` in
+    // the config). Named `diskPath`, NOT `path`, on purpose: the server has
+    // a dozen `type === 'local' && path` tests, each meaning "read or write
+    // this vault through its disk", and a remote vault must keep answering
+    // those through REST. Every reader that may use this directory opts in by
+    // name, and the list is short and deliberate:
+    //   - embedding-staleness (search_smart, get_wiki_context_pack): YES —
+    //     it STATs pages and reads the Smart Connections index, never a
+    //     note's content, and without it the check declines `no-local-disk`
+    //     about a disk that is right there.
+    //   - click-to-open's data.json read: NO — a container's plugin config
+    //     holds the port INSIDE the container, not the one this machine
+    //     reaches; `insecurePort` stays the declared answer.
+    //   - resolve-vault-path, find_twin_pages and every note read/write: NO —
+    //     the HTTP-only doctrine (tests/no-vault-disk.test.mjs): a server tool
+    //     never reads a note's content from a vault's disk.
+    // The CLI verifies the directory against the REST side before it writes
+    // this field (`--attach --local-path`); `register_remote_vault` records it
+    // as DECLARED, since the server cannot look.
+    // Absent rather than `undefined` when not declared, so a descriptor
+    // without it is byte-for-byte the one earlier versions built.
+    ...(isAbsoluteLocalPath(r.localPath) ? { diskPath: r.localPath } : {}),
+  };
 }
 
 /**
@@ -417,37 +487,14 @@ export async function loadRegistry({ configPath } = {}) {
       skipped.push({ name: r.name, type: 'remote', reason: 'disabled' });
       continue;
     }
-    vaults.push({
-      name: r.name,
-      type: 'remote',
-      baseUrl: r.baseUrl.replace(/\/$/, ''),
-      apiKey: r.apiKey,
-      description: r.description,
-      tlsInsecure: r.tlsInsecure === true,
-      timeoutMs: r.timeoutMs ?? 10000,
-      // extraHeaders are merged into every request — used for things like
-      // Cloudflare Access service tokens (CF-Access-Client-Id +
-      // CF-Access-Client-Secret) when the vault is fronted by an auth
-      // gateway. See docs/cloudflare-tunnel.md for the typical recipe.
-      extraHeaders:
-        r.extraHeaders && typeof r.extraHeaders === 'object'
-          ? { ...r.extraHeaders }
-          : undefined,
-      // OPTIONAL, and it only ever buys back a click-to-open link. A vault with
-      // no local disk has no data.json to read the plaintext port from, so
-      // without this field the 13 tools that emit `clickToOpenUrl` emit `null`
-      // for it. DECLARING IT IS AN ASSERTION: the emitted link is always
-      // `http://127.0.0.1:<port>/…`, so it only works for a reader sitting at
-      // the machine running that vault's Obsidian. `baseUrl` says nothing about
-      // that — it describes the router's own hop — so it is not consulted.
-      // `gen-remote-config.mjs` therefore requires `--with-click-to-open`
-      // rather than adding this wherever it finds a port. v0.79.0, lot 2.
-      insecurePort: asPort(r.insecurePort),
-      // OPTIONAL: the vault's label inside Obsidian, sent to the view-link
-      // provider as the `obsidian_name` hint. A local vault's label is its
-      // folder name; a remote one's cannot be derived here, so it is declared.
-      obsidianName: declaredObsidianName(r.obsidianName, `remoteVault "${safeForMessage(r.name, 80)}"`),
-    });
+    if (r.localPath !== undefined && r.localPath !== null && !isAbsoluteLocalPath(r.localPath)) {
+      // Said, not silently dropped: the entry still loads (its REST side is
+      // intact), but the directory it names is not one this router can use.
+      console.error(
+        `[registry] remoteVault "${safeForMessage(String(r.name), 80)}": localPath is not an absolute path — ignored.`,
+      );
+    }
+    vaults.push(remoteVaultDescriptor(r));
   }
 
   // --- 2.5. VAULT_* env-var vaults (v0.20.0, 3rd config source, opt-in) ---

@@ -24,7 +24,7 @@
  * same Set for this one.
  */
 
-import { registeredVaultPaths, vaultSlug, disabledVaultNames } from '../helpers/vault-slug.mjs';
+import { registeredVaultPaths, vaultSlug, disabledVaultNames, isAbsoluteLocalPath } from '../helpers/vault-slug.mjs';
 import { updateConfigBindings } from '../helpers/workspace-bindings.mjs';
 import { safeForMessage } from '../helpers/sanitize.mjs';
 import { hostIsWireguardOrLoopback, isTruthyEnv } from '../registry.mjs';
@@ -137,6 +137,27 @@ export async function registerRemoteVaultTool(registry, args = {}, seams = {}) {
     entry.insecurePort = args.insecurePort;
   }
   if (Number.isInteger(args.timeoutMs) && args.timeoutMs > 0) entry.timeoutMs = args.timeoutMs;
+  // `localPath`: the vault's files ALSO sit on this machine (Obsidian in a
+  // container whose volume is a local directory). Validated for SHAPE only —
+  // absolute, on either platform family — and stored AS DECLARED: this tool
+  // runs in the server, and the server does not read a vault's disk to find
+  // out whether a directory is really that vault (tests/no-vault-disk). The
+  // check that does compare the two sides byte for byte is the CLI's,
+  // `setup-vault.mjs --attach <name> --local-path <dir>`, which is what the
+  // message below points to. Refused rather than dropped when malformed: a
+  // relative path would resolve against whichever cwd a hook starts in.
+  let localPathDeclared = false;
+  if (args.localPath !== undefined && args.localPath !== null && args.localPath !== '') {
+    if (!isAbsoluteLocalPath(args.localPath)) {
+      throw new Error(
+        `register_remote_vault: \`localPath\` "${safeForMessage(String(args.localPath), 120)}" is not an ABSOLUTE `
+        + 'directory path (e.g. "D:/obsidian/notes" or "/srv/obsidian/notes") — a relative one would resolve '
+        + 'against a different directory in every workspace.',
+      );
+    }
+    entry.localPath = args.localPath;
+    localPathDeclared = true;
+  }
 
   const configPath = registry && registry.configPath;
   if (!configPath) {
@@ -196,6 +217,16 @@ export async function registerRemoteVaultTool(registry, args = {}, seams = {}) {
     name,
     baseUrl,
     disabled: disabledNow,
+    // DECLARED, NOT VERIFIED — said in the result, so nobody reads the stored
+    // field as a checked fact.
+    ...(localPathDeclared
+      ? {
+        localPath: { path: entry.localPath, status: 'declared' },
+        localPathNote:
+          'localPath was stored as declared: the server cannot check that this directory holds the same '
+          + `files as the vault. Verify it from a terminal with \`setup-vault.mjs --attach "${safeForMessage(name, 60)}" --local-path <dir>\`.`,
+      }
+      : {}),
     message:
       `Registered remote vault "${name}" in your router config (never in a workspace .env). `
       + (disabledNow
