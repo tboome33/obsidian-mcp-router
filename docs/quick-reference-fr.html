@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— référence rapide</span></h1>
-  <div class="meta">v0.95.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (54 slash commands · 55 outils MCP · 49 skills)<br>
+  <div class="meta">v0.96.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (54 slash commands · 56 outils MCP · 49 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -255,7 +255,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_READONLY</td>
-    <td>Multi-tenant : valeur truthy (<code>true</code>/<code>1</code>/<code>yes</code>/<code>on</code>) désactive les <strong>17 outils d'écriture</strong> (write_file, append_to_file, patch_file, set_frontmatter, merge_frontmatter, move_file, delete_file, execute_template, download_page_assets, pptx_extract_assets, build_wiki_graph, provision_vault, register_remote_vault, write_bundle, record_source, refresh_okf_projections, build_search_index) — filtrés de ListTools ET refusés à l'appel.</td>
+    <td>Multi-tenant : valeur truthy (<code>true</code>/<code>1</code>/<code>yes</code>/<code>on</code>) désactive les <strong>18 outils d'écriture</strong> (write_file, append_to_file, patch_file, set_frontmatter, merge_frontmatter, move_file, delete_file, execute_template, download_page_assets, pptx_extract_assets, build_wiki_graph, provision_vault, register_remote_vault, write_bundle, record_source, install_conventions, refresh_okf_projections, build_search_index) — filtrés de ListTools ET refusés à l'appel.</td>
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_USER_ID</td>
@@ -403,7 +403,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
 
 <div class="page-break"></div>
 
-<h2>Les 55 outils MCP <span class="count">— ce que Claude appelle réellement sous le capot</span></h2>
+<h2>Les 56 outils MCP <span class="count">— ce que Claude appelle réellement sous le capot</span></h2>
 
 <table class="config">
   <tr>
@@ -417,10 +417,6 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   <tr>
     <td>write_file · append_to_file · patch_file · delete_file · set_frontmatter · merge_frontmatter · move_file</td>
     <td><strong>Écritures &amp; gestion de fichiers.</strong> Créer/remplacer ; append ; patch chirurgical par heading/block/frontmatter ; suppression gardée (<code>confirm: true</code>) ; une ou plusieurs clés de frontmatter ; déplacer/renommer. <strong><code>ifMatch</code></strong> : rejouez le <code>contentSha256</code> de <code>get_file</code> et l'écriture est refusée (409) si le fichier a changé depuis votre lecture — atomique avec bridge ≥ 0.7.0, repli vérifié sinon.</td>
-  </tr>
-  <tr>
-    <td>install_conventions</td>
-    <td><strong>Conventions.</strong> Installe des conventions de la bibliothèque dans le fichier de conventions du vault, par id, en UNE écriture compare-and-swap — textes lus dans le paquet, jamais recopiés ; celles déjà présentes sont sautées ; fichier relu et <code>verified</code>. <code>dryRun</code> (<code>ids: []</code>) renvoie la bibliothèque et ce que contient le fichier — l'état dont les pickers ont besoin.</td>
   </tr>
   <tr>
     <td>execute_template</td>
@@ -473,6 +469,14 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   <tr>
     <td>record_source · audit_sources</td>
     <td><strong>Registre des sources.</strong> Consigne la provenance du contenu ingéré (URL, hash, date) ; audite les sources d'un vault (dérive, trous).</td>
+  </tr>
+  <tr>
+    <td>audit_vault_conventions</td>
+    <td><strong>Audit des conventions.</strong> Les conventions sous lesquelles un vault est réellement : le fichier que le router retient (ou les deux entre lesquels il ne peut pas choisir), les recommandées absentes, les copies du modèle et les sauvegardes héritées — chaque constat avec une réparation à approuver, jamais appliquée seule.</td>
+  </tr>
+  <tr>
+    <td>install_conventions</td>
+    <td><strong>Installateur de conventions.</strong> Installe des conventions de la bibliothèque, par id, dans le fichier de conventions du vault en UNE écriture compare-and-swap (textes lus dans le paquet, jamais recopiés), puis relit le fichier et vérifie ; <code>languages</code> prend la valeur propre au vault, une convention retirée est signalée et jamais écrite, <code>dryRun</code> rend l'état dont le picker a besoin.</td>
   </tr>
   <tr>
     <td>build_open_link · open_in_obsidian · get_view_link</td>

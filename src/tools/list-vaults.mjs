@@ -15,7 +15,11 @@
  * `wiki/obsidian-mcp-router/router-ux-improvements-roadmap.md` Phase 1.
  */
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { pingVault } from '../rest-client.mjs';
+import { runningBuild } from '../helpers/build-identity.mjs';
+import { defaultRouterConfigPath, readHookHeartbeat, sessionHooksStatus } from '../helpers/hooks-heartbeat.mjs';
 import { pathBasename } from '../registry.mjs';
 import {
   liveDisabledVaultNames,
@@ -538,5 +542,40 @@ export async function listVaults(registry, sharedConfig = null) {
     // NOT silently default to 'off' here, because absence of an explicit
     // mode means "user hasn't customized" and the safe default applies.
     autoEnrichMode: registry.autoEnrichMode || 'ClaudeAsk',
+    // WHICH CODE is answering (helpers/build-identity.mjs). "0.95.0" named 64
+    // commits on 2026-09-26; the fingerprint names one tree, and
+    // scripts/identify-build.mjs turns it into a commit.
+    routerBuild: safeBuild(),
+    // Whether this session's plugin hooks RAN (helpers/hooks-heartbeat.mjs).
+    // A session without them has no hot.md, no decisions recall, no briefing —
+    // and before this field, nothing told it so.
+    sessionHooks: safeHooksStatus(registry.configPath),
   });
+}
+
+const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const SERVER_STARTED_AT = new Date(Date.now() - Math.round(process.uptime() * 1000));
+
+function safeBuild() {
+  try {
+    const b = runningBuild(PLUGIN_ROOT);
+    return { version: b.version, fingerprint: b.fingerprint, gitHead: b.gitHead, hooksManifest: b.hooksManifest, root: b.root, identify: b.identify };
+  } catch (err) {
+    return { unavailable: String(err?.message ?? err).slice(0, 200) };
+  }
+}
+
+function safeHooksStatus(configPath) {
+  try {
+    const cfgPath = typeof configPath === 'string' && configPath ? configPath : defaultRouterConfigPath();
+    return sessionHooksStatus({
+      heartbeat: readHookHeartbeat({ cwd: process.cwd(), configPath: cfgPath }),
+      startedAt: SERVER_STARTED_AT,
+      now: new Date(),
+      hooksManifest: runningBuild(PLUGIN_ROOT).hooksManifest,
+      workspace: process.cwd(),
+    });
+  } catch (err) {
+    return { status: 'unknown', message: String(err?.message ?? err).slice(0, 200) };
+  }
 }

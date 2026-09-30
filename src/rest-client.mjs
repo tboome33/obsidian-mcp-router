@@ -1295,6 +1295,19 @@ export async function patchFile(vault, filePath, args) {
   // as plain text/markdown — the YAML parser on the server side handles them.
   const isFrontmatterJson = targetType === 'frontmatter' && typeof content !== 'string';
   const headers = {
+    // THE PATCH FORMAT THIS ROUTER SPEAKS, NAMED. Local REST API 5.x refuses a
+    // PATCH that targets by header without saying which format it means
+    // (`400 PatchHeaderTargetingRequiresExplicitVersion`): under `1` the
+    // headers below keep their 4.x meaning, under `2` the same headers switch
+    // to a raw-content mode with a DIFFERENT `Target` encoding. Measured
+    // 2026-09-26: 4.0.2's bundle never reads this header (0 occurrences), so it
+    // is ignored there, and 5.1.0 documents `1` as "everything behaves exactly
+    // as before". `1` is the only value both read the same way — `2`, or the
+    // URL-path targeting 5.x prefers, would mean something else to a 4.0.2
+    // vault (13 of the 15 found on disk that day). Deprecated in 5.x and
+    // removed in 6.0: before 6.0 ships, this must move to URL-path targeting
+    // gated on the plugin version.
+    'Markdown-Patch-Version': '1',
     Operation: operation,
     'Target-Type': targetType,
     Target: encodeURIComponent(target),

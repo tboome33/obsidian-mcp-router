@@ -130,6 +130,24 @@ The value must be an absolute directory. Two ways to set it:
 - `--attach` can read plugins and conventions from the disk for its "Final state" report instead of printing `unknown`.
 
 **What it does not enable.** Notes are still read and written **over REST only**. The server exposes the directory as `diskPath`, never as `path`, precisely so that none of its "read or write this vault through its disk" branches can fire for a remote vault: the HTTP-only rule for note content holds (`tests/no-vault-disk.test.mjs`). Click-to-open does not read the container's `data.json` either — the port there is the one inside the container — so `insecurePort` above stays the only way to get links.
+### Optional — `obsidianName`, the vault's label inside Obsidian
+
+When a view-link provider is configured (`OBSIDIAN_ROUTER_VIEW_AGENT_URL`), every `GET /view` the router sends carries two optional *vault hints* defined by the provider contract (`docs/CONTRACT.md`, section "Vault hints", in [obsidian-mcp-router-view-agent](https://github.com/tboome33/obsidian-mcp-router-view-agent)):
+
+| Parameter | Value |
+|---|---|
+| `rest` | The origin of `baseUrl`, rebuilt from its scheme, host and port only — so no `user:pass@`, path, query or fragment can come along, and the API key and `extraHeaders` are never read to build it. A `baseUrl` without a port sends its scheme's default port explicitly. Only `http` and `https` are sent. |
+| `obsidian_name` | The label `obsidian://open?vault=` expects. Local vault: the folder name. Remote vault: the `obsidianName` field below, or nothing. |
+
+They let a provider such as `view-agent-direct` serve a vault nobody declared to it: a container on its own host, or a desktop Obsidian on a WireGuard peer. A provider that does not know them ignores them.
+
+A remote vault's label cannot be derived from its `baseUrl`, and it usually differs from the router's name for it. Declare it:
+
+```json
+{ "name": "router", "baseUrl": "http://10.8.0.10:27163", "apiKey": "…", "obsidianName": "opsidian-mcp-router et bridge" }
+```
+
+It must be the vault's folder name exactly as Obsidian shows it: a non-blank string of at most 255 characters (UTF-16 code units), with no control character and no `/` or `\`. `null` counts as absent. Any other invalid value is dropped with a warning on stderr and the vault still loads. It is a label, not a secret: it travels in the request URL. The same field is accepted in a `VAULT_*` variable.
 
 ## `find_twin_pages` on a remote vault (v0.82.0)
 

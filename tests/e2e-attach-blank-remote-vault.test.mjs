@@ -403,7 +403,10 @@ describe('attach a BLANK remote vault, then follow the printed next steps to "re
     assert.equal(printed, preChecked.join(', '), 'what --attach printed is what the picker pre-checks');
 
     const from = W.fake.requests.length;
-    const r = await installConventionsTool(W.registry, { vault: NAME, ids: preChecked });
+    // `languages` is pre-checked and carries a value: the picker asks it
+    // before this call (the tool refuses the call without it).
+    const r = await installConventionsTool(W.registry, { vault: NAME, ids: preChecked, languages: ['fr'] });
+    assert.deepEqual(r.vaultLanguages.languages, ['fr'], 'the value landed in the file and reads back');
     const traffic = W.fake.requests.slice(from);
     const puts = traffic.filter((q) => q.method === 'PUT' && q.url.startsWith('/vault/'));
     assert.equal(puts.length, 1, JSON.stringify(traffic));

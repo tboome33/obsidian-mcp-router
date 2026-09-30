@@ -217,14 +217,24 @@ export function describeVaultLocation(v) {
  *                            even then);
  *   - not loadable         → a remote vault with no local directory: read it
  *                            with get_file.
- * `hot` absent (an older caller) keeps the historical sentence.
+ * `hot` absent (an older caller, nothing measured) promises nothing: the
+ * conditional sentence only.
+ *
+ * Even "auto-loaded" is conditioned on the hooks: on 2026-09-25 a remote
+ * session ran with no plugin hook at all while the block said "auto-loaded".
+ * The file being there is this vault's fact; whether the hooks ran is
+ * measured by `list_vaults` → `sessionHooks.status`, and the sentence says so.
  *
  * @param {{ exists: boolean|null, loadable: boolean }|undefined} hot
  */
 export function hotSentence(hot) {
   const target = 'the target of every router call made **without** a `vault:` argument.';
-  if (!hot || (hot.loadable && hot.exists === true)) {
-    return `  Auto-loaded at session start (its \`wiki-meta/hot.md\`), and ${target}`;
+  const measured = 'by the plugin\'s `hot-cache-load` hook — **when the hooks run**: `list_vaults` → `sessionHooks.status` says whether they did; if not, read it with `get_file`';
+  if (!hot) {
+    return `  The target of every router call made **without** a \`vault:\` argument. Its \`wiki-meta/hot.md\` is injected at session start ${measured}.`;
+  }
+  if (hot.loadable && hot.exists === true) {
+    return `  Auto-loaded at session start (its \`wiki-meta/hot.md\`) ${measured}. It is ${target}`;
   }
   const noDisk = 'this is a remote vault with no local directory the session hooks can read — read `wiki-meta/hot.md` with `get_file` when you need it';
   let why;

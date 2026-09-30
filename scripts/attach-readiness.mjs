@@ -54,7 +54,9 @@ export const RECOMMENDED_CONVENTIONS = Object.freeze([
   'wiki-query-first',
   'path-disambiguation',
   'source-type',
-  'bilingual',
+  // `languages` carries a VALUE the picker asks per vault (it replaced the
+  // retired `bilingual` on 2026-09-26); the installer refuses it without one.
+  'languages',
   'heading-hierarchy',
   'auto-enrichment',
   'description-frontmatter',

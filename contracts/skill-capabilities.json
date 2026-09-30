@@ -168,6 +168,7 @@
         "vault:content"
       ],
       "tools": [
+        "audit_vault_conventions",
         "get_file",
         "install_conventions",
         "list_files",
@@ -175,7 +176,8 @@
         "write_file"
       ],
       "toolsMentionedNotCalled": [
-        "append_to_file"
+        "append_to_file",
+        "move_file"
       ],
       "writeMode": "mutating",
       "requires": {
@@ -187,7 +189,7 @@
       },
       "verification": {
         "status": "declared",
-        "reason": "No harness executes a skill. The local:fs atoms are real and easy to miss: the snippet library lives in the PLUGIN INSTALL directory, which the skill both globs (offline fallback of `list`) and (for `add`) writes into — outside every vault and outside the workspace. Since v0.94.3 the skill also calls list_files, to find WHICH conventions file a vault has before touching it (the `remove` path) — the fleet keeps it at three different paths, and the previous blind `get_file(\"CLAUDE.md\")` turned a 404 into a second, competing conventions file at the vault root. `install`, `list` and `pick` now go through install_conventions (one compare-and-swap write per vault, texts read server-side, file read back and verified; `dryRun` for the state), so append_to_file is named only as what NOT to use — it carries no precondition and the shared-vault gate refuses it. `mutating` stays because `remove` rewrites the file with write_file."
+        "reason": "No harness executes a skill. The local:fs atoms are real and easy to miss: the snippet library lives in the PLUGIN INSTALL directory, which the skill both globs (offline fallback of `list`) and (for `add`) writes into — outside every vault and outside the workspace. Since v0.94.3 the skill also calls list_files, to find WHICH conventions file a vault has before touching it (the `remove` path) — the fleet keeps it at three different paths, and the previous blind `get_file(\"CLAUDE.md\")` turned a 404 into a second, competing conventions file at the vault root. `install`, `list` and `pick` now go through install_conventions (one compare-and-swap write per vault, texts read server-side, file read back and verified; `dryRun` for the state), so append_to_file is named only as what NOT to use — it carries no precondition and the shared-vault gate refuses it. `audit` calls audit_vault_conventions (read-only); the `ambiguous-conventions-file` repair it may propose is a move_file step handed to /obsidian-router:manage-move, so move_file is named but never called here. `mutating` stays because `remove` and `migrate-bilingual` rewrite the file with write_file."
       }
     },
     "decision-consolidate": {
@@ -1125,6 +1127,7 @@
       ],
       "tools": [
         "audit_sources",
+        "audit_vault_conventions",
         "find_boundary_pages",
         "find_twin_pages",
         "get_file",
@@ -1136,6 +1139,7 @@
         "set_frontmatter"
       ],
       "toolsMentionedNotCalled": [
+        "move_file",
         "record_source",
         "search_smart"
       ],

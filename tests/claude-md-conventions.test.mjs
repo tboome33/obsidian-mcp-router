@@ -43,8 +43,14 @@ import { scanAtxHeadings } from '../src/helpers/markdown-headings.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SNIPPET_DIR = path.join(REPO_ROOT, 'skills', 'conventions', 'snippets');
+const RETIRED_DIR = path.join(REPO_ROOT, 'skills', 'conventions', 'retired');
 
-/** The eight the attach wizard's picker offers, in its own order. */
+/**
+ * The eight the attach wizard's picker offered on 2026-09-11, in its own order
+ * — the incident these tests replay. `bilingual` has since been retired
+ * (replaced by `languages`); it stays here because the reproduction is of that
+ * picker, and `snippetBody` reads it from `retired/`.
+ */
 const PICKER_IDS = [
   'roadmap-discipline',
   'default-vault-health-check',
@@ -73,7 +79,12 @@ const PICKER_IDS = [
  * line endings of the machine they run on.
  */
 function snippetBody(id) {
-  return fs.readFileSync(path.join(SNIPPET_DIR, `${id}.md`), 'utf8').replace(/\r\n/g, '\n');
+  // A RETIRED convention (`bilingual`, since 2026-09-26) is read from beside
+  // the library: these tests replay the 2026-09-11 incident with the picker as
+  // it was then, and its fence-in-a-snippet shape is the one they are about.
+  const offered = path.join(SNIPPET_DIR, `${id}.md`);
+  const file = fs.existsSync(offered) ? offered : path.join(RETIRED_DIR, `${id}.md`);
+  return fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
 }
 
 function headingOf(id) {

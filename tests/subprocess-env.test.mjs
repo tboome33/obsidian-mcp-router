@@ -741,7 +741,9 @@ describe('GUARD — every spawn in src/, scripts/, hooks/, bin/ passes subproces
    * The exact shape of the tree. A finder that loses a site, a site that
    * loses its guard, and an exemption that grows are all the same red.
    */
-  const EXPECTED = Object.freeze({ total: 38, guarded: 22, exempt: 16, sdkTransports: 1 });
+  // 2026-09-26: +1 exempt — scripts/identify-build.mjs runs git over this
+  // repository (developer tooling, listed in EXEMPT with its reason).
+  const EXPECTED = Object.freeze({ total: 39, guarded: 22, exempt: 17, sdkTransports: 1 });
 
   /**
    * Sites that inherit the environment ON PURPOSE. Each entry pins the file,
@@ -755,6 +757,7 @@ describe('GUARD — every spawn in src/, scripts/, hooks/, bin/ passes subproces
     { file: 'scripts/bump-version.mjs', commands: ['git', 'git'], why: 'release tooling in the developer shell: `git config core.hooksPath`' },
     { file: 'scripts/create-release.mjs', commands: ['gh', 'git', 'git', 'git', 'git'], why: 'release tooling in the developer shell: git, and `gh`, which authenticates through GH_TOKEN or its own keyring' },
     { file: 'scripts/export-gate.mjs', commands: ['git'], why: 'release tooling in the developer shell: `git ls-tree`' },
+    { file: 'scripts/identify-build.mjs', commands: ['git'], why: 'developer tooling in the developer shell: `git rev-list` / `git ls-tree` / `git log` over this repository, read-only, to name the commit a reported build fingerprint came from' },
     { file: 'scripts/render-quick-reference.mjs', commands: ['chrome'], why: 'documentation tooling in the developer shell: headless Chromium printing the quick-reference PDFs needs that shell (browser install layout, fonts, CHROME_PATH, proxies/CA bundles for nothing it fetches but which the binary reads anyway), it renders a LOCAL file:// page and no vault content, and the parent holds no router secret — the same footing as the other release-time scripts above' },
     { file: 'scripts/install-docling.mjs', commands: ['cmd'], why: 'interactive installer in the user shell: pip mirrors, proxies and CA bundles are open-ended configuration, and the parent IS the shell' },
     { file: 'scripts/install-markitdown.mjs', commands: ['cmd'], why: 'interactive installer in the user shell (same reasoning as install-docling.mjs)' },

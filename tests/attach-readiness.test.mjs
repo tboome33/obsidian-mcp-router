@@ -156,7 +156,7 @@ describe('assessAttachReadiness — wiki and conventions', () => {
     const vault = makeVault({
       plugins: ALL_CODE,
       enabled: EXPECTED,
-      files: { 'CLAUDE.md': conventionsText(['bilingual']), 'wiki-meta/CLAUDE.md': '# other\n' },
+      files: { 'CLAUDE.md': conventionsText(['log-discipline']), 'wiki-meta/CLAUDE.md': '# other\n' },
     });
     const r = assess({ diskPath: vault, wiki: WIKI_OK });
     assert.equal(r.conventions.ambiguous, true);

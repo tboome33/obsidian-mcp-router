@@ -1,6 +1,6 @@
 ---
 name: conventions
-description: Manage CLAUDE.md conventions across Obsidian vaults — install, remove, check status, or propagate conventions like source-type / bilingual / heading-hierarchy / auto-enrichment. Triggers (EN) `install source-type convention on smile`, `list conventions on this vault`, `what conventions are installed`, `sync source-type to all vaults`, `remove bilingual convention from vault X`. Triggers (FR) `installe la convention source-type sur smile`, `liste les conventions disponibles`, `quelles conventions sont actives sur ce vault`, `propage la convention source-type à tous les vaults`, `retire la convention bilingue du vault X`.
+description: Manage CLAUDE.md conventions across Obsidian vaults — install, remove, check status, migrate, or propagate conventions like source-type / languages / heading-hierarchy / auto-enrichment. Triggers (EN) `install source-type convention on smile`, `list conventions on this vault`, `what conventions are installed`, `sync source-type to all vaults`, `remove bilingual convention from vault X`, `set this vault's languages to fr, en`, `migrate bilingual to languages on X`. Triggers (FR) `installe la convention source-type sur smile`, `liste les conventions disponibles`, `quelles conventions sont actives sur ce vault`, `propage la convention source-type à tous les vaults`, `retire la convention bilingue du vault X`, `les langues de ce vault sont fr, en`, `migre bilingual vers languages sur X`.
 ---
 
 # conventions
@@ -10,7 +10,7 @@ Manage the named conventions that ship in vault-root `CLAUDE.md` files — insta
 ## Pre-conditions
 
 1. Target vault(s) are online — call `list_vaults` first.
-2. The plugin install ships the convention snippets at `<plugin-root>/skills/conventions/snippets/*.md`. You'll need to read these to know what's available.
+2. The plugin install ships the convention snippets at `<plugin-root>/skills/conventions/snippets/*.md`. The router reads them itself (`install_conventions`); you only need to read them for the offline fallback.
 
 ## When to use
 
@@ -41,7 +41,7 @@ import {
 
 Two rules the helper enforces and a hand-rolled check does not:
 
-1. **Fence-aware.** A `## ` line inside a fenced code block is an example, not a heading. The `bilingual` and `path-disambiguation` snippets both DISPLAY `## ` lines inside a ```` ```markdown ```` block. A `content.includes("## <heading>")` test reports a convention that is merely quoted as installed; a cut that stops at "the next `## `" stops inside the example, leaves two thirds of the section behind, and severs the fence — which swallows the rest of the document at render time. That happened on a real vault on 2026-09-11.
+1. **Fence-aware.** A `## ` line inside a fenced code block is an example, not a heading. The `languages` and `path-disambiguation` snippets (and the retired `bilingual`) all DISPLAY `## ` lines inside a ```` ```markdown ```` block. A `content.includes("## <heading>")` test reports a convention that is merely quoted as installed; a cut that stops at "the next `## `" stops inside the example, leaves two thirds of the section behind, and severs the fence — which swallows the rest of the document at render time. That happened on a real vault on 2026-09-11.
 2. **Exact identity, never resemblance.** `## Bilingual convention (FR + EN, FR primary) — mes ajouts` is the USER's section, not the convention. A prefix or substring match calls it installed, and `remove` then deletes their writing. Matching is exact after trimming and stripping ATX closing hashes (`## Foo ##` is `Foo`), at column 0, **and at the identity's own level**: a `# ` H1 spelled like a convention is a document title, and treating it as the convention makes its "section" run to the end of the file.
 
 A convention's section runs from its heading to the next heading **of the same level or higher** — its own `###` subsections belong to it, and an `#` H1 below ends it. Identity is narrow, the boundary is wide: a heading the user indented, or wrote setext-style (underlined with `===`), still stops the cut. A missed boundary deletes more than the convention.
@@ -58,18 +58,38 @@ There is no single path. The fleet audit that produced `CLAUDE_MD_CANDIDATES` fo
 
 **This matters more than it looks.** A vault provisioned from the template has `Documentation/CLAUDE.md` and NO root file. A naive `get_file("CLAUDE.md")` 404s, the skill concludes "not installed", and `install` appends a SECOND conventions file at the root — two sets of rules, one of which nobody reads.
 
-So: probe the candidates (one `list_files` on the vault root, plus `wiki-meta/` and `Documentation/` if present), pass what exists to `resolveClaudeMd`, and use its answer for `install`, `remove` AND `list`. When two candidates exist it returns `ambiguous: true` **and `path: null`** — there is nothing to act on by design; name the files in `present` to the user and let them choose. If nothing exists, create at `createAt` (the vault root) and say where you put it.
+So: probe the candidates (one `list_files` on the vault root, plus `wiki-meta/` and `Documentation/` if present), pass what exists to `resolveClaudeMd`, and use its answer for `install`, `remove` AND `list`. When two candidates exist it returns `ambiguous: true` **and `path: null`** — there is nothing to act on by design; name the files in `present` to the user and let them choose. If nothing exists, create at `createAt` (the vault root) and say where you put it. `install_conventions` applies exactly this resolution server-side: two files present → it refuses and names them.
+
+### `audit` — which conventions a vault is REALLY under, and what to repair
+
+Call `audit_vault_conventions({ vault })` (read-only, works on remote vaults) — or, for every local vault at once, `node <router-clone>/scripts/conventions-audit.mjs` (read-only; remote vaults come back `skipped`, never "clean"). Each vault gets `ok` / `attention` / `broken` and findings, each with the repair to PROPOSE:
+
+| finding | what it means | repair — only after the user says yes |
+|---|---|---|
+| `ambiguous-conventions-file` | two or more candidate files; the router reads none | when exactly one is a verbatim copy of the template's file: rename THAT copy — hand the `move_file` step the audit gives (it carries `ifMatch`; the new name ends `.from-template-<date>`, so it is reversible) to `/obsidian-router:manage-move`, which owns moves and their partial-failure report. This skill does not move files itself. Otherwise ask which file holds the vault's rules. |
+| `missing-recommended` | recommended conventions absent from the file in force | `install <id>` from the CURRENT snippet (preview + backup as usual). Never restore a section from a `.bak` file — it may be stale. Absent may be the owner's choice: offer, do not push. |
+| `inherited-backups` | `CLAUDE.md.bak-*` files with the same NAME and the same BYTES as one of the reference vault's own backups | nothing to repair. They are almost certainly the TEMPLATE's history, copied in by a sync, so they say nothing about this vault's past: a convention present in them and absent from the current file is not evidence of a loss. A backup that holds the template's text under a name of its own is the vault's OWN history (it edited a template-born file) — the audit does not call it inherited. |
+| `no-conventions-file` | no candidate at all | the picker (`pick`); the first install creates the root file. |
+| `reference-unknown` | the reference vault could not be read | "template copy" and "inherited" are UNKNOWN, not false — say so. |
+| `bilingual-to-migrate` | the file still carries the RETIRED `bilingual` convention | the migration below (`migrate-bilingual`): ask the owner the value, install `languages`, remove `bilingual`. Never assume `fr, en` — on 2026-09-26 the owner chose `fr` for ten of the thirteen vaults that carried it. |
+| `languages-value-unreadable` | `languages` is installed but its value line is missing, doubled, or not ISO 639-1 codes | show the section, ask the owner, correct the one `**Languages of this vault: …**` line (backup first). |
+
+The audit also returns `languages` — the declared list (`["fr","en"]`) or `null`. Report it in every status: it is the one convention whose value differs per vault.
+
+**Never read a backup beside a conventions file as that vault's history without the audit.** On 2026-09-26 a session did exactly that on Kiviri-OS and reported four conventions "lost on 2026-09-11": the backups were the reference vault's, copied in with its `Documentation/` folder, and the vault had simply been born with the template's four-convention file (decision `conventions-livrees-par-le-modele`). The same sync (2026-09-22) gave 13 local vaults a SECOND conventions file beside their own; since this release a template sync no longer copies a conventions file into a vault that has one, nor any backup anywhere.
+
+**Repairs are one vault at a time, each shown and approved.** No `--all`, no silent pass: the fleet report lists, the human decides per vault.
 
 Mapping (the library as of this page — 14 snippets; the identity is the WHOLE first line, parenthesised part included, since matching is exact):
 
 | Snippet file | Convention id | Identifying H2 heading |
 |---|---|---|
 | `auto-enrichment.md` | `auto-enrichment` | `## Auto-enrichment (4 modes — \`ClaudeAsk\` / \`Hybrid\` / \`FullAuto\` / \`off\`)` |
-| `bilingual.md` | `bilingual` | `## Bilingual convention (FR + EN, FR primary)` |
 | `claim-citations.md` | `claim-citations` | `## Claim-level citations — line-range markers (v0.15.0+, complements \`source-type\`)` |
 | `default-vault-health-check.md` | `default-vault-health-check` | `## Default vault health check at session start` |
 | `description-frontmatter.md` | `description-frontmatter` | `## One-line summary — \`description\` frontmatter (mandatory for every page)` |
 | `heading-hierarchy.md` | `heading-hierarchy` | `## Note structure — headings hierarchy (mandatory)` |
+| `languages.md` | `languages` | `## Languages convention (declared per vault)` — carries a VALUE, see below |
 | `log-discipline.md` | `log-discipline` | `## Log discipline — index mince + détail dans wiki-meta/Sessions/` |
 | `path-disambiguation.md` | `path-disambiguation` | `## Workspace-bound path disambiguation — NEVER mix cwd path with vault subpath` |
 | `prompt-status.md` | `prompt-status` | `## Prompt lifecycle — \`status\` frontmatter on \`type: prompt\` pages (mandatory, since 2026-09-10)` |
@@ -79,13 +99,46 @@ Mapping (the library as of this page — 14 snippets; the identity is the WHOLE 
 | `tribu-routing.md` | `tribu-routing` | `## Family-member auto-routing — identify the speaker, route saves to wiki/People/<member>/` |
 | `wiki-query-first.md` | `wiki-query-first` | `## Wiki-query-first reflex — check the vault BEFORE answering` |
 
-(Do not rely on this table for the live list: `install_conventions` with `dryRun: true` and `ids: []` returns the library as the server ships it — `catalogue` — and its detection against the vault's file.)
+(Do not rely on this table for the live list: `install_conventions` with `dryRun: true` and `ids: []` returns the library as the server ships it — `catalogue`, retired conventions flagged `retired: true` — and its detection against the vault's file.)
+
+### Retired conventions — recognised, never offered
+
+`<plugin-root>/skills/conventions/retired/` holds conventions the library no longer offers. Today: `bilingual.md` (`## Bilingual convention (FR + EN, FR primary)`), replaced by `languages` on 2026-09-26 (decision `convention-languages-remplace-bilingual`). Never `install` a retired convention, never show it in the picker. `install_conventions` enforces the first half: a retired id is reported in `retired` and never written; its `detection` still finds the heading in a file, so a vault to migrate stays visible. Keep using its heading to DETECT it and to REMOVE it: `remove bilingual` reads `retired/bilingual.md` for the heading, exactly like any other remove. The audit reports a vault that still carries it as `bilingual-to-migrate`.
+
+### `languages` — the one convention with a value
+
+The `languages` section carries one line that belongs to the vault: `**Languages of this vault: fr, en**` — an ordered list of ISO 639-1 codes, the first being the primary language. The snippet carries `<languages>` there. Everything that touches it goes through `<plugin-root>/src/helpers/convention-languages.mjs`:
+
+```javascript
+import {
+  parseLanguagesValue, renderLanguagesSection, readVaultLanguages,
+} from '<plugin-root>/src/helpers/convention-languages.mjs';
+```
+
+- **To install**, ask the owner the value first (default `fr`), then `install_conventions({ vault, ids: ["languages"], languages: ["fr"] })` — the router renders the value into the section server-side and refuses the call without one, or with a value that is not ISO 639-1 codes (relay its message and ask again). Installing the raw snippet would install a convention that declares no language (the drift check reports that state as a one-line drift); the tool never writes the placeholder.
+- **Never on several vaults at once with one answer.** `install languages --all` and `sync-all-vaults languages` are refused: the value is a property of each vault, so it is asked **per vault**, and each vault is installed on its own answer. One answer copied into every vault is exactly the "propagate a value that speaks of one vault" mistake the drift masking exists to avoid.
+- **To read** a vault's value, `readVaultLanguages(content)` — or the `vaultLanguages` field every `install_conventions` result carries; its `problem` (`missing-value`, `ambiguous-value`, `invalid-value`, `duplicate-section`) says which repair to propose.
+- **To change** a value, show the section, back the file up, and replace that one line — nothing else in the section. `install_conventions` does not change a value: a vault that already has the section is "already in place", whatever value you pass.
+- **Different values in different vaults are not drift.** The drift detector masks a valid value before comparing; never "reconcile" one vault's value to another's, and never overwrite it with the placeholder.
+
+### `migrate-bilingual [on <vault>]` — written one vault at a time
+
+Each vault is measured, shown and written on its own. The owner may approve several vaults in one answer, but only after each one's plan has been shown; the writes still happen one vault at a time, each with its own backup and `ifMatch`.
+
+1. **Measure**: `audit_vault_conventions({ vault })`. If it reports `ambiguous-conventions-file`, STOP for this vault — which file is in force comes first. Then `get_file` the file in force and keep its `contentSha256`. Note the two facts the next steps branch on: is `languages` **already installed** (`readVaultLanguages(content).installed`), and is `bilingual` present?
+2. **Ask the value** (`fr`, `fr, en`, …) — **only if `languages` is not installed yet**, and unless the owner has already given it for this vault in THIS conversation. If `languages` is installed with a readable value, keep it: the migration is then only the removal of `bilingual`. If it is installed with an unreadable value, stop and repair that first (`languages-value-unreadable`).
+3. **Show the plan**: the `languages` section that will be added (rendered, with the value) — or "already in place: <value>" — and, if `bilingual` is present, the EXACT text that will be removed, verbatim, not abbreviated. Wait for the owner's yes for this vault.
+4. **Back up** the whole file beside it: `write_file` to `<file>.bak-languages-<YYYY-MM-DD-HHmmss>` with `ifNew: true`. If the backup fails, STOP for this vault.
+5. **Compute** the new content with the helpers: `removeConvention(content, bilingualHeading)` when `bilingual` is present, checked with `verifyRemoval` (nothing else may move); then append `renderLanguagesSection(...).text` **only when `languages` was not installed** — appending it to a file that already carries it creates a second section and makes the value unreadable (`duplicate-section`). Write with `write_file` and `ifMatch` set to the `contentSha256` read at step 1.
+6. **Re-read and re-audit**: exactly one `languages` section with the right value, `bilingual` absent, every other convention byte-identical.
+
+The vault must be open: the router goes through the REST API, never the disk. A closed vault is postponed, not bypassed. Backups stay in place.
 
 ## Steps
 
-### Resolving the snippets directory
+### Resolving the snippets directory (offline fallback only)
 
-The snippets live in the plugin install at `<plugin-root>/skills/conventions/snippets/`. Find the plugin root via `${CLAUDE_PLUGIN_ROOT}` env var if available, otherwise look in `~/.claude/plugins/` for a folder containing `skills/conventions/snippets/`. Once found, `Glob` it for `*.md`.
+The router reads the snippets itself. When the router is unreachable and you must read them: they live in the plugin install at `<plugin-root>/skills/conventions/snippets/`. Find the plugin root via `${CLAUDE_PLUGIN_ROOT}` env var if available, otherwise look in `~/.claude/plugins/` for a folder containing `skills/conventions/snippets/`. Once found, `Glob` it for `*.md`.
 
 If you can't find the snippets dir, fall back to reading `<router-clone>/templates/wiki/CLAUDE.md` and extracting H2 sections from there.
 
@@ -95,7 +148,7 @@ If you can't find the snippets dir, fall back to reading `<router-clone>/templat
    - If user said *"on vault X"* → just that vault
    - If user said *"on all vaults"* → call `list_vaults`, filter to `online: true`
    - Default (no vault specified) → the current default vault from `list_vaults`
-2. For each vault: `install_conventions({ vault, ids: [], dryRun: true })`. It returns the library (`catalogue`), the resolved conventions file (`path`, `fileExisted`) and `detection`. Mark ✅ or ❌ from `installed`, and flag `duplicate`. A vault with no conventions file at all is "nothing installed", not an error; two conventions files is a refusal that names them — report it for that vault.
+2. For each vault: `install_conventions({ vault, ids: [], dryRun: true })`. It returns the library (`catalogue`; entries flagged `retired: true` are not offered), the resolved conventions file (`path`, `fileExisted`), `detection` and `vaultLanguages`. Mark ✅ or ❌ from `installed`, flag `duplicate`, and report the `languages` value. A retired convention found installed is not a status line, it is a migration to propose (`bilingual-to-migrate`). A vault with no conventions file at all is "nothing installed", not an error; two conventions files is a refusal that names them — report it for that vault.
 3. (Offline fallback only, when the router is unreachable: `Glob` the snippets directory and run `detectConventions(content, catalogue)` from the helper yourself.)
 4. The ids come from `catalogue` — never hardcode the library.
 5. Render as a markdown table, and name the file each column was read from — on a fleet where the path differs per vault, a status table that hides which file it read is a status table nobody can check.
@@ -105,9 +158,9 @@ Example output:
 ```
 ## Conventions status
 
-Vault: smile
+Vault: smile (Documentation/CLAUDE.md) — languages: fr
 - ✅ source-type          (installed)
-- ❌ bilingual            (not installed)
+- ❌ languages            (not installed)
 - ✅ heading-hierarchy    (installed)
 - ❌ auto-enrichment      (not installed)
 ```
@@ -119,30 +172,30 @@ For multi-vault status, render one row per vault with checkmark columns.
 **One tool call per vault, whatever the number of conventions: `install_conventions`.** Do not read the snippets and do not paste their text anywhere — the router reads them from its own package. Do not use `append_to_file` for this: it carries no precondition, so the shared-vault gate refuses it on every vault `list_vaults` reports with `writesRequireIfMatch`, and copying ~31 KB of rules through tool calls is how a rule gets altered on the way.
 
 1. Resolve target vault(s):
-   - `--all` → all online vaults from `list_vaults`
+   - `--all` → all online vaults from `list_vaults` — **except for `languages`**, which is refused with `--all` (its value is asked per vault, see above)
    - `on <vault>` → that specific vault
    - Default → the current default vault
 2. For each target vault, ONE call:
    ```
    install_conventions({ vault, ids: ["source-type", "heading-hierarchy", …] })
    ```
-   The tool resolves the conventions file itself (the three candidates above; two present → it refuses and names them, so put the question to the user), skips what is already present, appends every missing snippet in ONE compare-and-swap write, then reads the file back.
+   With `languages` among the ids, add the value the owner gave for THIS vault: `languages: ["fr"]`. The tool resolves the conventions file itself (the three candidates above; two present → it refuses and names them, so put the question to the user), skips what is already present, appends every missing snippet in ONE compare-and-swap write, then reads the file back.
 3. Read the result — every field is a sentence you owe the user:
-   - `installed` — added by this call. `alreadyPresent` — **"already in place"**, never "installed". `unknown` — ids the library does not ship: say so, and show the library (`dryRun` below).
-   - `verified` — `true` only when every requested convention is present exactly once in what the vault now holds. `false` → show `problems` and say the install is NOT confirmed; do not paper over it.
+   - `installed` — added by this call. `alreadyPresent` — **"already in place"**, never "installed". `unknown` — ids the library does not ship: say so, and show the library (`dryRun` below). `retired` — ids the library no longer offers (`bilingual`): say it is retired and name what replaced it (`languages`, via `migrate-bilingual`).
+   - `verified` — `true` only when every requested convention is present exactly once in what the vault now holds (and, for `languages`, that the value read back is the one written). `false` → show `problems` and say the install is NOT confirmed; do not paper over it.
    - `created: true` — no conventions file existed; say where it was created (`path`).
    - A **conflict** error (409) means the file changed between the read and the write and nothing was written: run the same call again — it re-reads and never overwrites.
-   - A malformed id (anything but lowercase letters, digits, hyphens) is refused before any I/O.
+   - A malformed id (anything but lowercase letters, digits, hyphens) is refused before any I/O; so is `languages` without a value, or with a value that is not ISO 639-1 codes.
    - Link the file with the returned `clickToOpenUrl`.
-4. Report a summary: `N installed, M already in place, K unknown, verified yes/no` per vault.
+4. Report a summary: `N installed, M already in place, K unknown, R retired, verified yes/no` per vault.
 
-**State without writing:** `install_conventions({ vault, ids: [], dryRun: true })` returns `catalogue` (the library, id + heading), `detection` (installed / duplicate per convention, against the resolved file) and `path`. That is what `list` and `pick` read — no local `Glob`, no local import.
+**State without writing:** `install_conventions({ vault, ids: [], dryRun: true })` returns `catalogue` (the library, id + heading, retired ones flagged), `detection` (installed / duplicate per convention, retired ones included, against the resolved file), `vaultLanguages` and `path`. That is what `list` and `pick` read — no local `Glob`, no local import.
 
 **Say "already in place", never "installed", for a skip.** Reported per file, "already installed" reads as a benign detail; reported as a total, it reads as "your configuration was applied". A run that installed nothing must say so in the first line — a user who picked six conventions and got six no-ops believes they configured a vault that was already configured for them.
 
 ### `remove <convention-id> [on <vault>] [--all]` — strip a convention
 
-1. Same snippet resolution as install.
+1. Same snippet resolution as install — falling back to `retired/<convention-id>.md` for a retired convention (`remove bilingual` is the migration's second half). The heading is also what `install_conventions({ ids: [], dryRun: true }).catalogue` reports for that id.
 2. Same vault resolution.
 3. For each target vault:
    - Resolve its conventions file and read it via `get_file`.
@@ -173,20 +226,20 @@ For multi-vault status, render one row per vault with checkmark columns.
 
 ### `sync-all-vaults <convention-id>` — bulk install with smart skip
 
-Convenience alias for `install <convention-id> --all`. Same logic, with a clearer report grouping vaults by status (online + installed, online + just-installed, offline + skipped, online + failed).
+Convenience alias for `install <convention-id> --all`. Same logic, with a clearer report grouping vaults by status (online + installed, online + just-installed, offline + skipped, online + failed). Refused for `languages` (one value per vault, asked per vault).
 
 ### `pick` — the state-aware picker (what `meta-attach-vault` delegates to)
 
 A picker that has not read the target is a picker that lies. Before showing anything:
 
-1. `install_conventions({ vault, ids: [], dryRun: true })` — it resolves the conventions file, reads it, and returns `catalogue` + `detection` (the real state; a vault with no file is "nothing installed"). If it refuses because two conventions files exist, stop and ask which one is the user's.
-2. Build the options from `catalogue`, one per convention (AskUserQuestion, `multiSelect: true`; when the library is larger than one question can hold, split it over several questions and keep the displayed set as your `catalogue` for step 4).
+1. `install_conventions({ vault, ids: [], dryRun: true })` — it resolves the conventions file, reads it, and returns `catalogue` + `detection` + `vaultLanguages` (the real state; a vault with no file is "nothing installed"). If it refuses because two conventions files exist, stop and ask which one is the user's.
+2. Build the options from the OFFERED entries of `catalogue` — the ones without `retired: true` — one per convention (AskUserQuestion, `multiSelect: true`; when the library is larger than one question can hold, split it over several questions and keep the displayed set as your `catalogue` for step 4). A retired convention `detection` finds installed is not an option: it is a `bilingual-to-migrate` to propose after the picker.
 3. Show every option with the installed ones **already checked** and labelled *"déjà en place"* / *"already in place"*, plus the caller's **recommended** ones checked (the wizards name theirs). That single change removes the whole first defect: the user stops "choosing" things that are already there.
 4. Sort the answer into four buckets from `detection` — the same rule `planConventionPicker({ content, catalogue, selected })` implements, if you can run the helper:
 
 | bucket | meaning | action |
 |---|---|---|
-| `install` | checked, absent | ONE `install_conventions` call with every id of this bucket |
+| `install` | checked, absent | ONE `install_conventions` call with every id of this bucket (with `languages: [...]` when `languages` is in it — ask the value first) |
 | `keep` | checked, present | nothing — report "already in place" |
 | `remove` | **unchecked, present** | **ask** (see below) |
 | `skip` | unchecked, absent | nothing, silently |
@@ -198,7 +251,7 @@ A picker that has not read the target is a picker that lies. Before showing anyt
 
 **The `remove` bucket is the whole point, and it is an INTENTION, not an action.** Unchecking is ambiguous — it can mean "do not install this" as easily as "delete what is there" — so resolve it by asking, never by guessing in either direction:
 
-> Ces conventions sont **déjà présentes** dans le fichier de conventions du vault (`Documentation/CLAUDE.md`) et tu ne les as pas cochées : `bilingual`, `auto-enrichment`. Je retire leurs sections de ce fichier ? (elles restent en place si tu dis non)
+> Ces conventions sont **déjà présentes** dans le fichier de conventions du vault (`Documentation/CLAUDE.md`) et tu ne les as pas cochées : `languages`, `auto-enrichment`. Je retire leurs sections de ce fichier ? (elles restent en place si tu dis non)
 
 On a yes, go through `remove` in full — verbatim preview, sidecar backup and `verifyRemoval` included. On a no, say that **their sections stay in this file**. What must never happen again is the third possibility: saying nothing, and leaving a rule the user believes they turned off governing the vault. `auto-enrichment` governs automatic saves.
 
@@ -208,16 +261,17 @@ On a yes, go through `remove` in full — verbatim preview, sidecar backup and `
 
 1. Create `<plugin-root>/skills/conventions/snippets/<new-id>.md` with the H2 heading as first line and the convention content below.
 2. Update this skill's "Mapping" table above (optional documentation).
-3. The skill auto-picks it up on next invocation via `Glob`.
+3. The router picks it up on the next call: `install_conventions` reads the directory each time.
 
 ## Anti-patterns
 
-- **Don't hardcode the list of conventions** — `Glob` the snippets dir every time so newly-added conventions appear automatically.
+- **Don't hardcode the list of conventions** — read `catalogue` from `install_conventions` (or `Glob` the snippets dir offline) every time so newly-added conventions appear automatically.
 - **Don't rely on full-file equality to detect "already installed"** — users may have edited the convention content in their vault's CLAUDE.md. Match on the H2 heading only.
 - **Don't read "already installed" as "up to date".** They are different questions, and the gap between them is measurable: on 2026-09-11, five of the eight conventions installed in the reference vault had drifted from their snippets, two of them losing a whole rule. `install` is right to skip a present section — silently rewriting a user's edits would be worse — but say *"present; not compared"* rather than letting a skip read as agreement. The comparison is a separate, read-only check (`src/helpers/convention-drift.mjs`, and `wiki-lint`'s Check Q); it reports which lines differ and never decides which side is right, because drift runs in both directions — one snippet is deliberately anonymised for distribution, and one vault-side copy is deliberately newer than its snippet.
 - **Don't detect with `includes()` and don't cut at "the next `## `"** — both ignore fenced blocks, and the snippets contain fenced `## ` examples. Use `claude-md-conventions.mjs` for both.
 - **Don't assume the conventions file is at the vault root** — resolve it. The template ships it under `Documentation/`, and guessing wrong creates a second one.
 - **Don't report a skip as an install, and don't let an unchecked-but-present convention pass in silence** — those are the two halves of the same lie, and the second one leaves a rule running that the user thinks they turned off.
+- **Don't install `languages` with a value nobody chose** — the tool refuses a call without one; do not answer it yourself.
 - **Don't auto-restart Claude or Obsidian** — the user does it. Tell them the convention takes effect at the next Claude session start (since CLAUDE.md is read at session start).
 - **Don't propagate to offline vaults** — they'll fail with `ECONNREFUSED`. List them explicitly in the report so the user knows to come back later.
 - **Don't strip whitespace at the section boundary on remove** — the snippet starts with `\n## H2`, the previous section probably ends with `\n\n`. Leaving the trailing newlines is fine; Obsidian renders the same.
@@ -227,8 +281,11 @@ On a yes, go through `remove` in full — verbatim preview, sidecar backup and `
 User: *"installe source-type sur smile"*
 → install source-type on=smile → `install_conventions({ vault: "smile", ids: ["source-type"] })` → `installed: ["source-type"]`, `verified: true` → report "✅ installed on smile (verified)" with the file's link
 
+User: *"les langues de ce vault sont fr, en"*
+→ install languages on=<current default> → `install_conventions({ vault, ids: ["languages"], languages: ["fr", "en"] })` → `vaultLanguages.languages: ["fr", "en"]`, `verified: true`
+
 User: *"liste les conventions disponibles"*
-→ list (no vault specified) → `install_conventions({ ids: [], dryRun: true })` → list every entry of `catalogue` with its identifying H2 and its `detection` status on the default vault
+→ list (no vault specified) → `install_conventions({ ids: [], dryRun: true })` → list every offered entry of `catalogue` with its identifying H2 and its `detection` status on the default vault, plus the `languages` value
 
 User: *"sync source-type partout"*
 → sync-all-vaults source-type → list_vaults online → loop install on each → group result by status

@@ -25,6 +25,7 @@
  */
 
 import { isConventionInstalled } from './claude-md-conventions.mjs';
+import { readVaultLanguages } from './convention-languages.mjs';
 
 /** English-only default the skeleton ships. */
 export const DEFAULT_EMBED_MODEL = 'TaylorAI/bge-micro-v2';
@@ -73,16 +74,20 @@ export function applyLanguageToSmartEnv(smartEnv, lang) {
   return out;
 }
 
-// The identifying heading of skills/conventions/snippets/bilingual.md, located
+// The identifying heading of skills/conventions/retired/bilingual.md, located
 // with the SAME parser the conventions installer uses (an indented or quoted
-// copy of the heading is not the convention).
+// copy of the heading is not the convention). Retired on 2026-09-26 in favour
+// of `languages`, but a vault not yet migrated still declares French with it.
 const BILINGUAL_HEADING = '## Bilingual convention (FR + EN, FR primary)';
 
 /**
  * The language a vault ALREADY declares, or null. Looked for, in order:
- *   1. the `bilingual` convention in its CLAUDE.md (skills/conventions — FR
- *      primary, so `fr`);
- *   2. a `language` field in Smart Connections' own settings
+ *   1. the `languages` convention in its CLAUDE.md — its first code is the
+ *      vault's primary language (a value the router cannot read counts as
+ *      no declaration, and is reported by the conventions audit, not here);
+ *   2. the RETIRED `bilingual` convention in its CLAUDE.md (FR primary, so
+ *      `fr`) — a vault that has not migrated yet;
+ *   3. a `language` field in Smart Connections' own settings
  *      (`.obsidian/plugins/smart-connections/data.json`), which older versions
  *      of the plugin kept there.
  *
@@ -90,8 +95,14 @@ const BILINGUAL_HEADING = '## Bilingual convention (FR + EN, FR primary)';
  * @returns {{lang: string, source: string} | null}
  */
 export function detectDeclaredLanguage({ claudeMd = null, smartConnectionsData = null } = {}) {
-  if (typeof claudeMd === 'string' && isConventionInstalled(claudeMd, BILINGUAL_HEADING)) {
-    return { lang: 'fr', source: 'CLAUDE.md bilingual convention (FR primary)' };
+  if (typeof claudeMd === 'string') {
+    const declared = readVaultLanguages(claudeMd);
+    if (declared.installed && Array.isArray(declared.languages) && declared.languages.length > 0) {
+      return { lang: declared.languages[0], source: `CLAUDE.md languages convention (${declared.languages.join(', ')})` };
+    }
+    if (isConventionInstalled(claudeMd, BILINGUAL_HEADING)) {
+      return { lang: 'fr', source: 'CLAUDE.md bilingual convention (retired; FR primary)' };
+    }
   }
   const scLang = smartConnectionsData && typeof smartConnectionsData === 'object'
     ? normalizeLang(smartConnectionsData.language ?? '') : null;

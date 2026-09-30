@@ -54,6 +54,13 @@ import {
   detectConventions,
 } from '../helpers/claude-md-conventions.mjs';
 import { CONFIRM_SECONDARY_WRITE_PROP } from '../helpers/vault-reach.mjs';
+import { RETIRED_DIR } from '../helpers/convention-catalogue.mjs';
+import {
+  LANGUAGES_CONVENTION_ID,
+  renderLanguagesSection,
+  hasUnfilledPlaceholder,
+  readVaultLanguages,
+} from '../helpers/convention-languages.mjs';
 
 export const TOOL_NAME = 'install_conventions';
 
@@ -73,7 +80,7 @@ const MAX_IDS = 64;
 export const TOOL_DEFINITION = {
   name: TOOL_NAME,
   description:
-    "Install one or more CLAUDE.md conventions from the router's own library into a vault's conventions file, in ONE guarded write. Name the conventions by id (the snippet file name, e.g. `source-type`, `heading-hierarchy`); the texts are read server-side from the package, so never paste them. The conventions file is resolved like the `conventions` skill does (`CLAUDE.md`, `wiki-meta/CLAUDE.md`, `Documentation/CLAUDE.md`): two of them present is refused (name the files to the user), none present creates `CLAUDE.md` at the vault root. Conventions already present are skipped and reported in `alreadyPresent` (never as installed); unknown ids are reported in `unknown`. The write is a compare-and-swap on the bytes read (409 → re-run; nothing is overwritten), so it works on shared vaults with no `ifMatch` from you. The file is read back and checked: `verified: true` means every requested convention is present exactly once in what the vault now holds. `dryRun: true` returns the plan and the full `detection` of the library against the file, writing nothing — call it with `ids: []` to get the state a conventions picker needs.",
+    "Install one or more CLAUDE.md conventions from the router's own library into a vault's conventions file, in ONE guarded write. Name the conventions by id (the snippet file name, e.g. `source-type`, `heading-hierarchy`); the texts are read server-side from the package, so never paste them. The conventions file is resolved like the `conventions` skill does (`CLAUDE.md`, `wiki-meta/CLAUDE.md`, `Documentation/CLAUDE.md`): two of them present is refused (name the files to the user), none present creates `CLAUDE.md` at the vault root. Conventions already present are skipped and reported in `alreadyPresent` (never as installed); unknown ids are reported in `unknown`; a RETIRED convention (`skills/conventions/retired/`, e.g. `bilingual`) is never installed and is reported in `retired`. The `languages` convention carries the vault's own value: pass `languages` (ISO 639-1 codes, the primary language first — ask the owner, never assume) or the call is refused; the value is rendered server-side into the section's one value line. The write is a compare-and-swap on the bytes read (409 → re-run; nothing is overwritten), so it works on shared vaults with no `ifMatch` from you. The file is read back and checked: `verified: true` means every requested convention is present exactly once in what the vault now holds; `vaultLanguages` reports the value the file declares. `dryRun: true` returns the plan and the full `detection` of the library (retired conventions included, flagged) against the file, writing nothing — call it with `ids: []` to get the state a conventions picker needs.",
   inputSchema: {
     type: 'object',
     properties: {
@@ -82,6 +89,11 @@ export const TOOL_DEFINITION = {
         type: 'array',
         items: { type: 'string' },
         description: 'Convention ids to install — the snippet file names without `.md` (lowercase letters, digits, hyphens). May be empty only with `dryRun: true`.',
+      },
+      languages: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'The value of the `languages` convention for THIS vault: ISO 639-1 codes, primary language first (e.g. ["fr"] or ["fr", "en"]). Required when `ids` names `languages` and the call is not a dry run; refused when `languages` is not among `ids`.',
       },
       dryRun: { type: 'boolean', description: 'Report the plan and the detection without writing anything.' },
       confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
@@ -137,6 +149,61 @@ export function loadConventionCatalogue(dir = SNIPPETS_DIR) {
     out.push({ id, heading: firstLine.trim(), text });
   }
   return out;
+}
+
+/**
+ * The RETIRED conventions — `skills/conventions/retired/` — read like the
+ * library but flagged `retired: true`. They are recognised (a vault that still
+ * carries one shows up in `detection`, so a picker can propose the migration)
+ * and never installed. An absent folder is an empty one: a checkout that has
+ * retired nothing has no such folder.
+ */
+export function loadRetiredCatalogue(dir = RETIRED_DIR) {
+  let entries;
+  try {
+    entries = loadConventionCatalogue(dir);
+  } catch (err) {
+    if (err?.code === 'ENOENT') return [];
+    throw err;
+  }
+  return entries.map((e) => ({ ...e, retired: true }));
+}
+
+/**
+ * The `languages` value, validated and rendered into the snippet — BEFORE any
+ * I/O, so a call that cannot succeed does not read the vault. Returns the
+ * rendered snippet entry, or null when `languages` is not being installed.
+ *
+ * Refused: a value given for a call that does not name `languages` (said, not
+ * silently dropped), and a real install of `languages` without a value — the
+ * value belongs to the vault and is asked of its owner; defaulting it to
+ * anything would declare a language nobody chose.
+ */
+function renderLanguagesSnippet(args, requested, byId, dryRun) {
+  const wanted = requested.includes(LANGUAGES_CONVENTION_ID);
+  if (args.languages !== undefined && !wanted) {
+    throw validationError(
+      'install_conventions: a `languages` value was given but `languages` is not among the ids — '
+      + 'nothing was read or written. Name it in `ids` to install it, or drop the value.',
+    );
+  }
+  if (!wanted) return null;
+  if (args.languages === undefined) {
+    if (dryRun) return null;
+    throw validationError(
+      'install_conventions: `languages` carries a value that belongs to the vault — pass '
+      + '`languages: ["fr"]` (ISO 639-1 codes, the primary language first), asked of the owner. '
+      + 'Nothing was read or written.',
+    );
+  }
+  const rendered = renderLanguagesSection(byId.get(LANGUAGES_CONVENTION_ID).text, args.languages);
+  if (!rendered.ok) {
+    throw validationError(`install_conventions: the \`languages\` value was refused — ${rendered.error}. Nothing was read or written.`);
+  }
+  if (hasUnfilledPlaceholder(rendered.text)) {
+    throw validationError('install_conventions: the rendered `languages` section still holds the placeholder. Nothing was read or written.');
+  }
+  return { ...byId.get(LANGUAGES_CONVENTION_ID), text: rendered.text, languages: rendered.languages };
 }
 
 /**
@@ -225,14 +292,22 @@ export async function installConventionsTool(registry, args = {}, _deps = {}) {
     writeFile: _deps.writeFile || defaultRestClient.writeFile,
     writeFileIfMatch: _deps.writeFileIfMatch || defaultRestClient.writeFileIfMatch,
     loadCatalogue: _deps.loadCatalogue || (() => loadConventionCatalogue()),
+    loadRetired: _deps.loadRetired || (() => loadRetiredCatalogue()),
   };
   const dryRun = args.dryRun === true;
   const ids = validateIds(args.ids, dryRun);
 
   const catalogue = deps.loadCatalogue();
   const byId = new Map(catalogue.map((c) => [c.id, c]));
-  const unknown = ids.filter((id) => !byId.has(id));
+  // Recognised, never offered: a retired id is reported, not installed, and
+  // its heading still counts in `detection` (a vault to migrate is visible).
+  const retiredCatalogue = deps.loadRetired().filter((c) => !byId.has(c.id));
+  const retiredById = new Map(retiredCatalogue.map((c) => [c.id, c]));
+  const identities = [...catalogue, ...retiredCatalogue];
+  const unknown = ids.filter((id) => !byId.has(id) && !retiredById.has(id));
+  const retired = ids.filter((id) => retiredById.has(id));
   const requested = ids.filter((id) => byId.has(id));
+  const languagesSnippet = renderLanguagesSnippet(args, requested, byId, dryRun);
 
   const vault = registry.resolveVault(args.vault);
 
@@ -261,7 +336,7 @@ export async function installConventionsTool(registry, args = {}, _deps = {}) {
   if (!filePath) filePath = resolved.createAt;
   const original = existed ? raw : '';
 
-  const before = detectConventions(original, catalogue);
+  const before = detectConventions(original, identities);
   const alreadyPresent = requested.filter((id) => before.find((d) => d.id === id)?.installed);
   const toInstall = requested.filter((id) => !alreadyPresent.includes(id));
   const duplicates = before.filter((d) => d.duplicate && requested.includes(d.id)).map((d) => d.id);
@@ -271,6 +346,7 @@ export async function installConventionsTool(registry, args = {}, _deps = {}) {
     path: filePath,
     fileExisted: existed,
     unknown,
+    retired,
     alreadyPresent,
     duplicates,
   };
@@ -284,7 +360,8 @@ export async function installConventionsTool(registry, args = {}, _deps = {}) {
       wouldInstall: toInstall,
       installed: [],
       detection: before,
-      catalogue: catalogue.map(({ id, heading }) => ({ id, heading })),
+      catalogue: identities.map(({ id, heading, retired: r }) => ({ id, heading, ...(r && { retired: true }) })),
+      vaultLanguages: readVaultLanguages(original),
       contentSha256: existed ? contentSha256(original) : null,
       ...(clickToOpenUrl && { clickToOpenUrl }),
     };
@@ -300,16 +377,20 @@ export async function installConventionsTool(registry, args = {}, _deps = {}) {
       verified: requested.length > 0 && problems.length === 0,
       problems,
       detection: before,
+      vaultLanguages: readVaultLanguages(original),
       contentSha256: existed ? contentSha256(original) : null,
       ...(clickToOpenUrl && { clickToOpenUrl }),
     };
   }
 
-  const next = buildContent(original, toInstall.map((id) => byId.get(id)));
+  // The `languages` snippet is appended RENDERED — its value line holds the
+  // owner's value, never the library's placeholder.
+  const snippets = toInstall.map((id) => (id === LANGUAGES_CONVENTION_ID && languagesSnippet ? languagesSnippet : byId.get(id)));
+  const next = buildContent(original, snippets);
 
   // PRE-WRITE CHECK: refuse a content in which a requested convention would not
   // be readable — an unclosed fence above the append point swallows it.
-  const planned = detectConventions(next, catalogue);
+  const planned = detectConventions(next, identities);
   const preProblems = checkInstalled(planned, requested);
   if (preProblems.length) {
     throw validationError(
@@ -347,10 +428,19 @@ export async function installConventionsTool(registry, args = {}, _deps = {}) {
   } catch (err) {
     problems.push(`the file could not be read back (${err?.message || err})`);
   }
-  const detection = detectConventions(after ?? '', catalogue);
+  const detection = detectConventions(after ?? '', identities);
   if (after !== null) {
     problems.push(...checkInstalled(detection, requested));
     if (after !== next) problems.push('the file read back differs from what was written');
+  }
+  const vaultLanguages = readVaultLanguages(after ?? next);
+  if (languagesSnippet && toInstall.includes(LANGUAGES_CONVENTION_ID)) {
+    // The value is part of what was written: a read-back that does not
+    // declare it is not verified, whatever the heading check says.
+    const got = Array.isArray(vaultLanguages.languages) ? vaultLanguages.languages.join(',') : null;
+    if (got !== languagesSnippet.languages.join(',')) {
+      problems.push(`the languages value read back (${got ?? vaultLanguages.problem ?? 'none'}) is not the one written (${languagesSnippet.languages.join(', ')})`);
+    }
   }
   const clickToOpenUrl = buildClickToOpenUrl(vault, filePath);
   return {
@@ -362,6 +452,7 @@ export async function installConventionsTool(registry, args = {}, _deps = {}) {
     verified: problems.length === 0,
     problems,
     detection,
+    vaultLanguages,
     contentSha256: after !== null ? contentSha256(after) : null,
     ...(clickToOpenUrl && { clickToOpenUrl }),
   };
