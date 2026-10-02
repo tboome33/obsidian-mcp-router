@@ -575,3 +575,28 @@ describe('bump-version CLI', () => {
     assert.match(r.stderr, /Invalid semver/);
   });
 });
+
+describe('versioned git hooks (.githooks/)', () => {
+  // The bump arms `.githooks/post-commit` through core.hooksPath, but git only
+  // runs a hook that is executable. post-commit had been committed as 100644:
+  // Windows never looks at the mode, so the auto-tag worked there, while git on
+  // Linux and macOS skipped the hook ("ignored because it's not set as
+  // executable") and a bump committed on those systems was never tagged. The
+  // mode lives in the index, so it is checked there — the same on every OS.
+  test('every hook in .githooks/ is stored executable (100755)', (t) => {
+    const repoRoot = path.resolve(__dirname, '..');
+    const r = spawnSync('git', ['ls-files', '-s', '--', '.githooks'], { cwd: repoRoot, encoding: 'utf8' });
+    if (r.status !== 0) {
+      t.skip('not a git checkout');
+      return;
+    }
+    // "<mode> <sha> <stage>\t<path>"
+    const entries = r.stdout.split('\n').filter(Boolean).map((line) => {
+      const [meta, file] = line.split('\t');
+      return { mode: meta.split(' ')[0], file };
+    });
+    assert.ok(entries.length > 0, '.githooks/ holds no tracked hook — nothing would be checked');
+    const notExecutable = entries.filter((e) => e.mode !== '100755').map((e) => `${e.file} (${e.mode})`);
+    assert.deepEqual(notExecutable, [], `hooks git would skip on Linux/macOS: ${notExecutable.join(', ')}`);
+  });
+});
