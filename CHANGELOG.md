@@ -10,6 +10,7 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+- `.githooks/post-commit` is stored executable (`100755`, was `100644`): git on Linux and macOS skipped it, so a version bump committed there was never auto-tagged (Windows ignores the mode, which hid it). A test now pins the mode of every versioned hook.
 
 ## [0.97.0] — 2026-09-30 — a remote vault attaches and ends verified, and a review pass that found what the first CI run would have
 
