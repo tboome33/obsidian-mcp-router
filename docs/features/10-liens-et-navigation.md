@@ -6,7 +6,7 @@ Quand Claude cite une note, ce lien doit **ouvrir la note dans Obsidian d'un cli
 
 **Le besoin.** Un chemin de fichier écrit en texte dans une réponse de chat n'est pas cliquable — ou pire, devient un lien cassé. Le résultat : friction à chaque citation de note.
 
-**Ce que ça fait.** Le plugin **bridge** (≥ 0.2.0) expose une route `GET /open/<chemin>` sur le serveur HTTP local de Local REST API. Un lien markdown `[label](http://127.0.0.1:<port>/open/<chemin-encodé>)` collé dans le chat devient cliquable : le clic passe par le navigateur, atteint le bridge, qui fait naviguer Obsidian vers le fichier — et l'onglet navigateur se referme tout seul. Un paramètre `?h=<Titre>` fait défiler jusqu'à une section précise. La route est **loopback-only et navigation-only** : elle ne lit, n'écrit et n'exécute rien.
+**Ce que ça fait.** Le plugin **bridge** (≥ 0.2.0) expose une route `GET /mcp-router-bridge/open/<chemin>` (depuis la 0.10.0 ; `GET /open/<chemin>` avant — Local REST API 5.4.0 réserve `/open/`) sur le serveur HTTP local de Local REST API, et annonce le préfixe retenu dans `GET /ping` (`openPrefix`), que le router lit. Un lien markdown `[label](http://127.0.0.1:<port>/mcp-router-bridge/open/<chemin-encodé>)` collé dans le chat devient cliquable : le clic passe par le navigateur, atteint le bridge, qui fait naviguer Obsidian vers le fichier — et l'onglet navigateur se referme tout seul. Un paramètre `?h=<Titre>` fait défiler jusqu'à une section précise. La route est **loopback-only et navigation-only** : elle ne lit, n'écrit et n'exécute rien.
 
 **Comment l'utiliser.** Vous n'avez normalement rien à faire : **tous les outils qui touchent un fichier** (`write_file`, `get_file`, `patch_file`, `search`…) retournent déjà l'URL prête (`clickToOpenUrl`), et Claude la colle dans ses réponses.
 
@@ -29,7 +29,7 @@ Quand Claude cite une note, ce lien doit **ouvrir la note dans Obsidian d'un cli
 
 **Le besoin.** Certains clients (Claude Desktop notamment) font transiter les liens cliqués par un navigateur, ce qui ajoute une étape parasite. Et parfois on veut juste dire *« ouvre-moi cette note »* — sans lien du tout.
 
-**Ce que ça fait.** Appelle la route `/open` du bridge **côté serveur** : Obsidian navigue vers la note et sa fenêtre passe au premier plan, sans navigateur du tout. Une `anchor` optionnelle défile jusqu'à un titre. C'est le pendant sans-navigateur du click-to-open. Navigation uniquement — rien n'est modifié.
+**Ce que ça fait.** Appelle la route click-to-open du bridge **côté serveur** : Obsidian navigue vers la note et sa fenêtre passe au premier plan, sans navigateur du tout. Une `anchor` optionnelle défile jusqu'à un titre. C'est le pendant sans-navigateur du click-to-open. Navigation uniquement — rien n'est modifié.
 
 **Comment l'utiliser.**
 
@@ -57,10 +57,10 @@ Quand Claude cite une note, ce lien doit **ouvrir la note dans Obsidian d'un cli
 
 **Le besoin.** Le click-to-open dépend de plusieurs conditions par vault (version du bridge, version de Local REST API, serveur HTTP activé) ; quand un lien ne s'ouvre pas, il faut savoir **lequel** des maillons manque.
 
-**Ce que ça fait.** Audite chaque vault : bridge ≥ 0.2.0, Local REST API ≥ 4.0.0, serveur HTTP non chiffré activé, et une **sonde live** qui confirme que la route `/open/*` est réellement enregistrée en mémoire.
+**Ce que ça fait.** Audite chaque vault : bridge ≥ 0.2.0, Local REST API ≥ 4.0.0, serveur HTTP non chiffré activé, et une **sonde live** qui confirme que la route click-to-open (`/mcp-router-bridge/open/*`, sinon `/open/*`) est réellement enregistrée en mémoire.
 
 **Comment l'utiliser.**
 
 > « audite la disponibilité du bridge », « le click-to-open est-il prêt ? » — ou `/obsidian-router:meta-audit-bridge-readiness`
 
-**À savoir.** Le lien HTTP (port `insecurePort`) est préféré au HTTPS parce que certains antivirus (Bitdefender, ESET, Kaspersky) tuent silencieusement les connexions HTTPS loopback à certificat auto-signé — symptôme : le clic ne fait rien, sans aucun message. La route `/open` étant navigation-only et loopback-only, HTTP y est sans risque.
+**À savoir.** Le lien HTTP (port `insecurePort`) est préféré au HTTPS parce que certains antivirus (Bitdefender, ESET, Kaspersky) tuent silencieusement les connexions HTTPS loopback à certificat auto-signé — symptôme : le clic ne fait rien, sans aucun message. La route click-to-open étant navigation-only et loopback-only, HTTP y est sans risque.

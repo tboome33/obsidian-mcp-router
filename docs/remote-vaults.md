@@ -62,7 +62,7 @@ Restart Claude Desktop. Run `list_vaults` to confirm the new vault is online.
 
 ### Optional — `insecurePort`, and when it buys you anything (v0.79.0)
 
-Thirteen tools return a `clickToOpenUrl`: `http://127.0.0.1:<insecurePort>/open/<path>`, a link that opens the note in Obsidian. For a local vault the router reads that port out of the vault's own `data.json`. A remote vault has no disk to read, so the field can be declared instead:
+Thirteen tools return a `clickToOpenUrl`: `http://127.0.0.1:<insecurePort>/mcp-router-bridge/open/<path>` (`/open/<path>` for a bridge older than 0.10.0 — for a remote vault the router reads the prefix from Local REST API's route list, since the bridge's `/ping` only answers loopback), a link that opens the note in Obsidian. For a local vault the router reads that port out of the vault's own `data.json`. A remote vault has no disk to read, so the field can be declared instead:
 
 ```json
 { "name": "qnap", "baseUrl": "https://127.0.0.1:27125", "apiKey": "…", "insecurePort": 27135 }

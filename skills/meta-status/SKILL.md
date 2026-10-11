@@ -65,7 +65,7 @@ Produces a one-shot diagnostic of the multi-vault Obsidian router. Run it when t
    ```
 
    It is read-only: it reads `.obsidian/` and, when the REST API answers, calls
-   `GET /commands/` and probes the bridge's `/open/` route. Exit code `0` = the required
+   `GET /commands/` and probes the bridge's click-to-open route (`/mcp-router-bridge/open/`, then `/open/`). Exit code `0` = the required
    plugins (Local REST API, the bridge) have code; `1` = one of them is missing, settings
    only, or enabled without code; `2` = the vault has no disk reachable from here (a
    remote vault without `localPath`) — say that in one line, it is not a plugin fault.
@@ -75,7 +75,7 @@ Produces a one-shot diagnostic of the multi-vault Obsidian router. Run it when t
    - `bridge` is `absent` or `settings-only` → `⚠️ <vault>: bridge <state> — click-to-open
      links will not work`.
    - each entry of `problems` → its `message`, then its `fix` **verbatim**. A `soft`
-     problem (`no command seen`, `/open/ route not registered`) is a hint to reload
+     problem (`no command seen`, `click-to-open route not registered`) is a hint to reload
      Obsidian or turn Restricted mode off, not a missing plugin — say so.
    - a `live.error` → the live half did not run (Obsidian closed, key rejected); the disk
      verdict still stands. Never turn "not probed" into "not loaded".

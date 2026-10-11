@@ -3,13 +3,13 @@
  * meta-audit-bridge-readiness.mjs
  *
  * Read-only audit of every configured Obsidian vault for click-to-open
- * (`GET /open/<path>`) readiness. Checks the FOUR prerequisites the
+ * (`GET /mcp-router-bridge/open/<path>`, or `/open/<path>` before bridge 0.10.0) readiness. Checks the FOUR prerequisites the
  * feature depends on:
  *
  *   1. mcp-router-bridge plugin ≥ 0.2.0 installed (route handler exists)
  *   2. Local REST API plugin ≥ 4.0.0 installed (exposes `addPublicRoute()`)
  *   3. enableInsecureServer: true + insecurePort set (HTTP server listening)
- *   4. LIVE PROBE: GET http://127.0.0.1:<insecurePort>/open/<nonexistent>
+ *   4. LIVE PROBE: GET http://127.0.0.1:<insecurePort>/mcp-router-bridge/open/<nonexistent>, then /open/<nonexistent>
  *      returns 404 (= route registered) rather than 401 (= auth middleware
  *      catch-all, meaning the route never registered)
  *
@@ -71,11 +71,28 @@ function readJson(p) {
   catch { return null; }
 }
 
-function probeOpenRoute(insecurePort) {
+// Asked in order: bridge 0.10.0+ serves click-to-open under
+// /mcp-router-bridge/open/ (Local REST API 5.4.0 reserves /open/ and answers
+// 401 there); older bridges under /open/. Either one answering 404 = live.
+const OPEN_PROBE_PATHS = [
+  '/mcp-router-bridge/open/__mcp_audit_probe__nonexistent_file__.md',
+  '/open/__mcp_audit_probe__nonexistent_file__.md',
+];
+
+async function probeOpenRoute(insecurePort) {
+  let last = null;
+  for (const probePath of OPEN_PROBE_PATHS) {
+    last = await probeOnePath(insecurePort, probePath);
+    if (last.status === 404 || last.status === null) return { ...last, path: probePath };
+  }
+  return { ...last, path: OPEN_PROBE_PATHS[OPEN_PROBE_PATHS.length - 1] };
+}
+
+function probeOnePath(insecurePort, probePath) {
   return new Promise((resolve) => {
     const req = http.request({
       host: '127.0.0.1', port: insecurePort, method: 'GET',
-      path: '/open/__mcp_audit_probe__nonexistent_file__.md',
+      path: probePath,
       timeout: 3000,
     }, (res) => {
       res.on('data', () => {}); // drain
@@ -123,11 +140,11 @@ async function auditVault(vaultPath, vaultName, httpsPort) {
 }
 
 function renderTable(results) {
-  const headers = ['vault', 'bridge', 'LRA', 'insecure', '/open route', ''];
+  const headers = ['vault', 'bridge', 'LRA', 'insecure', 'open route', ''];
   const rows = results.map((r) => {
     const probe = r.checks.probeResult;
     let routeCell;
-    if (r.checks.routeLive === true) routeCell = c('green', 'live (404)');
+    if (r.checks.routeLive === true) routeCell = c('green', probe?.path?.startsWith('/mcp-router-bridge/') ? 'live (/mcp-router-bridge/open/)' : 'live (/open/)');
     else if (r.checks.routeLive === false) {
       if (probe?.error === 'ECONNREFUSED') routeCell = c('red', 'no HTTP server');
       else if (probe?.status === 401) routeCell = c('red', 'stale (HTTP 401)');
@@ -184,7 +201,7 @@ function renderRemediation(failures) {
       if (probe?.error === 'ECONNREFUSED') {
         console.log(`    • HTTP server not responding on :${r.insecurePort} → Obsidian closed, OR Local REST API plugin disabled, OR insecure server toggle off`);
       } else if (probe?.status === 401) {
-        console.log(`    • /open route NOT registered (auth middleware catch-all returned 401) → files on disk look right but Obsidian has stale code in memory → ${c('cyan', 'Ctrl+P → "Reload app without saving"')} in this vault's Obsidian instance`);
+        console.log(`    • click-to-open route NOT registered (auth middleware catch-all returned 401) → on Local REST API 5.4.0 the bridge must be >= 0.10.0; otherwise Obsidian has stale code in memory → ${c('cyan', 'Ctrl+P → "Reload app without saving"')} in this vault's Obsidian instance`);
       } else {
         console.log(`    • /open probe unexpected: ${probe?.error || `HTTP ${probe?.status}`} → investigate manually`);
       }
@@ -241,7 +258,7 @@ async function main() {
 
   if (!asJson) {
     console.log(c('bold', `Auditing ${entries.length} vault(s) for click-to-open readiness…`));
-    console.log(c('gray', `  Requires: mcp-router-bridge ≥ ${MIN_BRIDGE} · Local REST API ≥ ${MIN_LRA} · enableInsecureServer: true · live /open/* route`));
+    console.log(c('gray', `  Requires: mcp-router-bridge ≥ ${MIN_BRIDGE} · Local REST API ≥ ${MIN_LRA} · enableInsecureServer: true · live click-to-open route (/mcp-router-bridge/open/* or /open/*)`));
     console.log('');
   }
 

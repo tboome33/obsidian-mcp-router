@@ -1,9 +1,12 @@
 /**
  * click-to-open URL builder for vault files.
  *
- * Composes the `http://127.0.0.1:<insecurePort>/open/<encoded-path>` URL that
- * the `mcp-router-bridge` plugin (v0.2.0+) serves on every Obsidian vault
- * that has Local REST API's insecure HTTP server enabled. A click on the URL
+ * Composes the `http://127.0.0.1:<insecurePort><openPrefix><encoded-path>` URL
+ * that the `mcp-router-bridge` plugin (v0.2.0+) serves on every Obsidian vault
+ * that has Local REST API's insecure HTTP server enabled. `<openPrefix>` is
+ * `/mcp-router-bridge/open/` on bridge 0.10.0+ (announced by its `/ping`) and
+ * `/open/` before it — Local REST API 5.4.0 reserves `/open/`, see
+ * helpers/open-prefix.mjs. A click on the URL
  * opens the file in Obsidian — no copy-paste of paths, no manual port
  * lookup.
  *
@@ -106,6 +109,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { getOpenPrefix, isValidOpenPrefix } from './open-prefix.mjs';
 
 // THERE IS NO CACHE ANY MORE, AND THAT IS THE FIX (v0.79.0).
 //
@@ -130,9 +134,9 @@ import path from 'node:path';
 // `_resetCache` is kept as a no-op so existing callers and tests keep working.
 
 /**
- * URL-encode a vault-relative path component for use in the `/open/<path>`
- * segment. Slashes are encoded (`%2F`), spaces and accents too, dots and
- * dashes are preserved. The bridge's path matcher does
+ * URL-encode a vault-relative path component for use after the click-to-open
+ * prefix (`/mcp-router-bridge/open/<path>` or `/open/<path>`). Slashes are
+ * encoded (`%2F`), spaces and accents too, dots and dashes are preserved. The bridge's path matcher does
  * `decodeURIComponent` + `getAbstractFileByPath` so the full encoded path
  * (including the `.md` extension) must round-trip cleanly.
  *
@@ -303,6 +307,10 @@ export function resolveInsecurePort(vault) {
  *   `resolveInsecurePort`. Pass it when emitting MANY links in one operation:
  *   it makes the whole batch consistent and costs one disk read instead of N.
  *   See RESOLVE ONCE PER OPERATION in the module docblock.
+ * @param {string} [opts.openPrefix] - The click-to-open prefix, as
+ *   `getOpenPrefix(vault)` returned it. Same reason as `opts.port`: a batch
+ *   takes one snapshot. Omitted → read from the cache now. An invalid value
+ *   yields null rather than a URL, like an invalid port.
  * @returns {string|null}
  */
 export function buildClickToOpenUrl(vault, filePath, opts = {}) {
@@ -321,7 +329,13 @@ export function buildClickToOpenUrl(vault, filePath, opts = {}) {
   const port = opts && opts.port !== undefined ? opts.port : resolveInsecurePort(vault);
   if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
 
-  const base = `http://127.0.0.1:${port}/open/${encodeVaultPath(filePath)}`;
+  // The prefix comes off the network (the bridge's /ping or Local REST API's
+  // route list), so it is validated here too, whatever its source — same
+  // reasoning as the port just above.
+  const prefix = opts && opts.openPrefix !== undefined ? opts.openPrefix : getOpenPrefix(vault);
+  if (!isValidOpenPrefix(prefix)) return null;
+
+  const base = `http://127.0.0.1:${port}${prefix}${encodeVaultPath(filePath)}`;
   const anchor = normalizeAnchor(opts && opts.anchor);
   return anchor ? `${base}?h=${encodeUriMarkdownSafe(anchor)}` : base;
 }

@@ -10,6 +10,51 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### Click-to-open links follow the prefix the bridge announces — `/open/` answered 401 on Local REST API 5.4.0
+
+On 2026-10-11, every click-to-open link to a vault running Local REST API 5.4.0 answered
+`{"message": "Authorization required. …", "errorCode": 40101}` instead of opening the note
+(DEDIBOX-HERMES on 27153, DEDIBOX on 27162; vaults still on 4.0.2 were fine). Local REST API 5.4.0
+reserves eight top-level prefixes for its own routes, `open` among them, and refuses them to
+`addPublicRoute()`. The bridge's `/open/*` never registered there, so the click fell through to
+5.4.0's own authenticated `/open/*`.
+
+Bridge 0.10.0 registers the route under `/mcp-router-bridge/open/*` and keeps `/open/*` where Local
+REST API still accepts it (< 5.4.0). It **announces** the prefix it got in `GET /ping`
+(`openPrefix`). The router now reads that announcement instead of hard-coding `/open/`:
+
+- **`src/helpers/open-prefix.mjs`** (new) works out each vault's prefix: first `GET /ping` →
+  `openPrefix`, then the bridge's entry in the authenticated `GET /` route list (that is the only
+  source for a remote vault, because `/ping` answers loopback only), and finally `/open/`. It never
+  throws. Answers are cached for a minute per vault, and every prefix is validated before it reaches
+  a URL whose host must stay `127.0.0.1`.
+- **`clickToOpenUrl`, `clickToOpenLinks`, `build_open_link`, `write_bundle`** build
+  `http://127.0.0.1:<port><prefix><path>`. The builder stays synchronous. The dispatcher warms the
+  prefix (`warmOpenPrefix`) before every tool that emits a link, and `pingVault` feeds it for free
+  from the root it already fetches, so `list_vaults` refreshes the whole fleet. Batches take one
+  snapshot of the prefix, as they already do for the port.
+- **`open_in_obsidian`** calls `<prefix><path>`. On 5.4.0, `/open/` is not the bridge's route at
+  all.
+- **Health probes** (`--plugin-health`, `meta-audit-bridge-readiness`) try
+  `/mcp-router-bridge/open/` first, then `/open/`. Before this, the audit called every 0.10.0 bridge
+  on 5.4.0 "not registered". The audit's column now says which prefix answered.
+- **`vault-link-linter`** accepts both prefixes. It reads each vault's bridge and Local REST API
+  versions from disk and checks that the vault serves the link's prefix. A mismatch is a new
+  `wrong-prefix` violation, fixed to the vault's prefix: a `/open/` link to a 5.4.0 vault, or a new
+  prefix on a bridge older than 0.10.0. Its suggestions use the right prefix too.
+  `wiki-query-first-nudge` injects the right prefix in the same way.
+- Docs: README (EN/FR), `docs/features/10-liens-et-navigation.md`, `docs/remote-vaults.md`, the
+  `meta-audit-bridge-readiness` and `meta-status` skills/commands, the two conventions snippets,
+  and the `obsidian-vault-links` template.
+
+Fallbacks: a vault with no announcement and no listed route gets `/open/`. That is still right for
+a bridge older than 0.10.0 on Local REST API < 5.4.0. Links already written in notes as `/open/…`
+keep working wherever Local REST API is older than 5.4.0, because bridge 0.10.0 still serves the
+legacy route there. On a 5.4.0 vault they are dead, and the linter flags them as `wrong-prefix`.
+
+Verified live on 2026-10-11 against the fleet updated to bridge 0.10.0 (22 local vaults, 8 on the
+Dedibox): see the pull request.
+
 
 ## [0.97.0] — 2026-09-30 — a remote vault attaches and ends verified, and a review pass that found what the first CI run would have
 

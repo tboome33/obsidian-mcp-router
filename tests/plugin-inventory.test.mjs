@@ -20,6 +20,7 @@ import {
   loadExpectedPlugins,
   readLocalRestEndpoint,
   OPEN_PROBE_PATH,
+  OPEN_PROBE_PATHS,
 } from '../src/helpers/plugin-inventory.mjs';
 import { runPluginHealth } from '../scripts/plugin-health.mjs';
 
@@ -139,6 +140,30 @@ describe('/commands/ evidence', () => {
     assert.equal(seen[0].url, 'https://127.0.0.1:27999/commands/');
     assert.equal(seen[0].auth, 'Bearer k');
     assert.equal(seen[1].url, `http://127.0.0.1:27998${OPEN_PROBE_PATH}`);
+  });
+
+  test('a bridge < 0.10.0 (only /open/) is still live: the legacy path is asked second', async () => {
+    const seen = [];
+    const request = async (url) => {
+      seen.push(url);
+      if (url.endsWith('/commands/')) return { status: 200, body: '{"commands":[]}' };
+      if (url === `http://127.0.0.1:27998${OPEN_PROBE_PATHS[1]}`) return { status: 404, body: '' };
+      return { status: 401, body: '' };
+    };
+    const ev = await gatherLiveEvidence({ endpoint: { baseUrl: 'https://127.0.0.1:27999', apiKey: 'k', insecurePort: 27998 }, request });
+    assert.equal(ev.bridgeRoute, 'live');
+    assert.deepEqual(seen.slice(1), [
+      `http://127.0.0.1:27998${OPEN_PROBE_PATHS[0]}`,
+      `http://127.0.0.1:27998${OPEN_PROBE_PATHS[1]}`,
+    ]);
+  });
+
+  test('Local REST API 5.4.0 + bridge < 0.10.0: both paths 401 → not-registered', async () => {
+    const request = async (url) => (url.endsWith('/commands/')
+      ? { status: 200, body: '{"commands":[]}' }
+      : { status: 401, body: '' });
+    const ev = await gatherLiveEvidence({ endpoint: { baseUrl: 'https://127.0.0.1:27999', apiKey: 'k', insecurePort: 27998 }, request });
+    assert.equal(ev.bridgeRoute, 'not-registered');
   });
 
   test('a REMOTE vault\'s bridge is probed at its declared baseUrl, without the API key', async () => {

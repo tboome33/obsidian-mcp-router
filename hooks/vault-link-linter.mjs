@@ -298,15 +298,21 @@ for (const m of stripped.matchAll(LINK_PATTERN)) {
 // percent-encoded `/` as `%2F`, the filename, and the `.md` suffix —
 // but we don't require `.md` here because the bridge `/open/*` endpoint
 // in principle accepts any vault file extension).
+//
+// Two prefixes are click-to-open: `/mcp-router-bridge/open/` (bridge 0.10.0+)
+// and the legacy `/open/` (Local REST API 5.4.0 reserves it — see
+// src/helpers/open-prefix.mjs). The prefix is captured so Pass 2 can check
+// that the target vault actually serves it.
 const CLICK_TO_OPEN_PATTERN =
-  /\[((?:[^\]\n[\\]|\\.)+)\]\((https?):\/\/127\.0\.0\.1:(\d+)\/open\/([^)\s\n]+)\)/g;
+  /\[((?:[^\]\n[\\]|\\.)+)\]\((https?):\/\/127\.0\.0\.1:(\d+)(\/(?:mcp-router-bridge\/)?open\/)([^)\s\n]+)\)/g;
 const clickToOpenCandidates = [];
 for (const m of stripped.matchAll(CLICK_TO_OPEN_PATTERN)) {
   clickToOpenCandidates.push({
     label: m[1],
     scheme: m[2],
     actualPort: Number.parseInt(m[3], 10),
-    encodedPath: m[4],
+    prefix: m[4],
+    encodedPath: m[5],
   });
 }
 
@@ -665,14 +671,55 @@ function vaultPortInfo(vaultPath) {
   );
   try {
     const data = JSON.parse(fs.readFileSync(dataJson, 'utf8'));
+    const bridgeVersion = pluginVersion(vaultPath, 'mcp-router-bridge');
+    const lraVersion = pluginVersion(vaultPath, 'obsidian-local-rest-api');
     return {
       port: data.port || null,
       insecurePort: data.insecurePort || null,
       enableInsecureServer: data.enableInsecureServer !== false,
+      // Which click-to-open prefixes this vault serves, read from the plugin
+      // versions on disk (this hook runs in its own process and cannot ask the
+      // bridge's /ping the way the router does). Bridge 0.10.0+ serves
+      // /mcp-router-bridge/open/ everywhere; /open/ is served by any bridge
+      // unless Local REST API is 5.4.0+, which reserves it.
+      servesNewPrefix: versionAtLeast(bridgeVersion, '0.10.0'),
+      servesLegacyPrefix: !versionAtLeast(lraVersion, '5.4.0'),
+      openPrefix: versionAtLeast(bridgeVersion, '0.10.0') ? NEW_OPEN_PREFIX : LEGACY_OPEN_PREFIX,
     };
   } catch {
     return null;
   }
+}
+
+const NEW_OPEN_PREFIX = '/mcp-router-bridge/open/';
+const LEGACY_OPEN_PREFIX = '/open/';
+
+/** `version` of a plugin's manifest.json in this vault, or null. */
+function pluginVersion(vaultPath, pluginId) {
+  try {
+    const m = JSON.parse(fs.readFileSync(
+      path.join(vaultPath, '.obsidian', 'plugins', pluginId, 'manifest.json'), 'utf8',
+    ));
+    return typeof m.version === 'string' ? m.version : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Numeric x.y.z comparison; a missing/unparsable version is never "at least". */
+function versionAtLeast(version, min) {
+  if (typeof version !== 'string' || !/^\d+(\.\d+){0,2}/.test(version)) return false;
+  const a = version.split('.').map((n) => Number.parseInt(n, 10) || 0);
+  const b = min.split('.').map((n) => Number.parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0);
+  }
+  return true;
+}
+
+/** Does this vault serve click-to-open under `prefix`? */
+function servesPrefix(info, prefix) {
+  return prefix === NEW_OPEN_PREFIX ? info.servesNewPrefix : info.servesLegacyPrefix;
 }
 
 // ---- Build the correction list ----------------------------------------
@@ -704,13 +751,14 @@ function composeSuggestion(label, decodedHref, info, querySuffix = '') {
   const encodedPath = decodedHref.split(/[\\/]/).map(mdSafe).join('%2F');
   const suffix = querySuffix || '';
 
+  const prefix = info.openPrefix || LEGACY_OPEN_PREFIX;
   if (info.enableInsecureServer && info.insecurePort) {
-    return `[${label}](http://127.0.0.1:${info.insecurePort}/open/${encodedPath}${suffix})`;
+    return `[${label}](http://127.0.0.1:${info.insecurePort}${prefix}${encodedPath}${suffix})`;
   }
   if (info.port) {
     // HTTPS fallback — Bitdefender/Kaspersky/ESET may silently drop
     // self-signed HTTPS loopback (see CLAUDE.md global). Flag the caveat.
-    return `[${label}](https://127.0.0.1:${info.port}/open/${encodedPath}${suffix})  ` +
+    return `[${label}](https://127.0.0.1:${info.port}${prefix}${encodedPath}${suffix})  ` +
       `# ⚠️ HTTPS fallback — enable insecureServer in this vault's data.json for reliable click-to-open`;
   }
   // Plugin data.json missing port info; can't build a suggestion.
@@ -802,14 +850,29 @@ for (const c of clickToOpenCandidates) {
   // iff SOME owner vault actually serves the actual port for the scheme.
   const owners = findOwningVaults(encodedPathOnly);
   if (owners.length === 0) continue;
-  const portMatchesOwner = owners.some((o) => {
-    const oInfo = vaultPortInfo(o.vault);
-    if (!oInfo) return false;
-    return c.scheme === 'http'
-      ? oInfo.enableInsecureServer && oInfo.insecurePort === c.actualPort
-      : oInfo.port === c.actualPort;
-  });
-  if (portMatchesOwner) continue; // correct URL — no violation
+  const portOwners = owners
+    .map((o) => ({ ...o, info: vaultPortInfo(o.vault) }))
+    .filter((o) => o.info && (c.scheme === 'http'
+      ? o.info.enableInsecureServer && o.info.insecurePort === c.actualPort
+      : o.info.port === c.actualPort));
+  if (portOwners.some((o) => servesPrefix(o.info, c.prefix))) continue; // correct URL — no violation
+
+  // Right port, wrong prefix: the vault's bridge does not serve this one —
+  // a legacy /open/ link to a vault on Local REST API 5.4.0 (401 there), or a
+  // /mcp-router-bridge/open/ link to a bridge older than 0.10.0 (404).
+  if (portOwners.length > 0) {
+    const { vault, decodedHref, info } = portOwners[0];
+    violations.push({
+      kind: 'wrong-prefix',
+      label: c.label,
+      bareHref: `${c.scheme}://127.0.0.1:${c.actualPort}${c.prefix}${c.encodedPath}`,
+      suggested: composeSuggestion(c.label, decodedHref, info, queryStr),
+      vault,
+      actualPrefix: c.prefix,
+      expectedPrefix: info.openPrefix,
+    });
+    continue;
+  }
 
   // No owner serves this port → genuine wrong-port. Suggest against the
   // first owner WITH a readable data.json (default-first order, same
@@ -831,7 +894,7 @@ for (const c of clickToOpenCandidates) {
     // line verbatim. The query-stripped encodedPathOnly is only for the
     // filesystem resolution above.
     label: c.label,
-    bareHref: `${c.scheme}://127.0.0.1:${c.actualPort}/open/${c.encodedPath}`,
+    bareHref: `${c.scheme}://127.0.0.1:${c.actualPort}${c.prefix}${c.encodedPath}`,
     suggested: composeSuggestion(c.label, decodedHref, info, queryStr),
     vault,
     scheme: c.scheme,
@@ -922,6 +985,7 @@ if (violations.length === 0) process.exit(0);
 // ---- Compose bilingual stderr feedback --------------------------------
 const barePathCount = violations.filter((v) => v.kind === 'bare-path').length;
 const wrongPortCount = violations.filter((v) => v.kind === 'wrong-port').length;
+const wrongPrefixCount = violations.filter((v) => v.kind === 'wrong-prefix').length;
 const trapCount = violations.filter((v) => v.kind === 'cwd-vault-mix').length;
 const bareVaultCount = violations.filter((v) => v.kind === 'bare-vault-path').length;
 
@@ -929,26 +993,32 @@ const lines = [];
 lines.push('[obsidian-mcp-router/vault-link-linter] Convention violation');
 lines.push('');
 lines.push(`FR — ${violations.length} violation(s) du format click-to-open dans ta dernière réponse :`);
-if (barePathCount) lines.push(`  • ${barePathCount} lien(s) vault sans le format http://127.0.0.1:<port>/open/...`);
+if (barePathCount) lines.push(`  • ${barePathCount} lien(s) vault sans le format http://127.0.0.1:<port>/mcp-router-bridge/open/...`);
 if (wrongPortCount) lines.push(`  • ${wrongPortCount} URL(s) click-to-open avec un mauvais port`);
+if (wrongPrefixCount) lines.push(`  • ${wrongPrefixCount} URL(s) click-to-open avec un préfixe que le bridge de ce vault ne sert pas (/open/ est réservé par Local REST API 5.4.0)`);
 if (trapCount) lines.push(`  • ${trapCount} chemin(s) absolu(s) mêlant le cwd et un sous-chemin vault (fichier fantôme, n'existe pas sur le disque)`);
 if (bareVaultCount) lines.push(`  • ${bareVaultCount} chemin(s) vault relatif(s) nu(s) (ex. \`wiki-meta/catalog.md\`) — le renderer les rattache au cwd, pas au vault, donc le lien est cassé`);
 lines.push('');
 lines.push(`EN — ${violations.length} click-to-open convention violation(s) in your last response:`);
-if (barePathCount) lines.push(`  • ${barePathCount} vault link(s) missing the http://127.0.0.1:<port>/open/... format`);
+if (barePathCount) lines.push(`  • ${barePathCount} vault link(s) missing the http://127.0.0.1:<port>/mcp-router-bridge/open/... format`);
 if (wrongPortCount) lines.push(`  • ${wrongPortCount} click-to-open URL(s) with the wrong port`);
+if (wrongPrefixCount) lines.push(`  • ${wrongPrefixCount} click-to-open URL(s) with a prefix this vault's bridge does not serve (Local REST API 5.4.0 reserves /open/)`);
 if (trapCount) lines.push(`  • ${trapCount} absolute path(s) mixing the cwd with a vault subpath (phantom file, does not exist on disk)`);
 if (bareVaultCount) lines.push(`  • ${bareVaultCount} bare relative vault path(s) (e.g. \`wiki-meta/catalog.md\`) — the renderer roots them at the cwd, not the vault, so the link breaks`);
 lines.push('');
 lines.push('Violations + corrections :');
 for (const v of violations) {
   const tag = v.kind === 'wrong-port' ? '[wrong-port] '
+    : v.kind === 'wrong-prefix' ? '[wrong-prefix]'
     : v.kind === 'cwd-vault-mix' ? '[cwd+vault]  '
     : v.kind === 'bare-vault-path' ? '[bare-vault] '
     : '[bare-path]  ';
   lines.push(`  ${tag}• [${v.label}](${v.bareHref})`);
   if (v.kind === 'wrong-port') {
     lines.push(`                used port ${v.actualPort}, expected ${v.expectedPort ?? '?'} for ${v.scheme} (vault ${path.basename(v.vault)})`);
+  }
+  if (v.kind === 'wrong-prefix') {
+    lines.push(`                used ${v.actualPrefix}, this vault's bridge serves ${v.expectedPrefix} (vault ${path.basename(v.vault)})`);
   }
   if (v.kind === 'cwd-vault-mix') {
     lines.push(`                phantom path — the cwd (${v.cwd}) has no \`${v.firstSeg}/\` subdir; this file lives in vault ${path.basename(v.vault)}, NOT under the cwd`);
@@ -969,7 +1039,8 @@ lines.push('hits nothing on 127.0.0.1:<wrong-port>); and an absolute path');
 lines.push('mixing the cwd with a vault subpath (e.g. `<cwd>/wiki/x.md`)');
 lines.push('points at a phantom file — the vault lives at a DIFFERENT');
 lines.push('absolute root. The correct format is');
-lines.push('http://127.0.0.1:<insecurePort>/open/<URL-encoded-path> where');
+lines.push('http://127.0.0.1:<insecurePort>/mcp-router-bridge/open/<URL-encoded-path>');
+lines.push('(`/open/` only for a bridge older than 0.10.0) where');
 lines.push('<insecurePort> is read from the TARGET vault\'s data.json');
 lines.push('(.obsidian/plugins/obsidian-local-rest-api/data.json). The port');
 lines.push('differs per vault — NEVER reuse a port memorized from another');

@@ -23,7 +23,7 @@ Vault root     : <parent-vault>/<NAME>          ← Obsidian notes
 3. **Si repo code** → préfixe le cwd, et ne pas mettre de sous-dossier `wiki/` ou `wiki-meta/` (qui n'existent que dans le vault).
 4. **Dans le doute, NE PAS générer le path filesystem** → préférer dans cet ordre :
    - **Wikilink Obsidian** `[[basename]]` (résolu par basename à travers le vault, survit aux renames)
-   - **Lien click-to-open** `[label](http://127.0.0.1:<insecurePort>/open/<url-encoded-vault-relative-path>)`
+   - **Lien click-to-open** `[label](http://127.0.0.1:<insecurePort>/mcp-router-bridge/open/<url-encoded-vault-relative-path>)` (`/open/` seulement pour un bridge antérieur à 0.10.0 — de préférence, coller le `clickToOpenUrl` d'un tool)
    - Path filesystem uniquement si explicitement demandé ET après vérification stricte
 
 ### Anti-patterns

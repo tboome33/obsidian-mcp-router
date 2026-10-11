@@ -1,10 +1,10 @@
 ---
-description: Audit click-to-open readiness across all configured vaults — checks bridge ≥ 0.2.0, Local REST API ≥ 4.0.0, insecure HTTP enabled, AND a live probe that confirms `/open/*` is actually registered in-memory. (Skill `meta-audit-bridge-readiness` handles natural-language triggers.)
+description: Audit click-to-open readiness across all configured vaults — checks bridge ≥ 0.2.0, Local REST API ≥ 4.0.0, insecure HTTP enabled, AND a live probe that confirms the click-to-open route (`/mcp-router-bridge/open/*`, else `/open/*`) is actually registered in-memory. (Skill `meta-audit-bridge-readiness` handles natural-language triggers.)
 ---
 
 # meta-audit-bridge-readiness
 
-Read-only diagnostic of the click-to-open feature (`http://127.0.0.1:<port>/open/<path>` links that open files in Obsidian). Complement of `meta-status`: that one checks the router can reach each vault; this one checks the clickable links actually work.
+Read-only diagnostic of the click-to-open feature (`http://127.0.0.1:<port>/mcp-router-bridge/open/<path>` links — `/open/<path>` before bridge 0.10.0 — that open files in Obsidian). Complement of `meta-status`: that one checks the router can reach each vault; this one checks the clickable links actually work.
 
 ## Steps
 
@@ -16,7 +16,7 @@ Read-only diagnostic of the click-to-open feature (`http://127.0.0.1:<port>/open
 
 2. Parse the JSON and render as a table:
    - Header line: `<total> vault(s) · <ready> ready · <notReady> need attention`
-   - Columns: `vault | bridge | LRA | insecure | /open route | ready?`
+   - Columns: `vault | bridge | LRA | insecure | open route | ready?` (the column says which prefix answered)
    - `✅` ready, `❌` not ready
 
 3. For each `ready: false` vault, surface the FIRST matching cause in this priority order, with the exact command to run:

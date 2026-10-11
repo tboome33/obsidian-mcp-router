@@ -35,7 +35,9 @@ import {
   writeFile as restWriteFile,
   deleteFile as restDeleteFile,
   attemptAtomicCas as restAttemptAtomicCas,
+  resolveVaultOpenPrefix,
 } from './rest-client.mjs';
+import { resolveInsecurePort } from './helpers/click-to-open.mjs';
 import { strictReservedCasEnabled } from './helpers/reserved-path-write.mjs';
 import { scaffoldCandidates, shouldTryLegacyScaffold } from './helpers/wiki-meta-scaffolds.mjs';
 import { listVaults } from './tools/list-vaults.mjs';
@@ -974,7 +976,7 @@ const TOOLS = [
   {
     name: 'build_open_link',
     description:
-      'Build a click-to-open URL (and a ready-to-paste markdown link) for one or many vault files WITHOUT reading or writing them. Use this when you need to cite a vault file in a chat response and you don\'t already have the URL from a previous tool call (write/get/patch all return clickToOpenUrl). Single mode: pass `path`. Batch mode: pass `paths` (array). Mutually exclusive — exactly one of `path` / `paths` must be provided. CHECK `pathVerified`, present on every result: true when the path was checked against a local disk (so a wrong path was corrected, or refused with an error), false when there was no disk to check it against — a URL you get then is well-formed but unproven, and `verification` says so. It is about the PATH, not the link: a file that exists in a vault whose plaintext server is off is `pathVerified: true` with a null URL. Returns a null URL when no plaintext port is known for the vault, or when its data.json says the insecure HTTP server is off. The emitted link is always http://127.0.0.1:<port>/open/... — it opens the note only for a reader sitting at the machine that runs that vault\'s Obsidian.',
+      'Build a click-to-open URL (and a ready-to-paste markdown link) for one or many vault files WITHOUT reading or writing them. Use this when you need to cite a vault file in a chat response and you don\'t already have the URL from a previous tool call (write/get/patch all return clickToOpenUrl). Single mode: pass `path`. Batch mode: pass `paths` (array). Mutually exclusive — exactly one of `path` / `paths` must be provided. CHECK `pathVerified`, present on every result: true when the path was checked against a local disk (so a wrong path was corrected, or refused with an error), false when there was no disk to check it against — a URL you get then is well-formed but unproven, and `verification` says so. It is about the PATH, not the link: a file that exists in a vault whose plaintext server is off is `pathVerified: true` with a null URL. Returns a null URL when no plaintext port is known for the vault, or when its data.json says the insecure HTTP server is off. The emitted link is always http://127.0.0.1:<port><prefix><path>, where <prefix> is the one the vault\'s bridge announces (/mcp-router-bridge/open/ on bridge 0.10.0+, /open/ before — Local REST API 5.4.0 reserves /open/) — it opens the note only for a reader sitting at the machine that runs that vault\'s Obsidian. Paste it verbatim; never rewrite the prefix.',
     // v0.19.1: the `path` xor `paths` mutual exclusion is enforced at
     // RUNTIME (src/tools/build-open-link.mjs rejects both/neither with a
     // clear message) and documented in the description above — NOT in the
@@ -1017,7 +1019,7 @@ const TOOLS = [
   {
     name: 'open_in_obsidian',
     description:
-      'Navigate the running Obsidian for a vault to a file — and bring its window to the front — WITHOUT opening a browser. Use this when the user asks to "open" / "show" / "go to" a note: the router calls the bridge\'s /open route server-side, so (unlike a click-to-open LINK, which a browser-proxying client such as Claude Desktop always opens in a browser tab) no browser is involved. Optional `anchor` scrolls to a heading on the local/bridge path (for a remote-vault `viewLink` the GUI opens on the note — headings are not deep-linkable through the tunnel, so the anchor is echoed with `anchorApplied:false`). On a remote-vault deployment where a view-agent is configured, this instead returns an ephemeral browser `viewLink` to the live GUI on that note (the user has no local Obsidian to raise) — so "show me / open this note" works for remote vaults too. Configured smart links (OBSIDIAN_ROUTER_SMART_LINK_URL/SECRET) signal a REMOTE deployment: the tool then returns a stable smart `viewLink` with `opened:false` + `delivered:"link"` instead of navigating — do NOT set those env vars on a purely local router, or this tool hands back a link instead of navigating your local Obsidian. Requires the mcp-router-bridge plugin (>= 0.2.0) + Obsidian running for that vault (local path). Navigation-only — never changes content.',
+      'Navigate the running Obsidian for a vault to a file — and bring its window to the front — WITHOUT opening a browser. Use this when the user asks to "open" / "show" / "go to" a note: the router calls the bridge\'s click-to-open route server-side (under the prefix the bridge announces), so (unlike a click-to-open LINK, which a browser-proxying client such as Claude Desktop always opens in a browser tab) no browser is involved. Optional `anchor` scrolls to a heading on the local/bridge path (for a remote-vault `viewLink` the GUI opens on the note — headings are not deep-linkable through the tunnel, so the anchor is echoed with `anchorApplied:false`). On a remote-vault deployment where a view-agent is configured, this instead returns an ephemeral browser `viewLink` to the live GUI on that note (the user has no local Obsidian to raise) — so "show me / open this note" works for remote vaults too. Configured smart links (OBSIDIAN_ROUTER_SMART_LINK_URL/SECRET) signal a REMOTE deployment: the tool then returns a stable smart `viewLink` with `opened:false` + `delivered:"link"` instead of navigating — do NOT set those env vars on a purely local router, or this tool hands back a link instead of navigating your local Obsidian. Requires the mcp-router-bridge plugin (>= 0.2.0) + Obsidian running for that vault (local path). Navigation-only — never changes content.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2121,6 +2123,62 @@ const VIEW_LINK_TOOLS = new Set([
   'merge_frontmatter',
   'move_file',
 ]);
+
+/**
+ * The tools whose result carries a click-to-open link (`clickToOpenUrl`,
+ * `clickToOpenLinks`, `markdownLink`) or that call the bridge's click-to-open
+ * route themselves (`open_in_obsidian`). Before any of them runs, the
+ * dispatcher asks the target vault which prefix its bridge serves that route
+ * under (`warmOpenPrefix`), so the synchronous link builder emits
+ * `/mcp-router-bridge/open/` where the bridge announced it and `/open/` only
+ * where nothing did. Local REST API 5.4.0 reserves `/open/`: a link built on a
+ * stale guess there is a 401, not a note.
+ */
+export const OPEN_LINK_TOOLS = new Set([
+  'get_file',
+  'get_frontmatter',
+  'write_file',
+  'append_to_file',
+  'patch_file',
+  'set_frontmatter',
+  'merge_frontmatter',
+  'move_file',
+  'write_bundle',
+  'execute_template',
+  'install_conventions',
+  'build_open_link',
+  'open_in_obsidian',
+  'search',
+  'search_smart',
+]);
+
+/**
+ * Ask the vault(s) a link-emitting tool is about to target which click-to-open
+ * prefix their bridge serves — cached for a minute per vault, so in a session
+ * this is one small request per vault per minute. Skips a vault for which no
+ * link can be built anyway (no plaintext port). `vault: "*"` (search across the
+ * fleet) warms every such vault, in parallel. NEVER throws and never blocks
+ * the tool on a failure: the worst case is the legacy `/open/` prefix.
+ *
+ * @param {{ vaults: object[], resolveVault: (name?: string) => object }} reg
+ * @param {object} args
+ * @param {(vault: object) => Promise<string>} [resolve]
+ */
+export async function warmOpenPrefix(reg, args, resolve = resolveVaultOpenPrefix) {
+  let targets;
+  try {
+    targets = args?.vault === '*'
+      ? (reg?.vaults ?? [])
+      : [reg.resolveVault(args?.vault)];
+  } catch {
+    return; // the tool will report the unresolvable vault itself
+  }
+  await Promise.all(
+    targets
+      .filter((v) => v && resolveInsecurePort(v) !== null)
+      .map((v) => resolve(v).catch(() => null)),
+  );
+}
 
 /**
  * Parse the OBSIDIAN_ROUTER_READONLY env var into a boolean. Truthy
@@ -3350,6 +3408,12 @@ export async function startServer({ configPath, watch = true } = {}) {
       if (Object.hasOwn(ASSET_OUTPUT_DIR_FIELDS, name)) {
         assertAssetOutputDirWritable(args, reg, sharedVaultConfig(), name);
         handlerContext = assetOutputDirContext(name, args, reg, sharedVaultConfig);
+      }
+
+      // Which prefix the bridge serves click-to-open under — asked BEFORE the
+      // handler, because the link builder is synchronous (see OPEN_LINK_TOOLS).
+      if (OPEN_LINK_TOOLS.has(name)) {
+        await warmOpenPrefix(reg, args);
       }
 
       const result = await handler(reg, args, handlerContext);

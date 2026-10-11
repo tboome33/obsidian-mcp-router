@@ -27,7 +27,7 @@ Quel que soit le mode, le vault expose 4 fichiers canoniques sous `wiki-meta/` (
 1. **Catalog scan** : lire `wiki-meta/catalog.md`. En **cwd-is-vault**, via `Read("wiki-meta/catalog.md")` (filesystem direct). En **workspace-bound**, via `mcp__obsidian-router__get_file({ vault: "<slug>", path: "wiki-meta/catalog.md" })` — le cwd n'a pas de `wiki/`, seul le vault associé en a un.
 2. **Direct read** : si une page semble pertinente, la lire avec la même mécanique (`Read` ou `get_file` selon le mode).
 3. **Semantic search** : pour des sujets fit-by-meaning, lancer `mcp__obsidian-router__search_smart`. En **cwd-is-vault** omit `vault:` (utilise le default = cwd). En **workspace-bound** passer `vault: "<slug>"` explicite pour cibler le vault associé.
-4. **Cite + enrich** : référencer les notes trouvées dans la réponse en utilisant le format click-to-open (`[label](http://127.0.0.1:<insecurePort>/open/<URL-encoded-path>)` — voir la convention `Obsidian vault links` du CLAUDE.md global). Bâtir la réponse au-dessus du contexte existant plutôt que from scratch.
+4. **Cite + enrich** : référencer les notes trouvées dans la réponse en utilisant le format click-to-open (`[label](http://127.0.0.1:<insecurePort>/mcp-router-bridge/open/<URL-encoded-path>)`, ou `/open/` pour un bridge antérieur à 0.10.0 — voir la convention `Obsidian vault links` du CLAUDE.md global). Bâtir la réponse au-dessus du contexte existant plutôt que from scratch.
 
 ### Skip-conditions (légitimes — pas besoin de wiki-query)
 
