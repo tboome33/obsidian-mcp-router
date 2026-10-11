@@ -10,6 +10,14 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+- `tests/source-control-bytes.test.mjs` runs on a git without `--no-lazy-fetch`. On git 2.43.0
+  (Ubuntu 24.04, the Hermès VM) the whole suite crashed at load time on `unknown option`, yet
+  `npm test` still said `fail 0`: the file ran 0 tests there, and now runs 64/64. The lazy-fetch
+  guard is now chosen by asking git. It is the option when git accepts it. Otherwise it is
+  `GIT_NO_LAZY_FETCH=1`, but only after a throwaway promisor repository shows that the variable
+  stops a fetch the control run makes: Ubuntu backports the variable and reports the same version
+  as an upstream 2.43.0 that ignores it. With neither, the suite reports one counted skip with
+  the reason instead of crashing.
 
 ## [0.97.1] — 2026-10-11 — `webpage_to_markdown` fetches pages again
 
