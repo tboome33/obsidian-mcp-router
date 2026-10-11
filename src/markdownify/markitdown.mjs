@@ -22,12 +22,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { Agent } from 'undici';
 
 import {
   findPythonDetailed, isShellSafePath, MARKITDOWN_TOOLS, SKIP_ENV,
 } from '../helpers/conversion-readiness.mjs';
 import { subprocessOptions, withIsolatedCwd } from '../helpers/subprocess-env.mjs';
+import { createPinnedAgent } from '../helpers/pinned-dispatcher.mjs';
 import {
   expandHome,
   validateUrl,
@@ -438,14 +438,9 @@ async function safeFetch(url, maxRedirects = 10, deps = {}) {
     // getaddrinfo. bug_018 from /ultrareview on v0.11.0 release.
     const hostname = new URL(currentUrl).hostname;
     const { address, family } = await resolveHost(hostname);
-    const dispatcher = new Agent({
-      connect: {
-        // `lookup` is called by undici's connector with `(host, opts, cb)`.
-        // We always callback with the pre-resolved address, ignoring `host`
-        // entirely — that's the whole point of pinning.
-        lookup: (_host, _opts, cb) => cb(null, address, family),
-      },
-    });
+    // The shared helper answers both lookup calling conventions; the scalar
+    // copy that lived here failed every fetch on Node 20+ (see its header).
+    const dispatcher = createPinnedAgent({ address, family });
     let response;
     try {
       response = await fetchImpl(currentUrl, {

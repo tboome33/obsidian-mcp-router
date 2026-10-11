@@ -21,9 +21,9 @@
  *   The fix is to PIN the IP that step 2 validated: build a custom
  *   undici `Agent` whose `connect.lookup` always returns the resolved
  *   `{address, family}` ignoring `host`. The connector cannot re-resolve.
- *   Pattern stolen from `src/markdownify/markitdown.mjs:248` (`safeFetch`)
- *   which has carried this exact mitigation since v0.11.1 (bug_018 of the
- *   /ultrareview pass on v0.11.0).
+ *   The Agent is built by `createPinnedAgent` (`./pinned-dispatcher.mjs`),
+ *   shared with `safe-fetch-binary.mjs` and markdownify's `safeFetch`, the
+ *   first to pin (v0.11.1, bug_018 of the /ultrareview pass on v0.11.0).
  *
  * Per-hop re-pin: the redirect loop re-validates AND re-pins on every
  * hop, so an `evil.com → http://attacker.com → http://10.0.0.1/admin`
@@ -41,9 +41,10 @@
  *          downstream same-domain scoring like in link-extractor).
  */
 
-import { Agent, request } from 'undici';
+import { request } from 'undici';
 import { USER_AGENT } from './pkg-version.mjs';
 import { validateUrl, resolveAndAssertPublic } from '../markdownify/utils.mjs';
+import { createPinnedAgent } from './pinned-dispatcher.mjs';
 
 export async function safeFetchHtml(url, opts = {}) {
   const {
@@ -74,27 +75,10 @@ export async function safeFetchHtml(url, opts = {}) {
     // opts, cb)`; our lookup always callbacks with the pre-resolved
     // `{address, family}`, ignoring `host`. The connector cannot re-resolve
     // to a different (private) IP.
-    const dispatcher = new Agent({
-      connect: {
-        // CRITICAL: handle the two `lookup` calling conventions Node uses.
-        // On Node 20+ (the supported runtime), `net.connect` enables
-        // `autoSelectFamily` by default and calls the custom lookup with
-        // `opts.all === true`, expecting the callback to receive an
-        // ARRAY of `{address, family}` records (the "happy eyeballs" v2
-        // algorithm tries them in order). Returning scalar `(err, address,
-        // family)` in that branch makes undici fail with
-        // `ERR_INVALID_IP_ADDRESS` BEFORE connecting — every URL-input
-        // fetch was broken pre-v0.13.5. Codex P1 finding on the v0.13.4
-        // hardening commit.
-        lookup: (_host, opts, cb) => {
-          if (opts && opts.all) {
-            cb(null, [{ address, family }]);
-          } else {
-            cb(null, address, family);
-          }
-        },
-      },
-    });
+    // Both lookup calling conventions (Node 20+ `autoSelectFamily` passes
+    // `opts.all` and wants an array — Codex P1 on v0.13.4) are handled in
+    // the shared helper, the single copy of this code.
+    const dispatcher = createPinnedAgent({ address, family });
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -144,8 +128,8 @@ export async function safeFetchHtml(url, opts = {}) {
       // Without this, redirect chains accumulate Agents that survive
       // until Node GC (potentially ~2 min on TCP timeout). Reviewer A
       // P2 finding on the v0.13.4 hardening commit (mini-review+ on
-      // `493adce`). Same pattern probably wanted in markdownify's
-      // `safeFetch` — tracked as a separate follow-up.
+      // `493adce`). markdownify's `safeFetch` cannot close here: it returns
+      // the response with its body still unread.
       try { await dispatcher.close(); } catch { /* ignore — best-effort cleanup */ }
     }
   }

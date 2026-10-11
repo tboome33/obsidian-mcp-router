@@ -23,6 +23,7 @@
  *   - per-hop re-pin: redirect chain re-validates AND re-pins each hop
  *   - dual-form lookup callback: handles Node 20+ `autoSelectFamily`
  *     happy-eyeballs path (`opts.all=true` → array) + legacy scalar form
+ *     (`createPinnedAgent` in `./pinned-dispatcher.mjs`, shared)
  *   - per-hop dispatcher cleanup to release socket pool deterministically
  *
  * @param {string} url
@@ -39,9 +40,10 @@
  * }>}
  */
 
-import { Agent, request } from 'undici';
+import { request } from 'undici';
 import { USER_AGENT } from './pkg-version.mjs';
 import { validateUrl, resolveAndAssertPublic } from '../markdownify/utils.mjs';
+import { createPinnedAgent } from './pinned-dispatcher.mjs';
 
 export async function safeFetchBinary(url, opts = {}) {
   const {
@@ -65,19 +67,7 @@ export async function safeFetchBinary(url, opts = {}) {
 
     const { address, family } = await resolveAndAssertPublic(parsed.hostname);
 
-    const dispatcher = new Agent({
-      connect: {
-        lookup: (_host, opts2, cb) => {
-          // Dual-form callback — Node 20+ autoSelectFamily passes
-          // opts.all=true and expects an array; legacy expects scalars.
-          if (opts2 && opts2.all) {
-            cb(null, [{ address, family }]);
-          } else {
-            cb(null, address, family);
-          }
-        },
-      },
-    });
+    const dispatcher = createPinnedAgent({ address, family });
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
