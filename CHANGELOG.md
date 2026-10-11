@@ -18,6 +18,7 @@ For per-version detail (architecture decisions, alternatives considered, deferre
   stops a fetch the control run makes: Ubuntu backports the variable and reports the same version
   as an upstream 2.43.0 that ignores it. With neither, the suite reports one counted skip with
   the reason instead of crashing.
+- `.githooks/post-commit` is stored executable (`100755`, was `100644`): git on Linux and macOS skipped it, so a version bump committed there was never auto-tagged (Windows ignores the mode, which hid it). A test now pins the mode of every versioned hook.
 
 ## [0.97.1] — 2026-10-11 — `webpage_to_markdown` fetches pages again
 
