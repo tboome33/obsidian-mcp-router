@@ -248,6 +248,31 @@ describe('OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN_FILE', () => {
     assert.equal(viewCalls().length, 0, 'no request without the configured token');
   });
 
+  test('a token that cannot be a header value is refused BEFORE any request, and never quoted', async () => {
+    // fetch rejects an invalid header value with an error that QUOTES it, and that error
+    // used to reach viewLinkError / get_view_link's message — the token, in the chat.
+    process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = agentUrl;
+    const SECRET = 'S3cretT0kenValue';
+    for (const [key, value] of [
+      ['OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN_FILE', tokenFile(`# view agent\n${SECRET}\n`)],
+      ['OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN', `${SECRET}\nsecond-line`],
+    ]) {
+      delete process.env.OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN_FILE;
+      delete process.env.OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN;
+      process.env[key] = value;
+      await assert.rejects(() => getViewLinkTool(registry, { note: 'wiki/alpha.md' }), (err) => {
+        assert.match(err.message, new RegExp(key));
+        assert.match(err.message, /line break/);
+        assert.ok(!err.message.includes(SECRET), `the token leaked: ${err.message}`);
+        return true;
+      });
+      const res = await buildOpenLinkTool(registry, { path: 'wiki/alpha.md' }, deps);
+      assert.ok(!JSON.stringify(res).includes(SECRET), `the token leaked into build_open_link: ${JSON.stringify(res)}`);
+      assert.match(res.linkHint, /view agent is misconfigured/, 'the hint names the problem instead of sending to get_view_link');
+    }
+    assert.equal(viewCalls().length, 0, 'no request with a token that cannot be sent');
+  });
+
   test('refused from a workspace .env, like the URL and the inline token', () => {
     for (const k of ['OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN_FILE', 'OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN', 'OBSIDIAN_ROUTER_VIEW_AGENT_URL']) {
       assert.equal(classifyWorkspaceDotenvKey(k), 'ignore', k);
@@ -318,6 +343,29 @@ describe('list_vaults says in advance whether a read link exists', () => {
     assert.equal(out.viewAgent.health, 'unreachable');
     assert.match(out.viewAgent.hint, /did not answer \/health/);
     assert.equal(out.vaults[0].readLink.available, false);
+  });
+
+  test('a 200 whose body breaks off is not a healthy agent', async () => {
+    const broken = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': '200' });
+      res.write('{"ok": tr');
+      setTimeout(() => req.socket.destroy(), 20);
+    });
+    await new Promise((r) => broken.listen(0, '127.0.0.1', r));
+    try {
+      const h = await probeViewAgentHealth({ env: { OBSIDIAN_ROUTER_VIEW_AGENT_URL: `http://127.0.0.1:${broken.address().port}` } });
+      assert.equal(h.status, 'unreachable');
+    } finally {
+      await new Promise((r) => broken.close(r));
+    }
+  });
+
+  test('no remote vault: /health is not probed at all', async () => {
+    process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = agentUrl;
+    const local = { name: 'l', type: 'local', path: tmp, baseUrl: 'http://127.0.0.1:1', apiKey: 'k', timeoutMs: 500 };
+    const out = await listVaults({ vaults: [local], skipped: [], configPath: path.join(tmp, 'config.json') });
+    assert.equal(out.viewAgent.health, 'not-probed');
+    assert.equal(seen.filter((x) => x.url.startsWith('/health')).length, 0);
   });
 
   test('the helpers alone: status without network, health with it', async () => {

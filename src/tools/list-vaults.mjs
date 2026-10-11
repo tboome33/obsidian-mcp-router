@@ -194,8 +194,12 @@ export async function listVaults(registry, sharedConfig = null) {
   // The view agent's /health, probed WHILE the vaults are pinged — never after them, so a
   // session start pays max(ping, 2 s) at worst, not the sum. Without the token: see
   // probeViewAgentHealth.
+  // Only when a remote vault is pinged: a router with local vaults alone has nothing to ask
+  // the agent about, and a black-holed agent would cost every session start its 2 s (review).
   const agent = viewAgentStatus(process.env);
-  const healthPromise = probeViewAgentHealth({ env: process.env });
+  const healthPromise = reachable.some((v) => v.type === 'remote')
+    ? probeViewAgentHealth({ env: process.env })
+    : Promise.resolve({ status: agent.configured ? 'not-probed' : 'not-configured', vaults: null });
 
   const pinged = await Promise.all(
     reachable.map(async (v) => {

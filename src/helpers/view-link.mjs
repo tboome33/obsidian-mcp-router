@@ -64,10 +64,26 @@ export const VIEW_AGENT_SETUP =
  * @param {object} [env]
  * @returns {{token: string|null, source: 'file'|'env'|'none', error?: string, inlineIgnored?: boolean}}
  */
+/**
+ * A token is sent as an HTTP header, and fetch REFUSES an invalid header value with an error
+ * whose message QUOTES the value — which the transport catch below used to copy into
+ * viewLinkError and into get_view_link's error, i.e. into the conversation (review of
+ * 2026-10-11). A file is exactly where a second line (a comment, a pasted duplicate) slips
+ * in, so the value is checked here, before any request, and the error never quotes it.
+ * Printable ASCII without spaces: what every token generator emits.
+ */
+const HEADER_SAFE = /^[\x21-\x7e]+$/;
+const UNSAFE_TOKEN = 'holds a space, a line break or a non-ASCII character inside the token (one token, alone on one line)';
+
 export function resolveViewAgentToken(env = process.env) {
   const inline = (env.OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN || '').trim();
   const file = (env.OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN_FILE || '').trim();
-  if (!file) return inline ? { token: inline, source: 'env' } : { token: null, source: 'none' };
+  if (!file) {
+    if (!inline) return { token: null, source: 'none' };
+    return HEADER_SAFE.test(inline)
+      ? { token: inline, source: 'env' }
+      : { token: null, source: 'env', error: `OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN ${UNSAFE_TOKEN}` };
+  }
   const extra = inline ? { inlineIgnored: true } : {};
   // `~/` is expanded because the host settings that carry this value are not read by a shell.
   // Anything else must be absolute: a relative path would resolve against the router's cwd —
@@ -86,6 +102,7 @@ export function resolveViewAgentToken(env = process.env) {
   }
   const token = text.trim();
   if (!token) return { token: null, source: 'file', ...extra, error: `OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN_FILE is empty: ${p}` };
+  if (!HEADER_SAFE.test(token)) return { token: null, source: 'file', ...extra, error: `OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN_FILE ${UNSAFE_TOKEN}: ${p}` };
   return { token, source: 'file', ...extra };
 }
 
@@ -140,7 +157,14 @@ export async function probeViewAgentHealth({ env = process.env, timeoutMs = HEAL
   } catch {
     return { status: 'unreachable', vaults: null };
   }
-  const text = await res.text().catch(() => '');
+  // A 200 whose body stalls or breaks is not a healthy agent: read failures are failures
+  // (Codex review). Only a body that ARRIVED and is not a vault list is tolerated.
+  let text;
+  try {
+    text = await res.text();
+  } catch {
+    return { status: 'unreachable', httpStatus: res.status, vaults: null };
+  }
   if (!res.ok) return { status: 'error', httpStatus: res.status, vaults: null };
   let vaults = null;
   try {
@@ -176,6 +200,10 @@ export function remoteLinkHint({ vault, note, env = process.env, brief = false, 
     : `Vault "${name}" is remote and declares no insecurePort, so no click-to-open link is emitted: that link is `
       + 'http://127.0.0.1:<port>/open/… and only works for a reader sitting at the machine running that vault\'s Obsidian';
   if ((env.OBSIDIAN_ROUTER_VIEW_AGENT_URL || '').trim()) {
+    // Configured but unusable → say what is wrong, not "call get_view_link", which would fail.
+    const st = viewAgentStatus(env);
+    if (st.urlInvalid) return `${why}. The view agent is misconfigured: OBSIDIAN_ROUTER_VIEW_AGENT_URL is not a valid http(s) URL.`;
+    if (st.tokenError) return `${why}. The view agent is misconfigured: ${st.tokenError}.`;
     return `${why}. For a browser link to the note, call ${call}.`;
   }
   if (smartLinkEnabled(env)) {
@@ -300,6 +328,19 @@ export function __resetViewLinkCircuit() {
 }
 
 /**
+ * What a failed fetch is reported as. The cause's code when there is one (ECONNREFUSED,
+ * UND_ERR_CONNECT_TIMEOUT…), else the message with the token masked: a value fetch rejected
+ * is quoted in its error, and that error reaches the conversation.
+ */
+function transportReason(err, token) {
+  const code = err?.cause?.code || err?.code;
+  if (code) return String(code);
+  let msg = String(err?.message || err || 'error');
+  if (token) msg = msg.split(token).join('<token>');
+  return msg;
+}
+
+/**
  * Pure transport to the view-agent /view endpoint.
  * @param {object}  opts
  * @param {string}  opts.vaultName               canonical vault name (caller already resolved it)
@@ -371,7 +412,7 @@ export async function fetchViewLink({
     res = await fetch(url, { headers, redirect: 'manual', signal: AbortSignal.timeout(timeoutMs) });
   } catch (err) {
     return fail(
-      `view-agent unreachable at ${agentBase} (${err?.message || err}). ` +
+      `view-agent unreachable at ${agentBase} (${transportReason(err, tok.token)}). ` +
         'Check the view-agent service is running and reachable over WireGuard.',
     );
   }

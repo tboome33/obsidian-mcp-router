@@ -2,6 +2,12 @@
  * build_open_link — produce a click-to-open URL (and a ready-to-paste
  * markdown link) for one or many vault files WITHOUT reading or writing them.
  *
+ * ONE EXCEPTION (2026-10-11): in single mode on a REMOTE vault whose local link is null, it
+ * asks the read-link provider for a link — a smart link (pure HMAC), or the view agent, which
+ * is a network call that navigates the vault's single live GUI to the note (and may start a
+ * tunnel). Five single calls therefore leave five links showing the LAST note, which is why
+ * batch mode never fetches. See explicitReadLink in helpers/view-link.mjs.
+ *
  * Companion to the per-tool `clickToOpenUrl` field that write/get/patch
  * already emit. Use this when you need a URL for a file you DIDN'T just
  * touch — typically a wikilink target you want to cite in a chat response,
