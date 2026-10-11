@@ -19,9 +19,12 @@ What it does
 
     GET /go?v=&n=[&h=][&e=]&s=      (the reader's browser, on click)
       1. verifies the signature (constant-time) and the optional expiry,
-      2. navigates the vault's Obsidian onto the note by calling the bridge's `/open`
+      2. navigates the vault's Obsidian onto the note by calling the bridge's click-to-open
          route FROM THE CONTAINER'S LOOPBACK (`docker exec <container> curl ...`), so the
-         bridge's loopback guard is satisfied without being relaxed,
+         bridge's loopback guard is satisfied without being relaxed. The route is the one
+         the bridge announces in its `/ping` (`openPrefix`: `/mcp-router-bridge/open/` on
+         bridge 0.10.0+, because Local REST API 5.4.0 reserves `/open/`), `/open/` for an
+         older bridge — see "Click-to-open prefix" in the navigation section,
       3. answers 302 to the vault's `public_url` (the GUI).
       For a vault opened in the READER'S OWN desktop Obsidian (`open_mode: obsidian-uri`),
       steps 2-3 become a single 302 to `obsidian://open?vault=…&file=…`: nothing is driven
@@ -433,8 +436,97 @@ def _safe_note(note):
     return note
 
 
-def open_path(note, anchor):
-    path = "/open/" + urllib.parse.quote(note, safe="")
+# Click-to-open prefix. Local REST API 5.4.0 reserves `/open/` (with vault, active, search,
+# commands, events, mcp, tags) and refuses it to the bridge's addPublicRoute(): a GET on
+# `/open/<path>` then lands on Local REST API's own authenticated route and answers 401
+# (errorCode 40101). Bridge 0.10.0 serves the route under `/mcp-router-bridge/open/` (and
+# keeps `/open/` where Local REST API < 5.4.0 accepts it) and announces the prefix it got
+# in `GET /ping`: {"pong": true, "openPrefix": "/mcp-router-bridge/open/"}. That ping is
+# loopback-only on the bridge side, which is exactly where navigate() already talks from.
+# The value comes off the network and goes into a URL and a command line: validated, and
+# anything else falls back to the legacy prefix. Kept a minute per target, so a click costs
+# one extra `docker exec` at most once a minute per vault.
+LEGACY_OPEN_PREFIX = "/open/"
+OPEN_PREFIX_TTL_S = 60
+# fullmatch, never match: `$` also matches before a trailing newline in Python.
+_OPEN_PREFIX_RE = re.compile(r"(?:/[A-Za-z0-9_~-][A-Za-z0-9._~-]*)+/")
+_open_prefix_cache = {}
+_open_prefix_lock = threading.Lock()
+
+
+def _parse_pong(body):
+    """(is_pong, prefix): whether the body is a bridge pong at all, and the validated
+    `openPrefix` it announces (None for an old bridge or a value that fails validation)."""
+    try:
+        j = json.loads(body)
+    except (TypeError, ValueError):
+        return (False, None)
+    if not isinstance(j, dict) or j.get("pong") is not True:
+        return (False, None)
+    p = j.get("openPrefix")
+    if isinstance(p, str) and len(p) <= 128 and _OPEN_PREFIX_RE.fullmatch(p):
+        return (True, p)
+    return (True, None)
+
+
+def prefix_from_pong(body):
+    """The `openPrefix` a bridge pong announces, or None (old bridge, not a bridge, or a
+    value that does not pass validation)."""
+    return _parse_pong(body)[1]
+
+
+def resolve_open_prefix(key, fetch_pong, now=None):
+    """The click-to-open prefix for one navigation target, cached OPEN_PREFIX_TTL_S.
+    `fetch_pong()` returns the /ping body (or raises). Never raises.
+
+    What a failed discovery may not do (codex review, 2026-10-11): erase a known prefix,
+    or overwrite a newer one. The fetch runs outside the lock, so two clicks can race; a
+    result is only stored if nothing newer landed since this fetch started, and a fetch
+    that got no pong at all (timeout, refused, garbage) keeps the last known prefix
+    (re-dated). `/open/` is used when nothing was ever known, or when a bridge actually
+    answered without announcing a prefix (bridge < 0.10.0)."""
+    t = time.monotonic() if now is None else now
+    with _open_prefix_lock:
+        hit = _open_prefix_cache.get(key)
+        if hit and t - hit[1] < OPEN_PREFIX_TTL_S:
+            return hit[0]
+    try:
+        answered, prefix = _parse_pong(fetch_pong())
+    except Exception:
+        answered, prefix = (False, None)
+    t_end = time.monotonic() if now is None else now
+    with _open_prefix_lock:
+        cur = _open_prefix_cache.get(key)
+        if cur and cur[1] > t:                       # a newer observation landed meanwhile
+            return cur[0]
+        if not answered and cur:                     # no answer: keep what is known
+            _open_prefix_cache[key] = (cur[0], t_end)
+            return cur[0]
+        result = prefix or LEGACY_OPEN_PREFIX
+        _open_prefix_cache[key] = (result, t_end)
+        return result
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Discovery never follows a redirect: a /ping answering 3xx could otherwise send this
+    agent to another host and hand it the prefix (codex review, 2026-10-11)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_ping_opener = urllib.request.build_opener(_NoRedirect)
+
+# One budget for a whole navigation — discovery plus the open call — so a stalled Docker
+# daemon cannot double the documented bound (codex review, 2026-10-11).
+NAVIGATE_BUDGET_S = 8
+PING_BUDGET_S = 4
+
+
+def open_path(note, anchor, prefix=LEGACY_OPEN_PREFIX):
+    if not (isinstance(prefix, str) and _OPEN_PREFIX_RE.fullmatch(prefix)):
+        prefix = LEGACY_OPEN_PREFIX
+    path = prefix + urllib.parse.quote(note, safe="")
     if anchor:
         path += "?h=" + urllib.parse.quote(anchor, safe="")
     return path
@@ -462,21 +554,41 @@ def navigate(vault_cfg, note, anchor="", runner=None):
         if mode == "docker-exec":
             # https: the Local REST API's secure port, self-signed; -k is harmless on loopback.
             scheme = "https" if vault_cfg.get("open_scheme") == "https" else "http"
-            url = "%s://127.0.0.1:%s%s" % (scheme, vault_cfg["open_port"], open_path(note, anchor))
-            cmd = [vault_cfg.get("docker_path", "docker"), "exec", vault_cfg["container"],
-                   vault_cfg.get("curl_path", "curl"), "-sS"] + (["-k"] if scheme == "https" else []) + [
-                   "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "4", url]
-            run = runner or (lambda c: subprocess.run(c, capture_output=True, text=True, timeout=8))
-            r = run(cmd)
+            base = "%s://127.0.0.1:%s" % (scheme, vault_cfg["open_port"])
+            exec_curl = [vault_cfg.get("docker_path", "docker"), "exec", vault_cfg["container"],
+                         vault_cfg.get("curl_path", "curl"), "-sS"] + (["-k"] if scheme == "https" else [])
+            deadline = time.monotonic() + NAVIGATE_BUDGET_S
+
+            def run(c, cap):
+                if runner:
+                    return runner(c)
+                budget = max(1.0, min(cap, deadline - time.monotonic()))
+                return subprocess.run(c, capture_output=True, text=True, timeout=budget)
+
+            def fetch_pong():
+                r = run(exec_curl + ["--max-time", "3", base + "/ping"], PING_BUDGET_S)
+                if r.returncode != 0:
+                    raise RuntimeError("ping rc=%s" % r.returncode)
+                return r.stdout or ""
+            prefix = resolve_open_prefix(("docker-exec", vault_cfg["container"], base), fetch_pong)
+            url = base + open_path(note, anchor, prefix)
+            cmd = exec_curl + ["-o", "/dev/null", "-w", "%{http_code}", "--max-time", "4", url]
+            r = run(cmd, NAVIGATE_BUDGET_S)
             code = (r.stdout or "").strip()[-3:]
             if r.returncode != 0:
                 return (False, "docker exec rc=%s %s" % (r.returncode, (r.stderr or "").strip()[:160]))
-            return (code == "200", "bridge HTTP %s" % code)
+            return (code == "200", "bridge HTTP %s (%s)" % (code, prefix))
         if mode == "http":
-            url = vault_cfg["open_url"].rstrip("/") + open_path(note, anchor)
+            base = vault_cfg["open_url"].rstrip("/")
+
+            def fetch_pong():
+                with _ping_opener.open(urllib.request.Request(base + "/ping", method="GET"), timeout=3) as resp:
+                    return resp.read(4096).decode("utf-8", "replace")
+            prefix = resolve_open_prefix(("http", base), fetch_pong)
+            url = base + open_path(note, anchor, prefix)
             req = urllib.request.Request(url, method="GET")
             with urllib.request.urlopen(req, timeout=4) as resp:
-                return (resp.status == 200, "bridge HTTP %s" % resp.status)
+                return (resp.status == 200, "bridge HTTP %s (%s)" % (resp.status, prefix))
     except Exception as e:  # best-effort per the contract: never an exception to the client
         return (False, str(e)[:160])
     return (False, "unknown mode")

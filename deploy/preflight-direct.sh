@@ -41,18 +41,25 @@ N=$(docker ps --format '{{.Ports}}' | grep -c ":$PORT->")
 echo "== 2. curl available inside the container"
 if docker exec "$C" sh -c 'command -v curl' >/dev/null 2>&1; then ok "curl present"; else ko "curl missing in $C (install it, or set curl_path)"; fi
 
-echo "== 3. Bridge /open route, seen from the container's loopback"
-CODE=$(docker exec "$C" curl -sS -o /dev/null -w '%{http_code}' --max-time 4 "http://127.0.0.1:$INNER/open/__preflight_missing__.md" 2>/dev/null)
-CODE="${CODE:-000}"
-if [ "$CODE" = 000 ]; then  # perhaps the REST API's TLS port: open_scheme "https"
-  CODE=$(docker exec "$C" curl -sSk -o /dev/null -w '%{http_code}' --max-time 4 "https://127.0.0.1:$INNER/open/__preflight_missing__.md" 2>/dev/null)
-  CODE="${CODE:-000}"
-  [ "$CODE" != 000 ] && info "port $INNER answers over https → open_scheme \"https\""
+echo "== 3. Bridge click-to-open route, seen from the container's loopback"
+# The prefix is the one the bridge announces in /ping: /mcp-router-bridge/open/ on bridge
+# 0.10.0+ (Local REST API 5.4.0 reserves /open/), /open/ for an older bridge — exactly what
+# view-agent-direct.py does at click time.
+SCHEME=http; K=
+PONG=$(docker exec "$C" curl -sS --max-time 3 "http://127.0.0.1:$INNER/ping" 2>/dev/null)
+if [ -z "$PONG" ]; then  # perhaps the REST API's TLS port: open_scheme "https"
+  PONG=$(docker exec "$C" curl -sSk --max-time 3 "https://127.0.0.1:$INNER/ping" 2>/dev/null)
+  [ -n "$PONG" ] && { SCHEME=https; K=k; info "port $INNER answers over https → open_scheme \"https\""; }
 fi
+PREFIX=$(printf '%s' "$PONG" | sed -n 's|.*"openPrefix"[[:space:]]*:[[:space:]]*"\(/[A-Za-z0-9._~/-]*/\)".*|\1|p')
+case "$PREFIX" in */.*|"") PREFIX=/open/ ;; esac  # no dot-leading segment, like the agent
+info "bridge open prefix: $PREFIX"
+CODE=$(docker exec "$C" curl -sS$K -o /dev/null -w '%{http_code}' --max-time 4 "$SCHEME://127.0.0.1:$INNER${PREFIX}__preflight_missing__.md" 2>/dev/null)
+CODE="${CODE:-000}"
 case "$CODE" in
-  404) ok "HTTP 404: /open is registered and the loopback guard is satisfied" ;;
+  404) ok "HTTP 404: $PREFIX is registered and the loopback guard is satisfied" ;;
   403) ko "HTTP 403: the call is not seen as loopback (bindingHost? proxy?)" ;;
-  401) ko "HTTP 401: /open not registered (bridge < 0.2.0 or Local REST API < 4.0.0, or reload Obsidian)" ;;
+  401) ko "HTTP 401: $PREFIX not registered (bridge < 0.2.0, Local REST API < 4.0.0, Local REST API 5.4.0 with bridge < 0.10.0, or reload Obsidian)" ;;
   000) ko "no answer on 127.0.0.1:$INNER inside the container (non-encrypted HTTP server disabled?)" ;;
   *)   info "HTTP $CODE (unexpected)" ;;
 esac

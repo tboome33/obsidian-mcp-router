@@ -1059,12 +1059,18 @@ class TestDetectPure(unittest.TestCase):
         class R:
             returncode, stdout, stderr = 0, "200", ""
         base = {"open_mode": "docker-exec", "container": ID_A, "open_port": 27124}
+        va._open_prefix_cache.clear()
         va.navigate(dict(base, open_scheme="https"), "a.md", "", lambda c: seen.append(c) or R())
         va.navigate(base, "a.md", "", lambda c: seen.append(c) or R())
-        self.assertIn("-k", seen[0])
-        self.assertEqual(seen[0][-1], "https://127.0.0.1:27124/open/a.md")
-        self.assertNotIn("-k", seen[1])
-        self.assertEqual(seen[1][-1], "http://127.0.0.1:27124/open/a.md")
+        # Each navigation first asks the bridge's /ping for its open prefix, same transport.
+        pings = [c for c in seen if c[-1].endswith("/ping")]
+        opens = [c for c in seen if not c[-1].endswith("/ping")]
+        self.assertIn("-k", pings[0])
+        self.assertNotIn("-k", pings[1])
+        self.assertIn("-k", opens[0])
+        self.assertEqual(opens[0][-1], "https://127.0.0.1:27124/open/a.md")
+        self.assertNotIn("-k", opens[1])
+        self.assertEqual(opens[1][-1], "http://127.0.0.1:27124/open/a.md")
 
     def test_line_breaks_never_reach_a_signature(self):
         with self.assertRaises(ValueError):
@@ -1123,6 +1129,223 @@ class TestPure(unittest.TestCase):
                 va.load_config(p)
         finally:
             shutil.rmtree(d, ignore_errors=True)
+
+
+class TestOpenPrefix(unittest.TestCase):
+    """The click-to-open prefix the bridge announces in /ping (bridge 0.10.0).
+
+    Local REST API 5.4.0 reserves `/open/`: a GET there is its own authenticated route and
+    answers 401 (errorCode 40101). Bridge 0.10.0 serves `/mcp-router-bridge/open/` and
+    says so in its pong; an older bridge says nothing and keeps `/open/`."""
+
+    NEW = "/mcp-router-bridge/open/"
+
+    def setUp(self):
+        va._open_prefix_cache.clear()
+
+    def docker_runner(self, pong_stdout, open_code="200", ping_rc=0):
+        calls = []
+
+        class R:
+            def __init__(self, rc, out):
+                self.returncode, self.stdout, self.stderr = rc, out, ""
+
+        def runner(cmd):
+            calls.append(cmd)
+            if cmd[-1].endswith("/ping"):
+                return R(ping_rc, pong_stdout)
+            return R(0, open_code)
+        return runner, calls
+
+    def test_prefix_from_pong(self):
+        self.assertEqual(va.prefix_from_pong('{"pong":true,"openPrefix":"/mcp-router-bridge/open/"}'), self.NEW)
+        self.assertIsNone(va.prefix_from_pong('{"pong":true}'))                              # bridge < 0.10.0
+        self.assertIsNone(va.prefix_from_pong('{"openPrefix":"/mcp-router-bridge/open/"}'))  # not a pong
+        self.assertIsNone(va.prefix_from_pong("not json"))
+        self.assertIsNone(va.prefix_from_pong(None))
+        for bad in ["@evil.example/", "//evil.example/", "/a?b/", "/a#b/", "/../", "/.x/", "/a%2F/",
+                    "/a b/", "open/", "/open", "", 42, None, "/" + "a" * 130 + "/", "/a/\n"]:
+            self.assertIsNone(va.prefix_from_pong(json.dumps({"pong": True, "openPrefix": bad})), repr(bad))
+
+    def test_docker_exec_asks_ping_then_opens_under_the_announced_prefix(self):
+        runner, calls = self.docker_runner('{"pong":true,"openPrefix":"/mcp-router-bridge/open/"}')
+        ok, detail = va.navigate({"open_mode": "docker-exec", "container": ID_A, "open_port": 27153,
+                                  "docker_path": "docker", "curl_path": "curl"}, "wiki/a b.md", "Intro", runner)
+        self.assertTrue(ok)
+        self.assertIn(self.NEW, detail)
+        # Fixed argument lists, the container addressed as given, nothing from the request.
+        self.assertEqual(calls[0], ["docker", "exec", ID_A, "curl", "-sS", "--max-time", "3",
+                                    "http://127.0.0.1:27153/ping"])
+        self.assertEqual(calls[1][-1], "http://127.0.0.1:27153/mcp-router-bridge/open/wiki%2Fa%20b.md?h=Intro")
+
+    def test_old_bridge_or_dead_ping_falls_back_to_open(self):
+        for pong, rc in (('{"pong":true}', 0), ("", 7), ('{"pong":true,"openPrefix":"//evil.example/"}', 0)):
+            va._open_prefix_cache.clear()
+            runner, calls = self.docker_runner(pong, ping_rc=rc)
+            ok, _ = va.navigate({"open_mode": "docker-exec", "container": ID_A, "open_port": 27180},
+                                "a.md", "", runner)
+            self.assertTrue(ok, repr(pong))
+            self.assertEqual(calls[-1][-1], "http://127.0.0.1:27180/open/a.md", repr(pong))
+
+    def test_prefix_is_cached_per_target(self):
+        runner, calls = self.docker_runner('{"pong":true,"openPrefix":"/mcp-router-bridge/open/"}')
+        cfg = {"open_mode": "docker-exec", "container": ID_A, "open_port": 27153}
+        va.navigate(cfg, "a.md", "", runner)
+        va.navigate(cfg, "b.md", "", runner)
+        self.assertEqual(sum(1 for c in calls if c[-1].endswith("/ping")), 1)   # one ping, two opens
+        va.navigate(dict(cfg, container=ID_B), "c.md", "", runner)               # another target asks
+        self.assertEqual(sum(1 for c in calls if c[-1].endswith("/ping")), 2)
+
+    def test_cache_expires(self):
+        answers = iter(['{"pong":true}', '{"pong":true,"openPrefix":"/mcp-router-bridge/open/"}'])
+        key = ("test", "expiry")
+        ttl = va.OPEN_PREFIX_TTL_S
+        self.assertEqual(va.resolve_open_prefix(key, lambda: next(answers), now=100.0), "/open/")
+        self.assertEqual(va.resolve_open_prefix(key, lambda: next(answers), now=100.0 + ttl - 1), "/open/")
+        self.assertEqual(va.resolve_open_prefix(key, lambda: next(answers), now=100.0 + ttl + 1), self.NEW)
+
+    def test_open_path_never_takes_an_invalid_prefix(self):
+        self.assertEqual(va.open_path("a.md", "", "@evil.example/"), "/open/a.md")
+        self.assertEqual(va.open_path("a.md", "", self.NEW), "/mcp-router-bridge/open/a.md")
+
+    def test_http_mode_against_a_fake_bridge_on_local_rest_api_5_4(self):
+        """A fake bridge 0.10.0 on Local REST API 5.4.0: /open/ answers 401, the plugin-id
+        route answers 200 — over real HTTP."""
+        from http.server import BaseHTTPRequestHandler
+        seen = []
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                seen.append(self.path)
+                if self.path == "/ping":
+                    body, code = b'{"pong":true,"openPrefix":"/mcp-router-bridge/open/"}', 200
+                elif self.path.startswith("/mcp-router-bridge/open/"):
+                    body, code = b"<p>Opened in Obsidian.</p>", 200
+                else:
+                    body, code = b'{"errorCode":40101}', 401
+                self.send_response(code)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            url = "http://127.0.0.1:%d" % srv.server_address[1]
+            ok, detail = va.navigate({"open_mode": "http", "open_url": url + "/"}, "wiki/x.md", "", None)
+            self.assertTrue(ok, detail)
+            self.assertEqual(seen, ["/ping", "/mcp-router-bridge/open/wiki%2Fx.md"])
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+
+class TestOpenPrefixReview(unittest.TestCase):
+    """Codex review, 2026-10-11: discovery must not erase or overwrite a known prefix,
+    must not follow redirects, and must share one time budget with the open call."""
+
+    NEW = "/mcp-router-bridge/open/"
+    PONG_NEW = '{"pong":true,"openPrefix":"/mcp-router-bridge/open/"}'
+
+    def setUp(self):
+        va._open_prefix_cache.clear()
+
+    def test_failed_discovery_keeps_the_known_prefix(self):
+        key = ("t", "keep")
+        ttl = va.OPEN_PREFIX_TTL_S
+        self.assertEqual(va.resolve_open_prefix(key, lambda: self.PONG_NEW, now=100.0), self.NEW)
+
+        def boom():
+            raise RuntimeError("timeout")
+        self.assertEqual(va.resolve_open_prefix(key, boom, now=100.0 + ttl + 1), self.NEW)
+        self.assertEqual(va.resolve_open_prefix(key, lambda: "garbage", now=100.0 + 2 * ttl + 2), self.NEW)
+        # A bridge that actually answers without a prefix (downgraded) does replace it.
+        self.assertEqual(va.resolve_open_prefix(key, lambda: '{"pong":true}', now=100.0 + 3 * ttl + 3), "/open/")
+
+    def test_an_older_failed_discovery_never_overwrites_a_newer_success(self):
+        key = ("t", "race")
+
+        def slow_failure():
+            # While this click's discovery is stuck, another click discovers the prefix.
+            self.assertEqual(va.resolve_open_prefix(key, lambda: self.PONG_NEW, now=101.0), self.NEW)
+            raise RuntimeError("timeout")
+        self.assertEqual(va.resolve_open_prefix(key, slow_failure, now=100.0), self.NEW)
+        self.assertEqual(va._open_prefix_cache[key][0], self.NEW)
+
+    def test_ping_redirect_is_never_followed(self):
+        from http.server import BaseHTTPRequestHandler
+        elsewhere_hits = []
+
+        class Elsewhere(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                elsewhere_hits.append(self.path)
+                body = self.server_pong
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+        Elsewhere.server_pong = self.PONG_NEW.encode()
+        other = ThreadingHTTPServer(("127.0.0.1", 0), Elsewhere)
+        threading.Thread(target=other.serve_forever, daemon=True).start()
+        other_url = "http://127.0.0.1:%d" % other.server_address[1]
+        opened = []
+
+        class Redirecting(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                if self.path == "/ping":
+                    self.send_response(302)
+                    self.send_header("Location", other_url + "/ping")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                opened.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), Redirecting)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            ok, _ = va.navigate({"open_mode": "http", "open_url": "http://127.0.0.1:%d" % srv.server_address[1]},
+                                "a.md", "", None)
+            self.assertTrue(ok)
+            self.assertEqual(elsewhere_hits, [])                 # the redirect target was never contacted
+            self.assertEqual(opened, ["/open/a.md"])             # no announced prefix taken from it
+        finally:
+            for x in (srv, other):
+                x.shutdown()
+                x.server_close()
+
+    def test_discovery_and_open_share_one_budget(self):
+        from unittest import mock
+        clock = [1000.0]
+        timeouts = []
+
+        def fake_run(cmd, capture_output=True, text=True, timeout=None):
+            timeouts.append(timeout)
+            if cmd[-1].endswith("/ping"):
+                clock[0] += timeout                              # the ping eats its whole slice
+                raise va.subprocess.TimeoutExpired(cmd, timeout)
+
+            class R:
+                returncode, stdout, stderr = 0, "200", ""
+            return R()
+        with mock.patch.object(va.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(va.time, "monotonic", side_effect=lambda: clock[0]):
+            ok, _ = va.navigate({"open_mode": "docker-exec", "container": ID_A, "open_port": 27153}, "a.md", "")
+        self.assertTrue(ok)
+        self.assertEqual(timeouts[0], va.PING_BUDGET_S)
+        self.assertLessEqual(timeouts[1], va.NAVIGATE_BUDGET_S - va.PING_BUDGET_S)   # what is left, not a fresh 8 s
+        self.assertLessEqual(sum(timeouts), va.NAVIGATE_BUDGET_S)
 
 
 if __name__ == "__main__":

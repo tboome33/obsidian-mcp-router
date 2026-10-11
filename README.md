@@ -13,7 +13,7 @@ obsidian-mcp-router            OBSIDIAN_ROUTER_VIEW_AGENT_URL → this agent
    ▼
 view-agent (this repo, on the host where the GUIs live)
    │  1. reuse-or-start a cloudflared quick tunnel to that vault's GUI
-   │  2. navigate the GUI's Obsidian onto the note  (Local REST API /open)
+   │  2. navigate the GUI's Obsidian onto the note  (bridge click-to-open, prefix from its /ping)
    │  3. reply {"url": "https://user:pass@<random>.trycloudflare.com/"}
    ▼
 the user clicks → the live GUI opens ON the note, nothing to type
