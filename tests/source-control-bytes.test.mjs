@@ -378,6 +378,102 @@ export function undecodablePaths(buf) {
 }
 
 /**
+ * How THIS git is stopped from fetching during enumeration — or why it cannot be.
+ *
+ * ENUMERATION MUST NOT FETCH, because a fetch runs a program: with the indexed
+ * `.gitignore` blob missing — ordinary in a partial clone — and a promisor remote
+ * configured, `ls-files` fetched that blob and RAN the caller's
+ * `core.sshCommand`, exiting 0. Git has two switches for this and NEITHER is
+ * present on every git, so the one used is chosen by asking this git:
+ *
+ *   `--no-lazy-fetch`, THE OPTION, preferred. A git that predates it refuses it
+ *   — measured, exit 129, "unknown option" — so accepting it is the proof that
+ *   it is honoured. That refusal is how this check first broke on Ubuntu 24.04,
+ *   whose git is 2.43.0.
+ *
+ *   `GIT_NO_LAZY_FETCH=1`, THE VARIABLE, accepted ONLY ON A WITNESS. A git that
+ *   predates it ignores it without a sound — the protection gone and every test
+ *   green — which is why the option was chosen in the first place. And the
+ *   version string cannot settle it: Ubuntu's `2.43.0-1ubuntu7.1` backports the
+ *   variable (`CVE-2024-32465.patch`, "disable lazy-fetching by default") and
+ *   still reports 2.43.0, which upstream 2.43.0 also reports. So a throwaway
+ *   promisor repository with one blob missing is asked twice: with the variable
+ *   the read must FAIL, and without it — the control, run second because it
+ *   fetches the blob — the same read must SUCCEED. Only both together say the
+ *   variable is what stopped the fetch.
+ *
+ *   NEITHER: `ok: false` with the reason. The caller decides what an unguarded
+ *   enumeration means; `listRepositoryFiles` refuses to run one.
+ *
+ * Every git call here runs under the isolated environment — no caller config,
+ * so no caller program — and the probe's only transport is git's own
+ * `upload-pack` on a local path.
+ *
+ * @param {object} [env]  the environment the probe runs under; a test passes one
+ *   whose PATH puts a stand-in `git` first.
+ * @returns {{ok: true, how: string, args: string[], env: object}
+ *   | {ok: false, reason: string}}
+ */
+export function detectLazyFetchGuard(env = gitEnv()) {
+  const run = (args, opts = {}) => spawnSync('git', args, { encoding: 'utf8', env, ...opts });
+
+  const option = run(['--no-lazy-fetch', 'version']);
+  if (option.error) return { ok: false, reason: `git could not be started: ${option.error.message}` };
+  if (option.status === 0) {
+    return { ok: true, how: 'the --no-lazy-fetch option', args: ['--no-lazy-fetch'], env: {} };
+  }
+  // The first line is git's verdict; the rest is its usage text.
+  const refusal = `${option.stderr}`.trim().split('\n')[0] || `exit ${option.status}`;
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lazy-fetch-probe-'));
+  try {
+    const up = path.join(dir, 'up');
+    const down = path.join(dir, 'down');
+    const setup = [
+      [dir, ['init', '-q', `--template=${EMPTY_TEMPLATE}`, up]],
+      [dir, ['init', '-q', `--template=${EMPTY_TEMPLATE}`, down]],
+      [up, ['config', 'uploadpack.allowFilter', 'true']],
+      [down, ['config', 'extensions.partialClone', 'origin']],
+      [down, ['config', 'remote.origin.promisor', 'true']],
+      [down, ['config', 'remote.origin.url', up]],
+    ];
+    for (const [cwd, args] of setup) {
+      const r = run(args, { cwd });
+      if (r.status !== 0) return { ok: false, reason: `the lazy-fetch probe could not be built (git ${args.join(' ')}): ${r.stderr}` };
+    }
+    fs.writeFileSync(path.join(up, 'probe'), 'probe\n');
+    const blob = run(['hash-object', '-w', 'probe'], { cwd: up });
+    if (blob.status !== 0) return { ok: false, reason: `the lazy-fetch probe could not be built: ${blob.stderr}` };
+    const oid = blob.stdout.trim();
+
+    const guarded = spawnSync('git', ['cat-file', '-e', oid], {
+      cwd: down, encoding: 'utf8', env: { ...env, GIT_NO_LAZY_FETCH: '1' },
+    });
+    const control = run(['cat-file', '-e', oid], { cwd: down });
+    if (control.status !== 0) {
+      return {
+        ok: false,
+        reason: `git refuses --no-lazy-fetch (${refusal}), and the probe for GIT_NO_LAZY_FETCH was `
+          + `inconclusive: without it the missing blob was not fetched either (${control.stderr.trim()})`,
+      };
+    }
+    if (guarded.status === 0) {
+      return {
+        ok: false,
+        reason: `git refuses --no-lazy-fetch (${refusal}) and ignores GIT_NO_LAZY_FETCH: `
+          + 'with the variable set it still fetched a missing blob from the promisor remote',
+      };
+    }
+    return { ok: true, how: 'GIT_NO_LAZY_FETCH=1, witnessed', args: [], env: { GIT_NO_LAZY_FETCH: '1' } };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Asked once: every enumeration in this file runs on the same git. */
+export const LAZY_FETCH_GUARD = detectLazyFetchGuard();
+
+/**
  * Enumerate what a repository holds — tracked, plus added-but-not-committed.
  *
  * `--others` closes the gap this check fell into on its first day: `git ls-files`
@@ -397,21 +493,15 @@ export function undecodablePaths(buf) {
  * rules the repository COMMITS and reviewers can read, and nothing else. On this
  * repository the two enumerations were verified to list the same 646 paths.
  */
-export function listRepositoryFiles(root, { isolate = true } = {}) {
+export function listRepositoryFiles(root, { isolate = true, guard = LAZY_FETCH_GUARD } = {}) {
+  // ENUMERATION MUST NOT FETCH — see `detectLazyFetchGuard`. With no guard this
+  // git can be held to, the enumeration does not run at all: a scan that might
+  // execute the caller's transport is not one to run "just this once".
+  if (!guard.ok) throw new Error(`git ls-files refused in ${root}: no lazy-fetch guard — ${guard.reason}`);
   const r = spawnSync(
     'git',
     [
-      // ENUMERATION MUST NOT FETCH, because a fetch runs a program. Reproduced
-      // against a control: with the indexed `.gitignore` blob missing — ordinary
-      // in a partial clone — and a promisor remote configured, this command
-      // fetched that blob and RAN the caller's `core.sshCommand`, exiting 0.
-      //
-      // AS AN OPTION, NOT THE ENVIRONMENT VARIABLE. `GIT_NO_LAZY_FETCH` is
-      // simply ignored by a git that predates it, so the protection would vanish
-      // without a sound while every test stayed green. An unknown OPTION is
-      // refused — measured, exit 129 — so on such a git this scan fails loudly
-      // instead of quietly losing its defence.
-      '--no-lazy-fetch',
+      ...guard.args,
       // `core.fsmonitor` NAMES A PROGRAM GIT RUNS to ask what changed, and
       // `--others` is precisely the walk that consults it. From the caller's
       // global config — which the non-isolated mode keeps — the enumeration
@@ -423,7 +513,7 @@ export function listRepositoryFiles(root, { isolate = true } = {}) {
     ],
     // NO `encoding`, so stdout arrives as BYTES. A path is a byte string and
     // decoding the whole stream as UTF-8 is lossy — see `undecodablePaths`.
-    { cwd: root, env: gitEnv(isolate) },
+    { cwd: root, env: { ...gitEnv(isolate), ...guard.env } },
   );
   if (r.status !== 0) {
     const why = r.stderr ? r.stderr.toString('utf8') : (r.error?.message ?? 'no status');
@@ -446,8 +536,8 @@ export function listRepositoryFiles(root, { isolate = true } = {}) {
  * @returns {{eligible: number, read: number, exempt: number, offenders: string[],
  *   unreadable: string[], absent: string[], links: string[], undecodable: string[]}}
  */
-export function scanRepository(root, { exempt = new Map(), isolate = true } = {}) {
-  const { paths: files, undecodable } = listRepositoryFiles(root, { isolate });
+export function scanRepository(root, { exempt = new Map(), isolate = true, guard = LAZY_FETCH_GUARD } = {}) {
+  const { paths: files, undecodable } = listRepositoryFiles(root, { isolate, guard });
   const offenders = [];
   const unreadable = [];
   const absent = [];
@@ -550,12 +640,28 @@ export function exemptionProblem(root, rel, reason) {
 }
 
 describe('no source file carries a raw control byte', () => {
+  // UNAVAILABLE IS NOT GREEN, AND NOT RED EITHER. On a git that can be held to
+  // neither lazy-fetch switch, nothing below can enumerate a repository, so the
+  // suite says so ONCE, by name, with the reason — a skipped test the run counts,
+  // not a skipped suite (node:test leaves those out of its "skipped" total).
+  if (!LAZY_FETCH_GUARD.ok) {
+    test('the scan of this repository', { skip: `not run on this git: ${LAZY_FETCH_GUARD.reason}` }, () => {});
+    return;
+  }
+
   // `isolate: false` — the caller's GLOBAL configuration is kept for THIS scan,
   // because a contributor whose checkout has different ownership relies on a
   // global `safe.directory` exception. Only the repository SELECTORS are
   // cleared, which is what stops an ambient GIT_DIR pointing this enumeration
   // at another tree entirely.
   const result = scanRepository(REPO, { exempt: ALLOWED_FILES, isolate: false });
+
+  test('the enumeration says which lazy-fetch guard held it', (t) => {
+    // Which switch protected this run is a property of the machine, so the run
+    // reports it rather than leaving a reader to infer it from a git version.
+    t.diagnostic(`lazy-fetch guard: ${LAZY_FETCH_GUARD.how}`);
+    assert.equal(LAZY_FETCH_GUARD.args.length + Object.keys(LAZY_FETCH_GUARD.env).length, 1, JSON.stringify(LAZY_FETCH_GUARD));
+  });
 
   test('the scan actually read the repository', () => {
     assert.ok(result.eligible > 400, `only ${result.eligible} source files listed — enumeration did not run properly`);
@@ -1271,7 +1377,7 @@ describe('no source file carries a raw control byte', () => {
         );
         assert.equal(
           fs.existsSync(witness), true,
-          'the control run must EXECUTE the transport, or this fixture proves nothing about --no-lazy-fetch'
+          `the control run must EXECUTE the transport, or this fixture proves nothing about ${LAZY_FETCH_GUARD.how}`
           + ` (status ${unprotected.status}: ${unprotected.stderr})`,
         );
         fs.rmSync(witness);
@@ -1289,7 +1395,7 @@ describe('no source file carries a raw control byte', () => {
       }
       assert.equal(
         fs.existsSync(witness), false,
-        'the enumeration ran the transport program the caller configured',
+        `the enumeration ran the transport program the caller configured (guard: ${LAZY_FETCH_GUARD.how})`,
       );
     });
 
@@ -1709,5 +1815,58 @@ describe('no source file carries a raw control byte', () => {
       );
       assert.equal(r.eligible, linked ? 5 : 4, `the .png is not eligible and not counted: ${JSON.stringify(r)}`);
     });
+  });
+});
+
+/**
+ * THE GUARD IS CHOSEN BY ASKING GIT, SO THE ASKING IS TESTED TOO.
+ *
+ * A `git` placed first on PATH stands in for the gits this machine does not
+ * have, and forwards to the real one. The machine's own git decides only ONE
+ * branch of `detectLazyFetchGuard`, which a mutation of the others would get
+ * past. POSIX only: the stand-in is a shell script.
+ */
+describe('the lazy-fetch guard is chosen by asking git, not by its version', () => {
+  // OUTSIDE the suite that skips on an unguarded git: a broken detector must
+  // fail here, not turn the scan into a skip.
+  const dirs = [];
+  after(() => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true }); });
+  const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8', env: gitEnv() }).stdout.trim();
+  const standIn = (body) => {
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-stand-in-'));
+    dirs.push(binDir);
+    fs.writeFileSync(path.join(binDir, 'git'), `#!/bin/sh\n${body}\nexec "${realGit}" "$@"\n`, { mode: 0o755 });
+    const env = gitEnv();
+    return { ...env, PATH: `${binDir}${path.delimiter}${env.PATH ?? ''}` };
+  };
+  // Refuses the option the way a git before it does, measured on 2.43.0.
+  const REFUSE_OPTION = 'for a in "$@"; do [ "$a" = --no-lazy-fetch ] && { echo "unknown option: --no-lazy-fetch" >&2; exit 129; }; done';
+  const skip = process.platform === 'win32' ? 'the stand-in git is a shell script' : (realGit ? false : 'no git on PATH');
+
+  test('a git that refuses the option AND ignores the variable is reported, never trusted', { skip }, () => {
+    // An older git without the backport: the variable never reaches it.
+    const verdict = detectLazyFetchGuard(standIn(`${REFUSE_OPTION}\nunset GIT_NO_LAZY_FETCH`));
+    assert.equal(verdict.ok, false, JSON.stringify(verdict));
+    assert.match(verdict.reason, /ignores GIT_NO_LAZY_FETCH/);
+    assert.throws(
+      () => scanRepository(fs.mkdtempSync(path.join(os.tmpdir(), 'unguarded-')), { guard: verdict }), /no lazy-fetch guard/,
+      'an unguarded enumeration must refuse to run, never run without its defence',
+    );
+  });
+
+  test('a git that refuses the option but honours the variable gets the variable', { skip }, () => {
+    const verdict = detectLazyFetchGuard(standIn(REFUSE_OPTION));
+    assert.equal(verdict.ok, true, JSON.stringify(verdict));
+    assert.deepEqual([verdict.args, verdict.env], [[], { GIT_NO_LAZY_FETCH: '1' }]);
+  });
+
+  test('a git that accepts the option gets the option', { skip }, () => {
+    // Accepting it is what a git that has it does; the stand-in translates
+    // it into the variable so the real git underneath still means it.
+    const verdict = detectLazyFetchGuard(standIn(
+      'if [ "$1" = --no-lazy-fetch ]; then shift; export GIT_NO_LAZY_FETCH=1; fi',
+    ));
+    assert.equal(verdict.ok, true, JSON.stringify(verdict));
+    assert.deepEqual([verdict.args, verdict.env], [['--no-lazy-fetch'], {}]);
   });
 });
