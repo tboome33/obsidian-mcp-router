@@ -151,6 +151,43 @@ A remote vault's label cannot be derived from its `baseUrl`, and it usually diff
 
 It must be the vault's folder name exactly as Obsidian shows it: a non-blank string of at most 255 characters (UTF-16 code units), with no control character, no `/` or `\`, no leading or trailing whitespace and no unpaired surrogate (the view-agent refuses a padded label, and would receive U+FFFD in place of a lone surrogate). `null` counts as absent. Any other invalid value is dropped with a warning on stderr and the vault still loads. It is a label, not a secret: it travels in the request URL. The same field is accepted in a `VAULT_*` variable.
 
+## Read links for a remote vault — plugging in the view agent
+
+A remote vault has no click-to-open link unless it declares `insecurePort` (see above): that link is `http://127.0.0.1:<port>/open/…` and only works for a reader sitting at the machine that runs the vault's Obsidian. The read link for everyone else comes from a **view agent** — the reference one, `view-agent-direct`, runs next to the Obsidian containers and answers `GET /view?vault=<name>&note=<path>` with a signed link that opens the vault's live GUI on the note.
+
+The router instance needs to know where the agent is. Without `OBSIDIAN_ROUTER_VIEW_AGENT_URL`, `get_view_link` is hidden from the tool list and no write carries a `viewLink`. Since 2026-10-11 that state is no longer silent:
+
+- `build_open_link` on a remote vault returns `linkHint`, which says why the local link is null and, with no agent, where to configure one. With an agent, single mode fetches the view link itself (`viewLink`, `viewLinkKind: "agent"`), `wiki-meta/` pages included; batch mode does not (the agent navigates the vault's single GUI, so N links would all show the last note) and says to call `get_view_link` per note.
+- Read and write results for a remote vault (`get_file`, `get_frontmatter`, `write_file`, `append_to_file`, `patch_file`, `set_frontmatter`, `merge_frontmatter`, `move_file`) carry `clickToOpenUrl: null` and a short `linkHint` when no link came back.
+- `list_vaults` reports `viewAgent` (configured or not, its origin, the token's **source** — never its value —, the agent's `/health`, probed without the token) and, per vault, `readLink` (`available`, `clickToOpen`, `viewLink`, `agentListsVault`, `hint`). The `meta-status` diagnostic flags remote vaults present with no agent configured.
+
+### Configuration — three variables, all of the MCP host
+
+| Variable | Value |
+|---|---|
+| `OBSIDIAN_ROUTER_VIEW_AGENT_URL` | The agent's address as this machine reaches it, e.g. `http://10.8.0.1:27200` over WireGuard. |
+| `OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN_FILE` | **Preferred.** Absolute path of a file holding the agent's token (`~/` is expanded). Re-read at every request, so a rotated token is picked up without a restart. Wins over the inline variable when both are set. |
+| `OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN` | The same token inline. Avoid it in the Claude Code settings: every process Claude Code starts — every shell command included — inherits that environment. |
+
+They belong to the environment the MCP server **starts with**: its server declaration's `env`, or — for the Claude Code plugin, whose `.mcp.json` passes no variable and lets the server inherit Claude Code's environment — the `env` block of the Claude Code user settings (`~/.claude/settings.json`). **Never a workspace `.env`**: it refuses all three, like every endpoint and credential (a cloned repository must not be able to point the router at another agent or feed it another token).
+
+### Example — Claude Code on a PC reaching the Dedibox over WireGuard
+
+1. From the PC, check the agent answers (no token needed): `curl http://10.8.0.1:27200/health` → `{"ok": true, "vaults": [...]}`. `/view` without the token answers `401` — expected.
+2. Copy the token from the agent's host (`/opt/view-agent-direct/view-agent.token` on the reference deployment) into a file only you can read on the PC, for instance `~/.claude/obsidian-mcp-router/view-agent.token`, beside the router's `config.json`.
+3. Add to `~/.claude/settings.json` (on Windows, `%USERPROFILE%\.claude\settings.json`; use forward slashes or doubled backslashes in JSON):
+
+   ```json
+   {
+     "env": {
+       "OBSIDIAN_ROUTER_VIEW_AGENT_URL": "http://10.8.0.1:27200",
+       "OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN_FILE": "~/.claude/obsidian-mcp-router/view-agent.token"
+     }
+   }
+   ```
+
+4. Start a new session (or reload the plugin): the tool list is computed when the server starts, so `get_view_link` only appears in a session whose router started with the variable. `list_vaults` then shows `viewAgent.health: "ok"` and `readLink.available: true` on the remote vaults.
+
 ## `find_twin_pages` on a remote vault (v0.82.0)
 
 `find_twin_pages` compares every page against every other by cosine, using the vectors Smart Connections keeps in `<vault>/.smart-env/multi/`. That is a **dot-directory the Local REST API does not serve** — and not by oversight: measured on a real vault, Obsidian's own `vault.getFiles()` returns zero entries under `.smart-env`, so nothing in the core API can see it.

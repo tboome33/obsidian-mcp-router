@@ -2,6 +2,12 @@
  * build_open_link — produce a click-to-open URL (and a ready-to-paste
  * markdown link) for one or many vault files WITHOUT reading or writing them.
  *
+ * ONE EXCEPTION (2026-10-11): in single mode on a REMOTE vault whose local link is null, it
+ * asks the read-link provider for a link — a smart link (pure HMAC), or the view agent, which
+ * is a network call that navigates the vault's single live GUI to the note (and may start a
+ * tunnel). Five single calls therefore leave five links showing the LAST note, which is why
+ * batch mode never fetches. See explicitReadLink in helpers/view-link.mjs.
+ *
  * Companion to the per-tool `clickToOpenUrl` field that write/get/patch
  * already emit. Use this when you need a URL for a file you DIDN'T just
  * touch — typically a wikilink target you want to cite in a chat response,
@@ -69,6 +75,16 @@ import { listFilesIn as defaultListFilesIn } from '../rest-client.mjs';
 import { collectMarkdown } from './build-wiki-graph.mjs';
 import { safeForMessage } from '../helpers/sanitize.mjs';
 import { canonicalVaultPath } from '../helpers/vault-path-guard.mjs';
+import { remoteLinkHint, explicitReadLink } from '../helpers/view-link.mjs';
+
+/**
+ * Why a LOCAL vault's link is null — the one reason left once the vault is not remote.
+ * `resolveInsecurePort` returns null for two causes it does not tell apart, so both are named.
+ */
+function localLinkHint(vault) {
+  return `No click-to-open link for vault "${safeForMessage(vault.name, 80)}": no plaintext HTTP port is known for it, `
+    + 'or its data.json says the Local REST API\'s non-encrypted (HTTP) server is off — enable it in that plugin\'s settings.';
+}
 
 /**
  * The reason codes allowed into a user-facing sentence — a WHITELIST, not an
@@ -104,7 +120,7 @@ function safeReason(reason) {
  *   batch mode (false) returns an `{ error }` entry instead so one bad path
  *   doesn't sink the whole batch.
  */
-async function buildOneLink(vault, requestedPath, { anchor, throwOnMiss = false, port, resolve } = {}) {
+async function buildOneLink(vault, requestedPath, { anchor, throwOnMiss = false, port, resolve, network = true } = {}) {
   // `resolveVaultPathOnDisk` strips leading slashes and does NOT reject `..`,
   // then stats the joined result — so an unguarded caller path made this an
   // EXISTENCE ORACLE for files outside the vault: `../secret.md` came back as
@@ -180,12 +196,39 @@ async function buildOneLink(vault, requestedPath, { anchor, throwOnMiss = false,
   // 'unverifiable' is the ONLY status that reaches here without a disk check.
   const pathVerified = verdict.status !== 'unverifiable';
 
+  // A NULL LINK NEVER LEAVES WITHOUT ITS REASON (2026-10-11). For a remote vault the local
+  // link is null by design — the loopback URL would open nothing for a reader elsewhere — so
+  // this tool now asks the read-link provider itself (smart link, else the view agent) in
+  // single mode, and says why and what to call when it cannot. A session told only `null`
+  // concluded that the vault had no link at all, with the agent up and reachable.
+  let readLink = {};
+  let linkHint = null;
+  // Batch (network: false) explains once, on the batch result, not on each of its entries.
+  if (!clickToOpenUrl) {
+    if (vault.type === 'remote') {
+      readLink = await explicitReadLink({ vaultName: vault.name, note: effectivePath, vault, network });
+      linkHint = readLink.viewLink
+        ? 'Remote vault: no local click-to-open link; `viewLink` opens the note in a browser instead'
+          + (readLink.viewLinkKind === 'agent' ? ' (the vault\'s live Obsidian GUI, ephemeral — it closes when idle).' : '.')
+          + (clean ? ' It opens at the top of the note: a heading cannot be deep-linked this way.' : '')
+        : network
+          ? remoteLinkHint({ vault, note: effectivePath })
+            + (readLink.viewLinkError ? ` The view agent failed just now: ${readLink.viewLinkError}` : '')
+          : null;
+    } else if (network) {
+      linkHint = localLinkHint(vault);
+    }
+  }
+
   return {
     path: effectivePath,
     ...(correctedFrom ? { corrected: true, requestedPath: correctedFrom } : {}),
     ...(clean ? { anchor: clean } : {}),
     clickToOpenUrl,
     ...(markdownLink && { markdownLink }),
+    ...readLink,
+    ...(readLink.viewLink && clean ? { anchorApplied: false } : {}),
+    ...(linkHint ? { linkHint } : {}),
     pathVerified,
     ...(pathVerified ? {} : {
       // WHY it could not be checked, not just THAT it could not. An earlier
@@ -276,11 +319,21 @@ export async function buildOpenLinkTool(registry, args = {}, _deps = {}) {
     // firing 200 REST listings at a single Obsidian endpoint at once is how you
     // exhaust its sockets. The first miss pays for the enumeration; the rest
     // await the same promise.
+    // `network: false` — a view link is fetched one note at a time: the agent navigates the
+    // vault's single GUI to the note it is asked for, so N fetches would leave N links that
+    // all show the last note. A smart link (pure HMAC) is still emitted per entry. The
+    // per-entry hint is the brief one; the full explanation is said once, on the batch.
     const links = [];
     for (const p of paths) {
-      links.push(await buildOneLink(vault, p, { throwOnMiss: false, port, resolve }));
+      links.push(await buildOneLink(vault, p, { throwOnMiss: false, port, resolve, network: false }));
     }
-    return ({ vault: vault.name, links });
+    const unlinked = links.some((l) => !l.error && !l.clickToOpenUrl && !l.viewLink);
+    const batchHint = !unlinked
+      ? null
+      : vault.type === 'remote'
+        ? remoteLinkHint({ vault, batch: true })
+        : localLinkHint(vault);
+    return ({ vault: vault.name, links, ...(batchHint ? { linkHint: batchHint } : {}) });
   }
 
   // Single: a bad path THROWS — the caller cannot walk away with a dead URL.

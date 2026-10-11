@@ -150,6 +150,25 @@ Produces a one-shot diagnostic of the multi-vault Obsidian router. Run it when t
    Surfacing it is this command's job: do not raise it unprompted at session start, and
    do not mention it in an unrelated answer just because you saw the field.
 
+5b. **Report read links for remote vaults**, from the `viewAgent` field and each vault's
+   `readLink` in the same `list_vaults` response. A remote vault has no local click-to-open
+   link (unless it declares `insecurePort`); its read link comes from a view agent, and a router
+   started without one hides `get_view_link` — the state a session once read as "this vault has
+   no link".
+
+   - No `type: "remote"` vault in `vaults[]` → say nothing.
+   - `viewAgent.hint` non-null → `⚠️ Read links: <hint>`, quoted **verbatim** — it names the
+     variables, where they go (the MCP server's environment: its declaration's `env`, or the
+     `env` block of the Claude Code settings) and that a workspace `.env` refuses them. Add that
+     a new session is needed afterwards for `get_view_link` to appear. Do **not** offer to edit
+     the settings or to read the agent's token yourself: that is the user's call (see **Don't**).
+   - `viewAgent.configured: true` and `viewAgent.health: "ok"` → `✅ View agent: <url> (token:
+     <token>)` — `token` is the SOURCE (`file`, `env`, `none`), never a value. Add `· token inline
+     — prefer OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN_FILE` when it is `env`.
+   - Any vault whose `readLink.available` is `false` → `⚠️ <vault>: no read link — <readLink.hint>`.
+   - `readLink.agentListsVault: false` with `available: true` → a soft note, not an issue: the
+     agent serves the vault only if it accepts vault hints.
+
 4b. **Report which router build answers, and whether this session's hooks ran** — the
    `routerBuild` and `sessionHooks` fields of the same response. Two lines:
 
@@ -176,7 +195,8 @@ Produces a one-shot diagnostic of the multi-vault Obsidian router. Run it when t
 - Don't try to fix issues automatically — this skill is a diagnostic, not a fixer. Surface the problem and let the user choose how to proceed.
 - Don't install markitdown on your own initiative, even if the user says "fix the issues". It is a 30-180 s download of ~100 MB of Python wheels, and the router's refusal to impose a Python install is a written decision. Offer, wait for a yes, then run it.
 - Don't run `--install-plugins` without its `--dry-run` first, and don't apply a plan the user has not seen and approved — it downloads third-party code into their vault. `--plugin-health` is the only plugin command this diagnostic runs on its own.
-- Don't expose API keys in the output.
+- Don't expose API keys in the output — nor the view agent's token: report its source, never read the token file or the agent's host to show it.
+- Don't write the Claude Code settings or a server declaration to configure the view agent: show the user the lines and where they go, and let them apply it.
 - Don't dump the full raw JSON to the user — render the table and the issue blocks. The raw JSON is for your own consumption.
 - Don't run write/delete tools as part of this skill. Read-only diagnostic.
 

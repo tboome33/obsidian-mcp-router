@@ -28,6 +28,9 @@
  *     vault registry — every tool call, every session journal, every
  *     auto-commit then works against vaults he named, remote ones included),
  *     OBSIDIAN_ROUTER_VIEW_AGENT_URL (a fetch to his host on every write),
+ *     OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN / _TOKEN_FILE (the agent's secret
+ *     swapped for his, or a file of HIS read and sent as a header to the
+ *     agent on every link),
  *     OBSIDIAN_ROUTER_SMART_LINK_* (links in chat pointing elsewhere),
  *     OBSIDIAN_ROUTER_USER_ID (a forged audit identity), OBSIDIAN_ROUTER_
  *     ALLOWED_VAULTS / READONLY (denial). Those are settings of the MCP HOST
