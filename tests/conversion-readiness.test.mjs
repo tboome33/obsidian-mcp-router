@@ -1048,6 +1048,11 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
       'routerBuild',
       'sessionHooks',
       'vaults',
+      // 2026-10-11 — whether this router instance can give READ LINKS for remote
+      // vaults: the view agent's configuration and /health, and where to set it
+      // when remote vaults exist without one. Added here deliberately: a null link
+      // with no reason is what sent a session to "this vault has no link".
+      'viewAgent',
       'workspaceBinding',
       // Phase 5 of portee-ergonomie-refus-roadmap (decision refus-d-une-
       // proposition-de-liaison) — the vault names this workspace REFUSED, so

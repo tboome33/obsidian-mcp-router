@@ -33,6 +33,67 @@ import { sharingRequirement } from '../helpers/vault-sharing.mjs';
 import { HINT_STATUS } from '../helpers/workspace-bindings.mjs';
 import { classifyVaultReachability } from '../helpers/vault-reachability.mjs';
 import { portEntryOf } from '../helpers/port-registry.mjs';
+import { viewAgentStatus, probeViewAgentHealth, VIEW_AGENT_SETUP } from '../helpers/view-link.mjs';
+import { resolveInsecurePort } from '../helpers/click-to-open.mjs';
+
+/**
+ * Can a session get a READ LINK for this vault from this router instance — said before it
+ * asks, rather than discovered from a null (2026-10-11). Three providers, any one suffices:
+ * the local click-to-open link (a plaintext port is known), a smart link (pure HMAC), or the
+ * view agent (configured, its token readable, its /health not unreachable — an agent that
+ * answers /health with an error may still serve /view, and a provider is free not to have
+ * the route, so only "no answer at all" counts against it).
+ *
+ * `agentListsVault` is what the agent's /health says, when it says it: false is NOT a
+ * refusal — view-agent-direct serves an undeclared vault from the vault hints — so it only
+ * earns a hint.
+ */
+function readLinkFor(v, agent, health) {
+  let clickToOpen = false;
+  try { clickToOpen = resolveInsecurePort(v) != null; } catch { /* unknown → no local link */ }
+  const viewLink = agent.smartLinks ? 'smart' : (agent.configured ? 'view-agent' : null);
+  const agentListsVault = viewLink === 'view-agent' && Array.isArray(health.vaults)
+    ? health.vaults.includes(v.name)
+    : null;
+  const agentUsable = viewLink === 'view-agent' && !agent.urlInvalid && !agent.tokenError
+    && health.status !== 'unreachable';
+  const available = clickToOpen || viewLink === 'smart' || agentUsable;
+  let hint = null;
+  if (!available && viewLink === 'view-agent') {
+    hint = agent.urlInvalid
+      ? 'OBSIDIAN_ROUTER_VIEW_AGENT_URL is not a valid http(s) URL'
+      : agent.tokenError || `the view agent at ${agent.url} did not answer /health — check that it runs and that the network path (WireGuard) is up`;
+  } else if (!available && v.type === 'remote') {
+    hint = 'remote vault, and this router has no view agent — see viewAgent.hint';
+  } else if (!available) {
+    hint = 'no plaintext HTTP port is known for this vault, or its Local REST API HTTP server is off';
+  } else if (!clickToOpen && agentListsVault === false) {
+    hint = `the view agent does not list "${v.name}": it serves it only if it accepts vault hints (view-agent-direct does)`;
+  }
+  return { available, clickToOpen, viewLink, agentListsVault, hint };
+}
+
+/** The top-level `viewAgent` field: configuration, /health, and what to do when it matters. */
+function viewAgentReport(agent, health, results) {
+  const remote = results.filter((r) => r.type === 'remote').length;
+  let hint = null;
+  if (!agent.configured && !agent.smartLinks && remote > 0) {
+    hint = `${remote} remote vault(s) here, and no view agent on this router instance: get_view_link is hidden and `
+      + `no read link can be given for them. ${VIEW_AGENT_SETUP}`;
+  } else if (agent.configured && agent.urlInvalid) {
+    hint = 'OBSIDIAN_ROUTER_VIEW_AGENT_URL is not a valid http(s) URL.';
+  } else if (agent.configured && agent.tokenError) {
+    hint = `${agent.tokenError}.`;
+  } else if (agent.configured && health.status === 'unreachable') {
+    hint = `The view agent at ${agent.url} did not answer /health — check that it runs and that the network path (WireGuard) is up.`;
+  }
+  return {
+    ...agent,
+    health: health.status,
+    vaultsListed: Array.isArray(health.vaults) ? health.vaults.length : null,
+    hint,
+  };
+}
 
 /**
  * The HTTPS port the router will actually dial, read back off the baseUrl it
@@ -130,7 +191,17 @@ export async function listVaults(registry, sharedConfig = null) {
     [[], []],
   );
 
-  const results = await Promise.all(
+  // The view agent's /health, probed WHILE the vaults are pinged — never after them, so a
+  // session start pays max(ping, 2 s) at worst, not the sum. Without the token: see
+  // probeViewAgentHealth.
+  // Only when a remote vault is pinged: a router with local vaults alone has nothing to ask
+  // the agent about, and a black-holed agent would cost every session start its 2 s (review).
+  const agent = viewAgentStatus(process.env);
+  const healthPromise = reachable.some((v) => v.type === 'remote')
+    ? probeViewAgentHealth({ env: process.env })
+    : Promise.resolve({ status: agent.configured ? 'not-probed' : 'not-configured', vaults: null });
+
+  const pinged = await Promise.all(
     reachable.map(async (v) => {
       const ping = await pingVault(v);
       // WHICH VAULTS DEMAND A PRECONDITION, said BEFORE a write is refused
@@ -201,6 +272,8 @@ export async function listVaults(registry, sharedConfig = null) {
       };
     }),
   );
+  const health = await healthPromise;
+  const results = pinged.map((r, i) => ({ ...r, readLink: readLinkFor(reachable[i], agent, health) }));
 
   // Disabled vaults from the registry's skipped[] list, PLUS any vault this
   // workspace cannot currently reach (not pinged, same reasoning as a
@@ -507,6 +580,10 @@ export async function listVaults(registry, sharedConfig = null) {
     // exactly the field a caller must be able to trust.
     bindingImported: importedOrNull(registry.bindingImported),
     conversionToolbox,
+    // Whether this router instance can hand out READ LINKS for remote vaults (2026-10-11):
+    // the view agent's configuration (url as an origin, token by its SOURCE only), its
+    // /health, and a hint saying where to configure it when remote vaults exist without one.
+    viewAgent: viewAgentReport(agent, health, results),
     configPath: registry.configPath,
     vaults: results,
     disabled,
