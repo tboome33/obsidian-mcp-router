@@ -682,6 +682,17 @@ function vaultPortInfo(vaultPath) {
       // bridge's /ping the way the router does). Bridge 0.10.0+ serves
       // /mcp-router-bridge/open/ everywhere; /open/ is served by any bridge
       // unless Local REST API is 5.4.0+, which reserves it.
+      //
+      // ADVISORY, NOT LIVE (codex review, 2026-10-11): the manifests describe
+      // what is installed, not what the running Obsidian loaded. The two differ
+      // between a file update and the next reload. That window cannot produce a
+      // blocking false positive on a WORKING link in practice: a legacy link is
+      // only flagged when the disk says Local REST API 5.4.0, and Obsidian loads
+      // a community-plugin update as it writes it; a new-prefix link is only
+      // flagged when the disk bridge is < 0.10.0, which a running 0.10.0 never
+      // leaves behind. The other direction (disk says 0.10.0, Obsidian still runs
+      // 0.9.1 until reloaded) lets a dead new-prefix link pass — a miss, not a
+      // block. The tool results' `clickToOpenUrl` carry the live answer.
       servesNewPrefix: versionAtLeast(bridgeVersion, '0.10.0'),
       servesLegacyPrefix: !versionAtLeast(lraVersion, '5.4.0'),
       openPrefix: versionAtLeast(bridgeVersion, '0.10.0') ? NEW_OPEN_PREFIX : LEGACY_OPEN_PREFIX,
@@ -860,6 +871,15 @@ for (const c of clickToOpenCandidates) {
   // Right port, wrong prefix: the vault's bridge does not serve this one —
   // a legacy /open/ link to a vault on Local REST API 5.4.0 (401 there), or a
   // /mcp-router-bridge/open/ link to a bridge older than 0.10.0 (404).
+  //
+  // When the owner serves NEITHER prefix (bridge < 0.10.0 on Local REST API
+  // 5.4.0), no rewrite can fix the link: the fix is upgrading the bridge.
+  // Flagging it would block the reply on a "correction" identical to the
+  // broken link (codex review, 2026-10-11), so it passes here and the vault's
+  // own health check reports the missing route.
+  if (portOwners.length > 0 && portOwners.every((o) => !o.info.servesNewPrefix && !o.info.servesLegacyPrefix)) {
+    continue;
+  }
   if (portOwners.length > 0) {
     const { vault, decodedHref, info } = portOwners[0];
     violations.push({

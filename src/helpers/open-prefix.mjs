@@ -106,6 +106,17 @@ export function prefixFromRoot(info) {
   return candidates.find((p) => p !== LEGACY_OPEN_PREFIX) ?? candidates[0] ?? null;
 }
 
+/**
+ * True when the root's bridge entry carries a route list — i.e. the root made a
+ * definite statement about which routes exist, even if no open route is among them.
+ */
+function rootListsBridgeRoutes(info) {
+  const exts = info && typeof info === 'object' ? info.apiExtensions : null;
+  if (!Array.isArray(exts)) return false;
+  const bridge = exts.find((e) => e && typeof e === 'object' && e.id === BRIDGE_PLUGIN_ID);
+  return Boolean(bridge && Array.isArray(bridge.routes));
+}
+
 /** Cache key: the vault's name AND where it is reached, so a re-pointed vault is re-asked. */
 function keyOf(vault) {
   return `${vault?.name ?? ''}\u0000${vault?.baseUrl ?? ''}`;
@@ -157,8 +168,16 @@ export function describeOpenPrefix(vault) {
 
 /**
  * Ask the vault which prefix its bridge serves, unless a fresh answer is
- * cached. Never throws: every failure ends at LEGACY_OPEN_PREFIX. Concurrent
- * callers for one vault share one probe.
+ * cached. Never throws. Concurrent callers for one vault share one probe.
+ *
+ * WHAT A FAILED PROBE MAY NOT DO (codex review, 2026-10-11). It may not erase
+ * what is already known: if neither probe got an answer (timeout, connection
+ * refused, a 403 ping AND a failing root), the last known prefix is kept and
+ * re-dated, and `/open/` is used only when nothing was ever known. And it may
+ * not overwrite a NEWER observation: `pingVault` can record the prefix from the
+ * root while this probe is still in flight; whatever this probe concludes, the
+ * entry dated after it started wins. Only a definite answer — a pong, or a root
+ * whose bridge entry lists its routes — replaces a known prefix.
  *
  * @param {object} vault
  * @param {object} probes
@@ -176,19 +195,33 @@ export async function resolveOpenPrefix(vault, { fetchPing, fetchRoot, now = Dat
   if (pending) return pending;
 
   const run = (async () => {
+    const started = now();
     let prefix = null;
     let source = 'fallback';
+    let answered = false;
     if (typeof fetchPing === 'function') {
       try {
-        prefix = prefixFromPing(await fetchPing(vault));
+        const body = await fetchPing(vault);
+        if (body && typeof body === 'object' && body.pong === true) answered = true;
+        prefix = prefixFromPing(body);
         if (prefix) source = 'ping';
       } catch { /* 403 off-loopback, old bridge, timeout: try the root */ }
     }
     if (!prefix && typeof fetchRoot === 'function') {
       try {
-        prefix = prefixFromRoot(await fetchRoot(vault));
+        const info = await fetchRoot(vault);
+        if (rootListsBridgeRoutes(info)) answered = true;
+        prefix = prefixFromRoot(info);
         if (prefix) source = 'root';
       } catch { /* nothing more to ask */ }
+    }
+    const current = cache.get(key);
+    // A newer observation landed while this probe was in flight: it wins.
+    if (current && current.at > started) return current.prefix;
+    // No answer at all: keep what is known, re-dated so it is not re-asked at once.
+    if (!prefix && !answered && current) {
+      cache.set(key, { ...current, at: now() });
+      return current.prefix;
     }
     const answer = prefix ?? LEGACY_OPEN_PREFIX;
     rememberOpenPrefix(vault, answer, source, now());

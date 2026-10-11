@@ -1397,3 +1397,30 @@ describe('vault-link-linter — click-to-open prefix (bridge 0.10.0)', () => {
     assert.match(r.stderr, /http:\/\/127\.0\.0\.1:27142\/mcp-router-bridge\/open\/wiki%2Flog\.md/);
   });
 });
+
+// Codex review, 2026-10-11: bridge < 0.10.0 on Local REST API 5.4.0 serves no
+// click-to-open route at all — the linter must not block on a "correction"
+// identical to the broken link.
+describe('vault-link-linter — no supported route (codex review)', () => {
+  const manifestPath = (id) => path.join(vaultPath, '.obsidian', 'plugins', id, 'manifest.json');
+  function setVersions({ bridge, lra }) {
+    for (const [id, v] of [['mcp-router-bridge', bridge], ['obsidian-local-rest-api', lra]]) {
+      const p = manifestPath(id);
+      if (v) {
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, JSON.stringify({ id, version: v }));
+      } else {
+        fs.rmSync(p, { force: true });
+      }
+    }
+  }
+  after(() => setVersions({}));
+
+  test('bridge 0.9.1 + Local REST API 5.4.0: neither prefix is flagged as wrong-prefix', () => {
+    setVersions({ bridge: '0.9.1', lra: '5.4.0' });
+    for (const href of ['http://127.0.0.1:27142/open/wiki%2Flog.md', 'http://127.0.0.1:27142/mcp-router-bridge/open/wiki%2Flog.md']) {
+      const r = runLinter(`See [log](${href}).`);
+      assert.equal(r.status, 0, r.stderr);
+    }
+  });
+});

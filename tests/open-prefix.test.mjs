@@ -175,3 +175,47 @@ describe('getOpenPrefix / rememberOpenPrefixFromRoot', () => {
     assert.equal(getOpenPrefix(vault), NEW);
   });
 });
+
+// Codex review, 2026-10-11: a failed probe may not erase a known prefix, nor
+// overwrite an observation recorded while it was in flight.
+describe('resolveOpenPrefix — failures and races (codex review)', () => {
+  const boom = async () => { throw new Error('ETIMEDOUT'); };
+
+  test('after expiry, a probe that gets no answer keeps the known prefix', async () => {
+    let t = 1_000;
+    await resolveOpenPrefix(vault, { fetchPing: async () => ({ pong: true, openPrefix: NEW }), now: () => t });
+    t += PREFIX_TTL_MS + 1;
+    assert.equal(await resolveOpenPrefix(vault, { fetchPing: boom, fetchRoot: boom, now: () => t }), NEW);
+    assert.equal(getOpenPrefix(vault), NEW);
+    assert.equal(describeOpenPrefix(vault).at, t, 're-dated, so it is not re-asked at once');
+  });
+
+  test('a definite answer from an old bridge does replace it', async () => {
+    let t = 1_000;
+    await resolveOpenPrefix(vault, { fetchPing: async () => ({ pong: true, openPrefix: NEW }), now: () => t });
+    t += PREFIX_TTL_MS + 1;
+    assert.equal(await resolveOpenPrefix(vault, { fetchPing: async () => ({ pong: true }), fetchRoot: boom, now: () => t }), LEGACY_OPEN_PREFIX);
+    assert.equal(getOpenPrefix(vault), LEGACY_OPEN_PREFIX);
+  });
+
+  test('nothing ever known + no answer → /open/', async () => {
+    assert.equal(await resolveOpenPrefix(vault, { fetchPing: boom, fetchRoot: boom }), LEGACY_OPEN_PREFIX);
+  });
+
+  test('an observation recorded while the probe is in flight wins over its failure', async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let t = 1_000;
+    const pending = resolveOpenPrefix(vault, {
+      fetchPing: async () => { await gate; throw new Error('ETIMEDOUT'); },
+      fetchRoot: boom,
+      now: () => t,
+    });
+    t += 5;
+    // pingVault records the root's route list meanwhile (wall clock, later than the start).
+    rememberOpenPrefixFromRoot(vault, root540(['/mcp-router-bridge/open/*']));
+    release();
+    assert.equal(await pending, NEW);
+    assert.equal(getOpenPrefix(vault), NEW);
+  });
+});

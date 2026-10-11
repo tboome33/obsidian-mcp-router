@@ -2156,9 +2156,14 @@ export const OPEN_LINK_TOOLS = new Set([
  * Ask the vault(s) a link-emitting tool is about to target which click-to-open
  * prefix their bridge serves — cached for a minute per vault, so in a session
  * this is one small request per vault per minute. Skips a vault for which no
- * link can be built anyway (no plaintext port). `vault: "*"` (search across the
- * fleet) warms every such vault, in parallel. NEVER throws and never blocks
+ * link can be built anyway (no plaintext port). NEVER throws and never blocks
  * the tool on a failure: the worst case is the legacy `/open/` prefix.
+ *
+ * `vault: "*"` (search across the fleet) warms exactly the vaults the fan-out
+ * itself would query — none when the session is locked (the search refuses
+ * `*` there), otherwise those with an API key that this workspace may reach
+ * (`isVaultReachable`). Warming the whole registry instead sent requests to
+ * vaults the session is not allowed to touch (codex review, 2026-10-11).
  *
  * @param {{ vaults: object[], resolveVault: (name?: string) => object }} reg
  * @param {object} args
@@ -2167,9 +2172,12 @@ export const OPEN_LINK_TOOLS = new Set([
 export async function warmOpenPrefix(reg, args, resolve = resolveVaultOpenPrefix) {
   let targets;
   try {
-    targets = args?.vault === '*'
-      ? (reg?.vaults ?? [])
-      : [reg.resolveVault(args?.vault)];
+    if (args?.vault === '*') {
+      if (reg?.lockedVault) return;
+      targets = (reg?.vaults ?? []).filter((v) => v && !v.missingApiKey && isVaultReachable(v.name, reg));
+    } else {
+      targets = [reg.resolveVault(args?.vault)];
+    }
   } catch {
     return; // the tool will report the unresolvable vault itself
   }

@@ -216,3 +216,27 @@ describe('warmOpenPrefix (dispatcher)', () => {
     assert.deepEqual(asked.sort(), ['a', 'c']);
   });
 });
+
+// Codex review, 2026-10-11: the "*" warm-up must reach exactly the vaults the
+// fan-out itself would query.
+describe('warmOpenPrefix — vault "*" respects the session\'s reach (codex review)', () => {
+  test('a locked session warms nothing (the search refuses "*" there)', async () => {
+    const asked = [];
+    const reg = { lockedVault: 'a', vaults: [vaultDesc('a'), vaultDesc('c')], resolveVault: () => { throw new Error('x'); } };
+    await warmOpenPrefix(reg, { vault: '*' }, async (v) => { asked.push(v.name); return NEW; });
+    assert.deepEqual(asked, []);
+  });
+
+  test('vaults without a key, or outside the workspace\'s declared reach, are not probed', async () => {
+    const asked = [];
+    const reg = {
+      vaultReach: 'declared',
+      openVaults: ['a', 'nokey'],
+      workspaceBinding: null,
+      vaults: [vaultDesc('a'), { ...vaultDesc('nokey'), missingApiKey: true }, vaultDesc('outside')],
+      resolveVault: () => { throw new Error('x'); },
+    };
+    await warmOpenPrefix(reg, { vault: '*' }, async (v) => { asked.push(v.name); return NEW; });
+    assert.deepEqual(asked, ['a']);
+  });
+});
