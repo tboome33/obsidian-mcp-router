@@ -11,6 +11,33 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > the way v0.36.1's entry was filed under Docling for a month.
 
 
+## [0.97.1] — 2026-10-11 — `webpage_to_markdown` fetches pages again
+
+### Fixed
+
+- **Every URL conversion failed on every site** with `fetching <host> (<ip>) failed: fetch failed
+  (ERR_INVALID_IP_ADDRESS: Invalid IP address: undefined)`: `webpage_to_markdown`, the primary path
+  of `youtube_to_markdown`, `bing_search_to_markdown`, and anything else going through
+  `convertUrl`. Seen on 2026-10-11 on the Hermès VM (Node 22); same code on Node 24. The SSRF pin in
+  markdownify's `safeFetch` (`src/markdownify/markitdown.mjs`) answered undici's connect `lookup`
+  in the pre-Node-20 scalar form `cb(null, address, family)`. Since Node 20, `net.connect` enables
+  `autoSelectFamily` and calls the lookup with `{ all: true }`, expecting an array of
+  `{ address, family }`, so the connection failed before it started. The two `safe-fetch-*`
+  helpers were fixed for this in v0.13.5. This copy was missed, and the tests never reached it
+  because they all injected `fetch`. This is very likely also the "fetch failed" seen twice on
+  YouTube video pages, which sent them to the yt-dlp fallback.
+- The pinned dispatcher now exists once, in `src/helpers/pinned-dispatcher.mjs`
+  (`createPinnedAgent`, `pinnedLookup`, answering both calling conventions), and is used by
+  `safeFetch`, `safe-fetch-html.mjs` and `safe-fetch-binary.mjs`. A search of `src/`, `scripts/`,
+  `bin/` and `hooks/` found no other custom `lookup`.
+- Three new tests in `tests/markdownify.test.mjs`. (1) `toMarkdown({ url })` runs the real fetch
+  through the real pinned dispatcher against a loopback HTTP server (only DNS is injected). It
+  failed on v0.97.0 with the production error. (2) `pinnedLookup` answers `{ all: true }` with an
+  array and anything else with scalars. (3) Any `lookup:` in `src/` outside the helper fails the
+  suite, so the copies cannot drift apart again. Each was seen red by breaking what it covers.
+  Real check on the VM against `https://example.com/`, a Wikipedia article and a YouTube video
+  page: all three failed on v0.97.0 and convert on v0.97.1.
+
 ## [0.97.0] — 2026-09-30 — a remote vault attaches and ends verified, and a review pass that found what the first CI run would have
 
 Everything merged since v0.96.0, four days of it, in one pull request (#5) plus two small ones

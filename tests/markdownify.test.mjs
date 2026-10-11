@@ -432,3 +432,98 @@ test('conversion tool schemas have the expected required fields', () => {
   // Git repo tool
   assert.deepStrictEqual(byName.git_repo_to_markdown.inputSchema.required, ['url']);
 });
+
+/* ---------- pinned-IP connect: the lookup the dispatcher really calls ---------- */
+
+// Every other `toMarkdown({ url })` test injects `fetch`, so the pinned
+// dispatcher's `connect.lookup` never ran under test. It shipped in the
+// pre-Node-20 scalar form, `cb(null, address, family)`. Node 20+ enables
+// `autoSelectFamily` and calls the lookup with `{ all: true }`, which expects
+// an ARRAY; the scalar answer fails every fetch before connecting
+// (`ERR_INVALID_IP_ADDRESS: Invalid IP address: undefined`, seen on every site
+// on 2026-10-11). This test lets the real fetch and the real dispatcher run
+// against a loopback server; only the DNS step is injected, so the pin points
+// at 127.0.0.1 under a hostname `validateUrl` accepts.
+test('toMarkdown({ url }) connects through the pinned dispatcher (real fetch, loopback server)', async () => {
+  const { createServer } = await import('node:http');
+  const { toMarkdown } = await import('../src/markdownify/markitdown.mjs');
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end('<html><body><p>pinned-body-ok</p></body></html>');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  // The body reached the transform hook ⇒ the connection was made through the
+  // pin. Stopping there keeps the test independent of a MarkItDown install.
+  const SENTINEL = 'stop-after-fetch';
+  let seen = null;
+  try {
+    await assert.rejects(
+      () => toMarkdown({
+        url: `http://pinned.invalid:${port}/page.html`,
+        transformContent: async (buf) => { seen = buf.toString('utf-8'); throw new Error(SENTINEL); },
+      }, {
+        resolveHost: async () => ({ address: '127.0.0.1', family: 4 }),
+      }),
+      (e) => {
+        assert.match(e.message, new RegExp(SENTINEL), `fetch did not complete: ${e.message}`);
+        return true;
+      },
+    );
+    assert.match(seen ?? '', /pinned-body-ok/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+// Requirement that keeps the three fetchers from drifting apart again: the
+// connect-time lookup is written ONCE, in `src/helpers/pinned-dispatcher.mjs`.
+// A `lookup:` property anywhere else in `src/` is a second copy — the scalar
+// one lived on in `markitdown.mjs` for a year after the two `safe-fetch-*`
+// helpers were fixed.
+test('src/: the only connect `lookup:` is the shared pinned-dispatcher helper', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const srcDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src');
+  const offenders = [];
+  let scanned = 0;
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { walk(p); continue; }
+      if (!/\.(m?js|cjs)$/.test(e.name)) continue;
+      scanned += 1;
+      const rel = path.relative(srcDir, p).split(path.sep).join('/');
+      fs.readFileSync(p, 'utf-8').split(/\r?\n/).forEach((line, i) => {
+        const code = line.replace(/\/\/.*$/, '');
+        if (/^\s*\*/.test(line)) return; // JSDoc / block-comment body
+        if (/\blookup\s*:/.test(code)) offenders.push(`${rel}:${i + 1}`);
+      });
+    }
+  };
+  walk(srcDir);
+  assert.ok(scanned > 50, `scanned only ${scanned} files under src/ — the walk lost its target`);
+  const HELPER = 'helpers/pinned-dispatcher.mjs';
+  const inHelper = offenders.filter((o) => o.startsWith(`${HELPER}:`));
+  assert.deepStrictEqual(offenders.filter((o) => !inHelper.includes(o)), [],
+    `connect lookup written outside ${HELPER} — build the Agent with createPinnedAgent() instead`);
+  assert.equal(inHelper.length, 1, `${HELPER} should hold exactly one lookup, found ${inHelper.length}`);
+});
+
+test('pinnedLookup answers both calling conventions with the pinned address', async () => {
+  const { pinnedLookup } = await import('../src/helpers/pinned-dispatcher.mjs');
+  const call = (lookup, opts) => new Promise((resolve, reject) => {
+    lookup('ignored.example', opts, (err, ...rest) => (err ? reject(err) : resolve(rest)));
+  });
+  const v4 = pinnedLookup('203.0.113.7', 4);
+  // Node 20+ autoSelectFamily: `{ all: true }` → one array argument.
+  assert.deepStrictEqual(await call(v4, { all: true }), [[{ address: '203.0.113.7', family: 4 }]]);
+  // Legacy / autoSelectFamily off: scalar `(address, family)`.
+  assert.deepStrictEqual(await call(v4, { all: false }), ['203.0.113.7', 4]);
+  assert.deepStrictEqual(await call(v4, {}), ['203.0.113.7', 4]);
+  assert.deepStrictEqual(await call(v4, undefined), ['203.0.113.7', 4]);
+  // The host argument never changes the answer — that is the pin.
+  const v6 = pinnedLookup('2001:db8::1', 6);
+  assert.deepStrictEqual(await call(v6, { all: true }), [[{ address: '2001:db8::1', family: 6 }]]);
+});
