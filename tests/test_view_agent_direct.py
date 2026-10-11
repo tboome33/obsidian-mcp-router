@@ -1243,5 +1243,110 @@ class TestOpenPrefix(unittest.TestCase):
             srv.server_close()
 
 
+class TestOpenPrefixReview(unittest.TestCase):
+    """Codex review, 2026-10-11: discovery must not erase or overwrite a known prefix,
+    must not follow redirects, and must share one time budget with the open call."""
+
+    NEW = "/mcp-router-bridge/open/"
+    PONG_NEW = '{"pong":true,"openPrefix":"/mcp-router-bridge/open/"}'
+
+    def setUp(self):
+        va._open_prefix_cache.clear()
+
+    def test_failed_discovery_keeps_the_known_prefix(self):
+        key = ("t", "keep")
+        ttl = va.OPEN_PREFIX_TTL_S
+        self.assertEqual(va.resolve_open_prefix(key, lambda: self.PONG_NEW, now=100.0), self.NEW)
+
+        def boom():
+            raise RuntimeError("timeout")
+        self.assertEqual(va.resolve_open_prefix(key, boom, now=100.0 + ttl + 1), self.NEW)
+        self.assertEqual(va.resolve_open_prefix(key, lambda: "garbage", now=100.0 + 2 * ttl + 2), self.NEW)
+        # A bridge that actually answers without a prefix (downgraded) does replace it.
+        self.assertEqual(va.resolve_open_prefix(key, lambda: '{"pong":true}', now=100.0 + 3 * ttl + 3), "/open/")
+
+    def test_an_older_failed_discovery_never_overwrites_a_newer_success(self):
+        key = ("t", "race")
+
+        def slow_failure():
+            # While this click's discovery is stuck, another click discovers the prefix.
+            self.assertEqual(va.resolve_open_prefix(key, lambda: self.PONG_NEW, now=101.0), self.NEW)
+            raise RuntimeError("timeout")
+        self.assertEqual(va.resolve_open_prefix(key, slow_failure, now=100.0), self.NEW)
+        self.assertEqual(va._open_prefix_cache[key][0], self.NEW)
+
+    def test_ping_redirect_is_never_followed(self):
+        from http.server import BaseHTTPRequestHandler
+        elsewhere_hits = []
+
+        class Elsewhere(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                elsewhere_hits.append(self.path)
+                body = self.server_pong
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+        Elsewhere.server_pong = self.PONG_NEW.encode()
+        other = ThreadingHTTPServer(("127.0.0.1", 0), Elsewhere)
+        threading.Thread(target=other.serve_forever, daemon=True).start()
+        other_url = "http://127.0.0.1:%d" % other.server_address[1]
+        opened = []
+
+        class Redirecting(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                if self.path == "/ping":
+                    self.send_response(302)
+                    self.send_header("Location", other_url + "/ping")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                opened.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), Redirecting)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            ok, _ = va.navigate({"open_mode": "http", "open_url": "http://127.0.0.1:%d" % srv.server_address[1]},
+                                "a.md", "", None)
+            self.assertTrue(ok)
+            self.assertEqual(elsewhere_hits, [])                 # the redirect target was never contacted
+            self.assertEqual(opened, ["/open/a.md"])             # no announced prefix taken from it
+        finally:
+            for x in (srv, other):
+                x.shutdown()
+                x.server_close()
+
+    def test_discovery_and_open_share_one_budget(self):
+        from unittest import mock
+        clock = [1000.0]
+        timeouts = []
+
+        def fake_run(cmd, capture_output=True, text=True, timeout=None):
+            timeouts.append(timeout)
+            if cmd[-1].endswith("/ping"):
+                clock[0] += timeout                              # the ping eats its whole slice
+                raise va.subprocess.TimeoutExpired(cmd, timeout)
+
+            class R:
+                returncode, stdout, stderr = 0, "200", ""
+            return R()
+        with mock.patch.object(va.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(va.time, "monotonic", side_effect=lambda: clock[0]):
+            ok, _ = va.navigate({"open_mode": "docker-exec", "container": ID_A, "open_port": 27153}, "a.md", "")
+        self.assertTrue(ok)
+        self.assertEqual(timeouts[0], va.PING_BUDGET_S)
+        self.assertLessEqual(timeouts[1], va.NAVIGATE_BUDGET_S - va.PING_BUDGET_S)   # what is left, not a fresh 8 s
+        self.assertLessEqual(sum(timeouts), va.NAVIGATE_BUDGET_S)
+
+
 if __name__ == "__main__":
     unittest.main()

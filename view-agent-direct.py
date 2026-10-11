@@ -454,37 +454,73 @@ _open_prefix_cache = {}
 _open_prefix_lock = threading.Lock()
 
 
-def prefix_from_pong(body):
-    """The `openPrefix` a bridge pong announces, or None (old bridge, not a bridge, or a
-    value that does not pass validation)."""
+def _parse_pong(body):
+    """(is_pong, prefix): whether the body is a bridge pong at all, and the validated
+    `openPrefix` it announces (None for an old bridge or a value that fails validation)."""
     try:
         j = json.loads(body)
     except (TypeError, ValueError):
-        return None
+        return (False, None)
     if not isinstance(j, dict) or j.get("pong") is not True:
-        return None
+        return (False, None)
     p = j.get("openPrefix")
     if isinstance(p, str) and len(p) <= 128 and _OPEN_PREFIX_RE.fullmatch(p):
-        return p
-    return None
+        return (True, p)
+    return (True, None)
+
+
+def prefix_from_pong(body):
+    """The `openPrefix` a bridge pong announces, or None (old bridge, not a bridge, or a
+    value that does not pass validation)."""
+    return _parse_pong(body)[1]
 
 
 def resolve_open_prefix(key, fetch_pong, now=None):
     """The click-to-open prefix for one navigation target, cached OPEN_PREFIX_TTL_S.
-    `fetch_pong()` returns the /ping body (or raises). Never raises: any failure is the
-    legacy prefix, which is also cached so a dead ping is not retried on every click."""
+    `fetch_pong()` returns the /ping body (or raises). Never raises.
+
+    What a failed discovery may not do (codex review, 2026-10-11): erase a known prefix,
+    or overwrite a newer one. The fetch runs outside the lock, so two clicks can race; a
+    result is only stored if nothing newer landed since this fetch started, and a fetch
+    that got no pong at all (timeout, refused, garbage) keeps the last known prefix
+    (re-dated). `/open/` is used when nothing was ever known, or when a bridge actually
+    answered without announcing a prefix (bridge < 0.10.0)."""
     t = time.monotonic() if now is None else now
     with _open_prefix_lock:
         hit = _open_prefix_cache.get(key)
         if hit and t - hit[1] < OPEN_PREFIX_TTL_S:
             return hit[0]
     try:
-        prefix = prefix_from_pong(fetch_pong()) or LEGACY_OPEN_PREFIX
+        answered, prefix = _parse_pong(fetch_pong())
     except Exception:
-        prefix = LEGACY_OPEN_PREFIX
+        answered, prefix = (False, None)
+    t_end = time.monotonic() if now is None else now
     with _open_prefix_lock:
-        _open_prefix_cache[key] = (prefix, t)
-    return prefix
+        cur = _open_prefix_cache.get(key)
+        if cur and cur[1] > t:                       # a newer observation landed meanwhile
+            return cur[0]
+        if not answered and cur:                     # no answer: keep what is known
+            _open_prefix_cache[key] = (cur[0], t_end)
+            return cur[0]
+        result = prefix or LEGACY_OPEN_PREFIX
+        _open_prefix_cache[key] = (result, t_end)
+        return result
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Discovery never follows a redirect: a /ping answering 3xx could otherwise send this
+    agent to another host and hand it the prefix (codex review, 2026-10-11)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_ping_opener = urllib.request.build_opener(_NoRedirect)
+
+# One budget for a whole navigation — discovery plus the open call — so a stalled Docker
+# daemon cannot double the documented bound (codex review, 2026-10-11).
+NAVIGATE_BUDGET_S = 8
+PING_BUDGET_S = 4
 
 
 def open_path(note, anchor, prefix=LEGACY_OPEN_PREFIX):
@@ -521,17 +557,23 @@ def navigate(vault_cfg, note, anchor="", runner=None):
             base = "%s://127.0.0.1:%s" % (scheme, vault_cfg["open_port"])
             exec_curl = [vault_cfg.get("docker_path", "docker"), "exec", vault_cfg["container"],
                          vault_cfg.get("curl_path", "curl"), "-sS"] + (["-k"] if scheme == "https" else [])
-            run = runner or (lambda c: subprocess.run(c, capture_output=True, text=True, timeout=8))
+            deadline = time.monotonic() + NAVIGATE_BUDGET_S
+
+            def run(c, cap):
+                if runner:
+                    return runner(c)
+                budget = max(1.0, min(cap, deadline - time.monotonic()))
+                return subprocess.run(c, capture_output=True, text=True, timeout=budget)
 
             def fetch_pong():
-                r = run(exec_curl + ["--max-time", "3", base + "/ping"])
+                r = run(exec_curl + ["--max-time", "3", base + "/ping"], PING_BUDGET_S)
                 if r.returncode != 0:
                     raise RuntimeError("ping rc=%s" % r.returncode)
                 return r.stdout or ""
             prefix = resolve_open_prefix(("docker-exec", vault_cfg["container"], base), fetch_pong)
             url = base + open_path(note, anchor, prefix)
             cmd = exec_curl + ["-o", "/dev/null", "-w", "%{http_code}", "--max-time", "4", url]
-            r = run(cmd)
+            r = run(cmd, NAVIGATE_BUDGET_S)
             code = (r.stdout or "").strip()[-3:]
             if r.returncode != 0:
                 return (False, "docker exec rc=%s %s" % (r.returncode, (r.stderr or "").strip()[:160]))
@@ -540,7 +582,7 @@ def navigate(vault_cfg, note, anchor="", runner=None):
             base = vault_cfg["open_url"].rstrip("/")
 
             def fetch_pong():
-                with urllib.request.urlopen(urllib.request.Request(base + "/ping", method="GET"), timeout=3) as resp:
+                with _ping_opener.open(urllib.request.Request(base + "/ping", method="GET"), timeout=3) as resp:
                     return resp.read(4096).decode("utf-8", "replace")
             prefix = resolve_open_prefix(("http", base), fetch_pong)
             url = base + open_path(note, anchor, prefix)
