@@ -441,3 +441,55 @@ describe('backfill-log-from-sessions --include-open — integration', () => {
     assert.equal(readLog(), beforeLog, 'dry-run must not write to log.md');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Secrets left by sessions journaled before masking existed
+// ---------------------------------------------------------------------------
+//
+// Reconciliation copies a first prompt and a Bash highlight from OLD material
+// (a journal file, a state JSON) into journal.md and into the recap. Material
+// written before router v0.100.0 was not masked, so this path masks again.
+// Values are built at run time: the release scan reads tests/.
+
+describe('reconcileVaultSessions — secrets from older journals are masked', () => {
+  const PW = ['Qx7', 'mV2', 'pL9', 'zK4'].join('');
+  const PW2 = ['Ha8', 'wT5', 'nB3', 'cR6'].join('');
+
+  test('a first prompt read from an old journal is masked before its 120-character cut', () => {
+    writeLog();
+    // The password starts before character 120 and ends after it: cutting
+    // first would leave its start without the "| sudo -S" that identifies it.
+    const prefix = `${'p'.repeat(120 - 8 - "echo '".length - 1)} `;
+    const firstPrompt = `${prefix}echo '${PW}' | sudo -S whoami`;
+    // `truncate(s, 120)` keeps 119 characters.
+    const kept = firstPrompt.slice(0, 119);
+    assert.ok(kept.includes(PW.slice(0, 4)) && !kept.includes(PW),
+      'fixture: a cut at 120 must keep the start of the password, not all of it');
+    writeSession('2026-05-20-1000-proj-sec1.md', { firstPrompt });
+    reconcileVaultSessions({ vaultPath: vaultDir, stateDir, nowMs: Date.now() });
+    const log = readLog();
+    assert.match(log, /\[\[2026-05-20-1000-proj-sec1\]\]/, 'the line was written');
+    assert.ok(!log.includes(PW.slice(0, 4)), `journal.md holds the start of the password:\n${log}`);
+  });
+
+  test('a prompt and a Bash highlight read from an old state JSON are masked in journal.md and the recap', () => {
+    writeLog();
+    const p = writeSession('2026-05-20-1000-proj-sec2.md');
+    writeStateJson('sec2-1111', p, {
+      ageMs: 200 * MINUTE,
+      counters: { prompts: 1, toolCalls: 1, bash: 1 },
+      bashHighlights: [`echo '${PW}' | sudo -S whoami`],
+      firstUserPrompt: `export GITHUB_TOKEN=${PW2}`,
+    });
+    reconcileVaultSessions({ vaultPath: vaultDir, stateDir, nowMs: Date.now() });
+    const log = readLog();
+    const file = fs.readFileSync(p, 'utf8');
+    for (const [where, text] of [['journal.md', log], ['recap', file]]) {
+      assert.ok(!text.includes(PW.slice(0, 4)), `${where} holds the password:\n${text}`);
+      assert.ok(!text.includes(PW2.slice(0, 4)), `${where} holds the token:\n${text}`);
+    }
+    // The pipe is escaped by sanitizeForLogEntry in journal.md.
+    assert.match(log, /first bash: echo «redacted» \\\| sudo -S whoami/, `journal.md:\n${log}`);
+    assert.match(file, /Bash highlights\*\*: `echo «redacted» \| sudo -S whoami`/, `recap:\n${file}`);
+  });
+});

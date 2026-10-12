@@ -844,3 +844,130 @@ describe('session-auto-journal — v0.12.9 review+ pass 1 regressions', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Secrets are masked before anything reaches the vault
+// ---------------------------------------------------------------------------
+//
+// Found 2026-10-04: a vault session note held a sudo password, copied from a
+// Bash command of the form "echo <password> | sudo -S …". The values below are
+// built at run time so this file never holds a credential-shaped literal.
+
+describe('session-auto-journal — secrets are masked before reaching the vault', () => {
+  const PW = ['Qx7', 'mV2', 'pL9', 'zK4'].join('');
+  const PW2 = ['Ha8', 'wT5', 'nB3', 'cR6'].join('');
+  // The first characters of a secret: what a truncation that ran BEFORE the
+  // masking would leave in clear.
+  const PW_HEAD = PW.slice(0, 4);
+
+  function ensureJournalMd() {
+    const logPath = path.join(vaultDir, 'wiki-meta', 'journal.md');
+    fs.writeFileSync(logPath, '---\ntype: wiki-log\n---\n\n# Journal\n\nAppend-only.\n', 'utf8');
+    return logPath;
+  }
+
+  /**
+   * A command whose password straddles a `truncate(cmd, cut)` boundary
+   * (`truncate` keeps `cut - 1` characters plus an ellipsis), so that cutting
+   * BEFORE masking would leave the password's first characters in clear.
+   */
+  function straddling(cut) {
+    const lead = 'cd /srv/app && ';
+    const sep = ' && ';
+    const filler = 'x'.repeat(cut - 8 - lead.length - sep.length - "echo '".length);
+    const cmd = `${lead}${filler}${sep}echo '${PW}' | sudo -S systemctl restart app`;
+    const kept = cmd.slice(0, cut - 1);
+    assert.ok(kept.includes(PW_HEAD) && !kept.includes(PW),
+      `fixture: a cut at ${cut} must keep the start of the password, not all of it`);
+    return cmd;
+  }
+
+  test('a password piped to sudo -S reaches neither the journal, its recap nor journal.md', () => {
+    const logPath = ensureJournalMd();
+    const sessionId = 'redact-sudo';
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId });
+    // First Bash call: feeds the "first bash" hint of the journal.md line.
+    runHook({ event: 'PostToolUse', cwd: vaultDir, sessionId, toolName: 'Bash', toolInput: { command: `echo '${PW}' | sudo -S ip6tables -S` } });
+    // Cut points of the recap highlight (80) and of the journal block (200).
+    runHook({ event: 'PostToolUse', cwd: vaultDir, sessionId, toolName: 'Bash', toolInput: { command: straddling(80) } });
+    runHook({ event: 'PostToolUse', cwd: vaultDir, sessionId, toolName: 'Bash', toolInput: { command: straddling(200) } });
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId, reason: 'logout' });
+
+    const journal = String(readJournal());
+    const log = fs.readFileSync(logPath, 'utf8');
+    for (const [where, text] of [['journal', journal], ['journal.md', log]]) {
+      assert.ok(!text.includes(PW_HEAD), `${where} holds the start of the password:\n${text}`);
+    }
+    assert.ok(journal.includes('«redacted» | sudo -S ip6tables -S'), `the command stays readable:\n${journal}`);
+    assert.match(journal, /## Recap/, 'the recap was written');
+    assert.match(log, /first bash: echo «redacted»/, `journal.md line:\n${log}`);
+  });
+
+  test('a secret pasted in a user prompt is masked in the journal and in the journal.md objective', () => {
+    const logPath = ensureJournalMd();
+    const sessionId = 'redact-prompt';
+    runHook({
+      event: 'UserPromptSubmit', cwd: vaultDir, sessionId,
+      prompt: `relance la base avec DB_PASSWORD=${PW} puis vérifie\n\nAuthorization: Bearer ${PW2}`,
+    });
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId, reason: 'logout' });
+
+    const journal = String(readJournal());
+    const log = fs.readFileSync(logPath, 'utf8');
+    for (const [where, text] of [['journal', journal], ['journal.md', log]]) {
+      assert.ok(!text.includes(PW_HEAD), `${where} holds the password:\n${text}`);
+      assert.ok(!text.includes(PW2.slice(0, 4)), `${where} holds the token:\n${text}`);
+    }
+    assert.match(log, /relance la base avec DB_PASSWORD=«redacted» puis vérifie/, `objective:\n${log}`);
+  });
+
+  test('a huge prompt and a huge command made to slow the masking are journaled without stalling the hook', () => {
+    // 2 MB of `echo `: before the masking was bounded, 100 KB of it took more
+    // than 280 s. runHook kills the hook after 10 s. Past CHECK_MAX_CHARS the
+    // text is not read at all: the journal gets a notice instead.
+    const sessionId = 'redact-huge';
+    const huge = `echo '${PW}' | sudo -S whoami; ${'echo '.repeat(400_000)}`;
+    const r1 = runHook({ event: 'UserPromptSubmit', cwd: vaultDir, sessionId, prompt: huge });
+    const r2 = runHook({ event: 'PostToolUse', cwd: vaultDir, sessionId, toolName: 'Bash', toolInput: { command: huge } });
+    for (const [what, r] of [['prompt', r1], ['command', r2]]) {
+      assert.equal(r.signal, null, `${what}: the hook was killed (${r.error?.code ?? 'no error code'})`);
+      assert.equal(r.status, 0, `${what}: ${r.stderr}`);
+    }
+    const journal = String(readJournal());
+    assert.ok(!journal.includes(PW_HEAD), 'nothing of the password');
+    assert.equal(journal.match(/too long to check/g)?.length, 2, `one notice per entry:\n${journal.slice(0, 600)}`);
+  });
+
+  test('a session started by an older hook, whose state holds text in clear, is masked at SessionEnd', () => {
+    // A v0.97 hook stored the first prompt and the Bash highlights as typed;
+    // SessionEnd copies them into the recap and into journal.md.
+    const logPath = ensureJournalMd();
+    const sessionId = 'redact-upgrade';
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId });
+    const st = JSON.parse(fs.readFileSync(stateFile(sessionId), 'utf8'));
+    st.firstUserPrompt = `relance avec DB_PASSWORD=${PW}`;
+    st.bashHighlights = [`echo '${PW}' | sudo -S whoami`];
+    st.counters.bash = 1;
+    fs.writeFileSync(stateFile(sessionId), JSON.stringify(st));
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId, reason: 'logout' });
+    const journal = String(readJournal());
+    const log = fs.readFileSync(logPath, 'utf8');
+    for (const [where, text] of [['journal (recap)', journal], ['journal.md', log]]) {
+      assert.ok(!text.includes(PW_HEAD), `${where} holds the password:\n${text}`);
+    }
+    assert.match(log, /relance avec DB_PASSWORD=«redacted»/, `journal.md:\n${log}`);
+  });
+
+  test('a credential inside a router tool\'s JSON arguments is masked, the rest kept', () => {
+    const sessionId = 'redact-json';
+    runHook({
+      event: 'PostToolUse', cwd: vaultDir, sessionId,
+      toolName: 'mcp__obsidian-router__write_bundle',
+      toolInput: { vault: 'v', steps: [{ path: 'wiki/a.md', content: `token: ${PW}\n` }], apiKey: PW2 },
+    });
+    const journal = String(readJournal());
+    assert.ok(!journal.includes(PW_HEAD), `journal holds the token from the content:\n${journal}`);
+    assert.ok(!journal.includes(PW2.slice(0, 4)), `journal holds the apiKey value:\n${journal}`);
+    assert.match(journal, /wiki\/a\.md/, 'the written path stays readable');
+  });
+});
+
