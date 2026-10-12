@@ -198,7 +198,7 @@ export function remoteLinkHint({ vault, note, env = process.env, brief = false, 
   const why = brief
     ? `No local click-to-open link for remote vault "${name}"`
     : `Vault "${name}" is remote and declares no insecurePort, so no click-to-open link is emitted: that link is `
-      + 'http://127.0.0.1:<port>/open/… and only works for a reader sitting at the machine running that vault\'s Obsidian';
+      + 'http://127.0.0.1:<port>/mcp-router-bridge/open/… (/open/… on a bridge older than 0.10.0) and only works for a reader sitting at the machine running that vault\'s Obsidian';
   if ((env.OBSIDIAN_ROUTER_VIEW_AGENT_URL || '').trim()) {
     // Configured but unusable → say what is wrong, not "call get_view_link", which would fail.
     const st = viewAgentStatus(env);

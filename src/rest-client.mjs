@@ -9,6 +9,11 @@
  */
 import { fetch, Agent } from 'undici';
 import { encodeVaultPath, normalizeAnchor } from './helpers/click-to-open.mjs';
+import {
+  PREFIX_PROBE_TIMEOUT_MS,
+  rememberOpenPrefixFromRoot,
+  resolveOpenPrefix,
+} from './helpers/open-prefix.mjs';
 import { contentSha256 } from './helpers/content-hash.mjs';
 import { applyHeadingPatch, HeadingPatchError } from './helpers/heading-patch.mjs';
 import { safeForMessage } from './helpers/sanitize.mjs';
@@ -206,10 +211,12 @@ function categorizeHttpStatus(status, statusText, body, vault, urlPath) {
     // 404 there is AMBIGUOUS: the file may simply not exist in the vault, OR
     // the bridge plugin may not be installed/enabled (so the route is absent).
     // The hint names both causes so the caller can disambiguate.
-    const isOpenRoute = urlPath.startsWith('/open/');
+    // Bridge 0.10.0+ serves it under /mcp-router-bridge/open/ (Local REST API
+    // 5.4.0 reserves /open/ — see helpers/open-prefix.mjs).
+    const isOpenRoute = urlPath.startsWith('/open/') || urlPath.startsWith('/mcp-router-bridge/open/');
     let hint;
     if (isOpenRoute) {
-      hint = `Route ${urlPath} returned 404 — AMBIGUOUS: either the file doesn't exist in this vault, OR the "obsidian-mcp-router-bridge" plugin (>= 0.2.0, which registers /open) isn't installed/enabled. Check the path first, then the plugin (https://github.com/tboome33/obsidian-mcp-router-bridge).`;
+      hint = `Route ${urlPath} returned 404 — AMBIGUOUS: either the file doesn't exist in this vault, OR the "obsidian-mcp-router-bridge" plugin (>= 0.2.0, which registers the click-to-open route; >= 0.10.0 on Local REST API 5.4.0) isn't installed/enabled. Check the path first, then the plugin (https://github.com/tboome33/obsidian-mcp-router-bridge).`;
     } else if (isBridgeRoute) {
       hint = `Route ${urlPath} not found. The "obsidian-mcp-router-bridge" plugin is probably not installed or not enabled in this vault. Install it from https://github.com/tboome33/obsidian-mcp-router-bridge and toggle it on in Community plugins.`;
     }
@@ -630,6 +637,10 @@ export async function pingVault(vault) {
   try {
     const info = await request(vault, 'GET', '/');
     const latencyMs = Date.now() - start;
+    // Free information: the root lists the routes the bridge actually got, so
+    // every ping (list_vaults pings the fleet) refreshes the click-to-open
+    // prefix cache. Only a positive finding is kept — see open-prefix.mjs.
+    rememberOpenPrefixFromRoot(vault, info);
     // OWN property only, and on a plain object only. `info` is parsed JSON off
     // the network: a plain `info.authenticated` walks the prototype chain, so a
     // response that omits the field entirely could still yield `false` from
@@ -1412,6 +1423,25 @@ export async function openInObsidian(vault, filePath, { anchor } = {}) {
   const cleanAnchor = normalizeAnchor(anchor);
   const encodedPath = encodeVaultPath(filePath);
   const query = cleanAnchor ? `?h=${encodeURIComponent(cleanAnchor)}` : '';
-  await request(vault, 'GET', `/open/${encodedPath}${query}`, { json: false });
+  // The prefix the bridge announced: on Local REST API 5.4.0 `/open/` is not
+  // the bridge's (an authenticated GET there finds no route at all).
+  const prefix = await resolveVaultOpenPrefix(vault);
+  await request(vault, 'GET', `${prefix}${encodedPath}${query}`, { json: false });
   return { ok: true, anchor: cleanAnchor || null };
+}
+
+/**
+ * The click-to-open prefix this vault's bridge serves (`/mcp-router-bridge/open/`
+ * on bridge 0.10.0+, `/open/` before), asked over the vault's own REST channel
+ * and cached briefly — see helpers/open-prefix.mjs for the order (`/ping`,
+ * then the root's route list, then `/open/`). Never throws.
+ *
+ * @param {object} vault
+ * @returns {Promise<string>}
+ */
+export function resolveVaultOpenPrefix(vault) {
+  return resolveOpenPrefix(vault, {
+    fetchPing: (v) => request(v, 'GET', '/ping', { timeoutMs: PREFIX_PROBE_TIMEOUT_MS }),
+    fetchRoot: (v) => request(v, 'GET', '/', { timeoutMs: PREFIX_PROBE_TIMEOUT_MS }),
+  });
 }

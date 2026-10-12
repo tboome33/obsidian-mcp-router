@@ -29,6 +29,7 @@
  */
 
 import { buildClickToOpenUrl, resolveInsecurePort } from './click-to-open.mjs';
+import { getOpenPrefix } from './open-prefix.mjs';
 
 const PATH_KEY_NAMES = new Set(['filename', 'path', 'file']);
 // MAX_DEPTH guards against pathological cycles AND deep nesting. v0.14.9
@@ -122,9 +123,10 @@ export function collectClickToOpenLinks(vault, payload) {
   // rewrite — half the links on the old port, half on the new (third
   // pre-release review). A map is one operation and gets one snapshot.
   const port = resolveInsecurePort(vault);
+  const openPrefix = getOpenPrefix(vault);
   const links = Object.fromEntries(
     [...pathSet]
-      .map((p) => [p, buildClickToOpenUrl(vault, p, { port })])
+      .map((p) => [p, buildClickToOpenUrl(vault, p, { port, openPrefix })])
       .filter(([, url]) => url),
   );
   if (Object.keys(links).length === 0) return {};

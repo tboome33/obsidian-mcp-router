@@ -1,20 +1,20 @@
 ---
 name: meta-audit-bridge-readiness
-description: Audit every Obsidian vault for click-to-open (`GET /open/<path>`) readiness. Verifies the FOUR prerequisites — mcp-router-bridge ≥ 0.2.0, Local REST API ≥ 4.0.0, `enableInsecureServer: true`, AND a live probe that confirms the route is actually registered in-memory (catches the "files on disk are right but Obsidian needs reload" case). Triggers (EN) `audit my click-to-open links`, `check bridge readiness`, `are my /open links working`, `audit vault click-to-open`, `which vaults need a reload`, `verify bridge plugin install`. Triggers (FR) `audite les liens cliquables`, `vérifie le bridge sur tous les vaults`, `est-ce que mes liens /open marchent`, `audit click-to-open`, `quels vaults ont besoin d'un reload`, `audit du bridge`.
+description: Audit every Obsidian vault for click-to-open (`GET /mcp-router-bridge/open/<path>`, or `/open/<path>` before bridge 0.10.0) readiness. Verifies the FOUR prerequisites — mcp-router-bridge ≥ 0.2.0, Local REST API ≥ 4.0.0, `enableInsecureServer: true`, AND a live probe that confirms the route is actually registered in-memory (catches the "files on disk are right but Obsidian needs reload" case). Triggers (EN) `audit my click-to-open links`, `check bridge readiness`, `are my /open links working`, `audit vault click-to-open`, `which vaults need a reload`, `verify bridge plugin install`. Triggers (FR) `audite les liens cliquables`, `vérifie le bridge sur tous les vaults`, `est-ce que mes liens /open marchent`, `audit click-to-open`, `quels vaults ont besoin d'un reload`, `audit du bridge`.
 ---
 
 # meta-audit-bridge-readiness
 
-Diagnostic read-only de la fonctionnalité click-to-open (`http://127.0.0.1:<port>/open/<path>` qui ouvre un fichier dans Obsidian). C'est le complément de [[meta-status]] : `meta-status` vérifie que le router peut joindre chaque vault ; ce skill-là vérifie que les **liens cliquables** que tu mets dans le chat fonctionnent vraiment.
+Diagnostic read-only de la fonctionnalité click-to-open (`http://127.0.0.1:<port>/mcp-router-bridge/open/<path>` — `/open/<path>` avant le bridge 0.10.0 — qui ouvre un fichier dans Obsidian). C'est le complément de [[meta-status]] : `meta-status` vérifie que le router peut joindre chaque vault ; ce skill-là vérifie que les **liens cliquables** que tu mets dans le chat fonctionnent vraiment.
 
 Quatre prérequis sont checkés par vault :
 
 | # | Check | Si KO |
 |---|---|---|
-| 1 | `mcp-router-bridge` plugin ≥ v0.2.0 installé | route handler `/open/*` absent → `npm run deploy:all` dans le bridge repo |
+| 1 | `mcp-router-bridge` plugin ≥ v0.2.0 installé | route handler click-to-open absent (sur Local REST API 5.4.0, il faut le bridge ≥ 0.10.0) → `npm run deploy:all` dans le bridge repo |
 | 2 | `obsidian-local-rest-api` plugin ≥ v4.0.0 installé | méthode `addPublicRoute()` absente → update via Settings Community Plugins, ou copy v4.x dans `.template` + `--sync-all --force` |
 | 3 | `enableInsecureServer: true` + `insecurePort` set dans `.obsidian/plugins/obsidian-local-rest-api/data.json` | serveur HTTP non-chiffré coupé → AV (Bitdefender etc.) va dropper les HTTPS auto-signés silencieusement |
-| 4 | **Live probe** : `GET http://127.0.0.1:<insecurePort>/open/__nonexistent__.md` retourne 404 (= route enregistrée) plutôt que 401 (= middleware auth catch-all = route pas registered) | Obsidian a du code stale en mémoire → `Ctrl+P → "Reload app without saving"` |
+| 4 | **Live probe** : `GET http://127.0.0.1:<insecurePort>/mcp-router-bridge/open/__nonexistent__.md`, puis `/open/__nonexistent__.md`, retourne 404 (= route enregistrée) plutôt que 401 (= middleware auth catch-all = route pas registered) | Obsidian a du code stale en mémoire → `Ctrl+P → "Reload app without saving"` |
 
 Le check #4 est le plus important — c'est lui qui détecte le cas où **les fichiers sur disque sont corrects** mais Obsidian tourne encore avec l'ancien code (n'a pas reload depuis le sync). Les checks 1-3 sont des static-version checks.
 
@@ -58,7 +58,7 @@ Le check #4 est le plus important — c'est lui qui détecte le cas où **les fi
 
 3. Render as a compact table:
    - First line: `<total> vault(s) audited · <ready> ready · <notReady> need attention`
-   - Table: `vault | bridge | LRA | insecure | /open route | ready?`
+   - Table: `vault | bridge | LRA | insecure | open route | ready?` (la colonne dit quel préfixe a répondu)
    - ✅ for ready, ❌ for not ready, version numbers in yellow if below threshold
 
 4. For each vault with `ready: false`, output the first matching remediation in this order:

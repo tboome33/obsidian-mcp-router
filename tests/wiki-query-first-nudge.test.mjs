@@ -559,6 +559,23 @@ describe('wiki-query-first-nudge — v0.14.8 CHAT RESPONSE LINK FORMAT', () => {
     );
   });
 
+  test('bridge 0.10.0 on disk → the injected prefix is /mcp-router-bridge/open/', () => {
+    const manifest = path.join(cwdIsVaultWithBridge, '.obsidian', 'plugins', 'mcp-router-bridge', 'manifest.json');
+    fs.mkdirSync(path.dirname(manifest), { recursive: true });
+    fs.writeFileSync(manifest, JSON.stringify({ id: 'mcp-router-bridge', version: '0.10.0' }));
+    try {
+      const r = runHook({
+        prompt: 'Explique-moi comment cette architecture fonctionne dans ce projet',
+        cwd: cwdIsVaultWithBridge,
+      });
+      assert.equal(r.status, 0, r.stderr);
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      assert.ok(ctx.includes('http://127.0.0.1:27999/mcp-router-bridge/open/'), ctx);
+    } finally {
+      fs.rmSync(manifest, { force: true });
+    }
+  });
+
   test('emits CHAT RESPONSE LINK FORMAT block when bridge is reachable', () => {
     const r = runHook({
       prompt: 'Explique-moi comment cette architecture fonctionne dans ce projet',

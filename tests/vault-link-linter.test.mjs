@@ -1330,3 +1330,97 @@ describe('vault-link-linter — a stale binding must not switch the linter off',
     assert.equal(r.status, 0, 'no local vault is in scope, so nothing is reported');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Click-to-open PREFIX (bridge 0.10.0). Local REST API 5.4.0 reserves `/open/`,
+// so bridge 0.10.0 serves `/mcp-router-bridge/open/` (and `/open/` only where
+// Local REST API still accepts it). The linter reads both plugin versions from
+// the target vault's disk and checks the link's prefix is one it serves.
+// ---------------------------------------------------------------------------
+
+describe('vault-link-linter — click-to-open prefix (bridge 0.10.0)', () => {
+  const manifestPath = (id) => path.join(vaultPath, '.obsidian', 'plugins', id, 'manifest.json');
+  function setVersions({ bridge, lra }) {
+    for (const [id, v] of [['mcp-router-bridge', bridge], ['obsidian-local-rest-api', lra]]) {
+      const p = manifestPath(id);
+      if (v) {
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, JSON.stringify({ id, version: v }));
+      } else {
+        fs.rmSync(p, { force: true });
+      }
+    }
+  }
+  after(() => setVersions({}));
+
+  test('5.4.0 + bridge 0.10.0: the new prefix passes', () => {
+    setVersions({ bridge: '0.10.0', lra: '5.4.0' });
+    const r = runLinter('See [log](http://127.0.0.1:27142/mcp-router-bridge/open/wiki%2Flog.md).');
+    assert.equal(r.status, 0, r.stderr);
+  });
+
+  test('5.4.0 + bridge 0.10.0: a legacy /open/ link is blocked as wrong-prefix, fixed to the new prefix', () => {
+    setVersions({ bridge: '0.10.0', lra: '5.4.0' });
+    const r = runLinter('See [log](http://127.0.0.1:27142/open/wiki%2Flog.md?h=Top).');
+    assert.equal(r.status, 2, r.stderr);
+    assert.match(r.stderr, /wrong-prefix/);
+    assert.match(r.stderr, /used \/open\/, this vault's bridge serves \/mcp-router-bridge\/open\//);
+    assert.match(r.stderr, /http:\/\/127\.0\.0\.1:27142\/mcp-router-bridge\/open\/wiki%2Flog\.md\?h=Top/);
+  });
+
+  test('4.x + bridge 0.10.0: both prefixes pass', () => {
+    setVersions({ bridge: '0.10.0', lra: '4.0.2' });
+    assert.equal(runLinter('See [log](http://127.0.0.1:27142/open/wiki%2Flog.md).').status, 0);
+    assert.equal(runLinter('See [log](http://127.0.0.1:27142/mcp-router-bridge/open/wiki%2Flog.md).').status, 0);
+  });
+
+  test('bridge 0.9.1: a /mcp-router-bridge/open/ link is blocked (that bridge has no such route)', () => {
+    setVersions({ bridge: '0.9.1', lra: '4.0.2' });
+    const r = runLinter('See [log](http://127.0.0.1:27142/mcp-router-bridge/open/wiki%2Flog.md).');
+    assert.equal(r.status, 2, r.stderr);
+    assert.match(r.stderr, /wrong-prefix/);
+    assert.match(r.stderr, /http:\/\/127\.0\.0\.1:27142\/open\/wiki%2Flog\.md/);
+  });
+
+  test('a wrong port on a new-prefix link is still wrong-port, and the fix keeps the new prefix', () => {
+    setVersions({ bridge: '0.10.0', lra: '5.4.0' });
+    const r = runLinter('See [log](http://127.0.0.1:27143/mcp-router-bridge/open/wiki%2Flog.md).');
+    assert.equal(r.status, 2, r.stderr);
+    assert.match(r.stderr, /wrong-port/);
+    assert.match(r.stderr, /http:\/\/127\.0\.0\.1:27142\/mcp-router-bridge\/open\/wiki%2Flog\.md/);
+  });
+
+  test('a bare path suggestion uses the vault\'s prefix', () => {
+    setVersions({ bridge: '0.10.0', lra: '5.4.0' });
+    const r = runLinter('See [log](wiki/log.md).');
+    assert.equal(r.status, 2, r.stderr);
+    assert.match(r.stderr, /http:\/\/127\.0\.0\.1:27142\/mcp-router-bridge\/open\/wiki%2Flog\.md/);
+  });
+});
+
+// Codex review, 2026-10-11: bridge < 0.10.0 on Local REST API 5.4.0 serves no
+// click-to-open route at all — the linter must not block on a "correction"
+// identical to the broken link.
+describe('vault-link-linter — no supported route (codex review)', () => {
+  const manifestPath = (id) => path.join(vaultPath, '.obsidian', 'plugins', id, 'manifest.json');
+  function setVersions({ bridge, lra }) {
+    for (const [id, v] of [['mcp-router-bridge', bridge], ['obsidian-local-rest-api', lra]]) {
+      const p = manifestPath(id);
+      if (v) {
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, JSON.stringify({ id, version: v }));
+      } else {
+        fs.rmSync(p, { force: true });
+      }
+    }
+  }
+  after(() => setVersions({}));
+
+  test('bridge 0.9.1 + Local REST API 5.4.0: neither prefix is flagged as wrong-prefix', () => {
+    setVersions({ bridge: '0.9.1', lra: '5.4.0' });
+    for (const href of ['http://127.0.0.1:27142/open/wiki%2Flog.md', 'http://127.0.0.1:27142/mcp-router-bridge/open/wiki%2Flog.md']) {
+      const r = runLinter(`See [log](${href}).`);
+      assert.equal(r.status, 0, r.stderr);
+    }
+  });
+});

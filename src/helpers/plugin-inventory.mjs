@@ -34,8 +34,18 @@ import { resolveLocalRestState, REST_DATA_STATUS } from './rest-endpoint-state.m
 export const REQUIRED_PLUGIN_IDS = Object.freeze(['obsidian-local-rest-api', 'mcp-router-bridge']);
 export const BRIDGE_ID = 'mcp-router-bridge';
 export const LOCAL_REST_API_ID = 'obsidian-local-rest-api';
-/** A path the bridge's `/open/` route answers 404 for when it is registered. */
-export const OPEN_PROBE_PATH = '/open/__mcp_plugin_health_probe__nonexistent__.md';
+/**
+ * Paths the bridge's click-to-open route answers 404 for when it is registered,
+ * in the order they are asked: `/mcp-router-bridge/open/` (bridge 0.10.0+, the
+ * only one Local REST API 5.4.0 accepts — it reserves `/open/`), then the
+ * legacy `/open/` (bridge < 0.10.0). Either one answering 404 means "live".
+ */
+export const OPEN_PROBE_PATHS = Object.freeze([
+  '/mcp-router-bridge/open/__mcp_plugin_health_probe__nonexistent__.md',
+  '/open/__mcp_plugin_health_probe__nonexistent__.md',
+]);
+/** The first probe path — kept as a name for callers that predate OPEN_PROBE_PATHS. */
+export const OPEN_PROBE_PATH = OPEN_PROBE_PATHS[0];
 
 function assertNotServerProcess() {
   if (isServerProcess()) {
@@ -256,14 +266,22 @@ export async function gatherLiveEvidence({ endpoint, request = liveRequest }) {
   // while an unregistered route is refused by the auth layer). Without this a
   // remote vault's bridge was never probed at all, and "bridge loaded" rested
   // on its having registered a command.
-  const probeUrl = typeof endpoint.openProbeBase === 'string' && endpoint.openProbeBase
-    ? `${endpoint.openProbeBase.replace(/\/+$/, '')}${OPEN_PROBE_PATH}`
-    : Number.isInteger(endpoint.insecurePort) ? `http://127.0.0.1:${endpoint.insecurePort}${OPEN_PROBE_PATH}` : null;
-  if (probeUrl) {
-    const probe = await request(probeUrl, { headers: { ...(endpoint.extraHeaders || {}) }, tlsInsecure: endpoint.tlsInsecure === true });
-    if (probe && probe.status === 404) bridgeRoute = 'live';
-    else if (probe && probe.status) bridgeRoute = 'not-registered';
-    else bridgeRoute = 'unreachable';
+  //
+  // TWO PREFIXES, asked in order (OPEN_PROBE_PATHS). On Local REST API 5.4.0 an
+  // unregistered `/open/` lands on its own authenticated route (401), so asking
+  // only the legacy path called every 0.10.0 bridge there "not registered".
+  const probeBase = typeof endpoint.openProbeBase === 'string' && endpoint.openProbeBase
+    ? endpoint.openProbeBase.replace(/\/+$/, '')
+    : Number.isInteger(endpoint.insecurePort) ? `http://127.0.0.1:${endpoint.insecurePort}` : null;
+  if (probeBase) {
+    let answered = false;
+    for (const probePath of OPEN_PROBE_PATHS) {
+      const probe = await request(`${probeBase}${probePath}`, { headers: { ...(endpoint.extraHeaders || {}) }, tlsInsecure: endpoint.tlsInsecure === true });
+      if (probe && probe.status === 404) { bridgeRoute = 'live'; break; }
+      if (probe && probe.status) answered = true;
+      else if (!answered) break; // nothing listening: the second path would say the same
+    }
+    if (bridgeRoute !== 'live') bridgeRoute = answered ? 'not-registered' : 'unreachable';
   }
   return { probed: true, reachable, error, loadedIds, bridgeRoute };
 }
@@ -328,7 +346,7 @@ export function evaluatePluginHealth(inventory, evidence = null, { vaultArg = '<
   if (evidence && evidence.probed && evidence.reachable && evidence.bridgeRoute === 'not-registered' && inventory.bridge === 'installed') {
     problems.push({
       id: BRIDGE_ID, kind: 'bridge-route-not-registered', required: false, soft: true,
-      message: 'the bridge code is on disk but its /open/ route is not registered in the running Obsidian.',
+      message: 'the bridge code is on disk but its click-to-open route (/mcp-router-bridge/open/ or /open/) is not registered in the running Obsidian — on Local REST API 5.4.0 it takes bridge >= 0.10.0.',
       fix: 'reload Obsidian (Ctrl+P → "Reload app without saving"); check Restricted mode is OFF.',
     });
   }

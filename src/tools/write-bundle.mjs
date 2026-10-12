@@ -23,6 +23,7 @@
 import * as defaultRestClient from '../rest-client.mjs';
 import { randomBytes } from 'node:crypto';
 import { buildClickToOpenUrl, resolveInsecurePort } from '../helpers/click-to-open.mjs';
+import { getOpenPrefix } from '../helpers/open-prefix.mjs';
 import { contentSha256, isContentSha256 } from '../helpers/content-hash.mjs';
 import { computePlanSeal, verifyPlanSeal, isPlanSeal, vaultIdentity, PlanDriftError } from '../helpers/plan-seal.mjs';
 import { classifyError } from '../error-classify.mjs';
@@ -654,8 +655,9 @@ export async function writeBundleTool(registry, args = {}, _deps = {}) {
   // resolving per file would read data.json once per entry and — worse — a
   // rewrite mid-loop would split one bundle's links across two ports.
   const insecurePort = resolveInsecurePort(vault);
+  const openPrefix = getOpenPrefix(vault);
   for (const p of paths) {
-    const url = buildClickToOpenUrl(vault, p, { port: insecurePort });
+    const url = buildClickToOpenUrl(vault, p, { port: insecurePort, openPrefix });
     if (url) linkPairs.set(p, url);
   }
   const clickToOpenLinks = Object.fromEntries(linkPairs);

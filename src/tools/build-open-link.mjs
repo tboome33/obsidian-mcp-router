@@ -71,6 +71,7 @@ import {
   resolveVaultPathViaRest,
   makeRestWalker,
 } from '../helpers/resolve-vault-path.mjs';
+import { getOpenPrefix } from '../helpers/open-prefix.mjs';
 import { listFilesIn as defaultListFilesIn } from '../rest-client.mjs';
 import { collectMarkdown } from './build-wiki-graph.mjs';
 import { safeForMessage } from '../helpers/sanitize.mjs';
@@ -120,7 +121,7 @@ function safeReason(reason) {
  *   batch mode (false) returns an `{ error }` entry instead so one bad path
  *   doesn't sink the whole batch.
  */
-async function buildOneLink(vault, requestedPath, { anchor, throwOnMiss = false, port, resolve, network = true } = {}) {
+async function buildOneLink(vault, requestedPath, { anchor, throwOnMiss = false, port, openPrefix, resolve, network = true } = {}) {
   // `resolveVaultPathOnDisk` strips leading slashes and does NOT reject `..`,
   // then stats the joined result — so an unguarded caller path made this an
   // EXISTENCE ORACLE for files outside the vault: `../secret.md` came back as
@@ -187,7 +188,7 @@ async function buildOneLink(vault, requestedPath, { anchor, throwOnMiss = false,
   // each resolved the port independently — two disk reads per entry, and a
   // rewrite between them could hand back a result whose `clickToOpenUrl` and
   // `markdownLink` named DIFFERENT ports (third pre-release review).
-  const opts = { ...(clean ? { anchor: clean } : {}), port };
+  const opts = { ...(clean ? { anchor: clean } : {}), port, ...(openPrefix !== undefined ? { openPrefix } : {}) };
   const clickToOpenUrl = buildClickToOpenUrl(vault, effectivePath, opts);
   const markdownLink = clickToOpenUrl
     ? buildClickToOpenMarkdownLink(vault, effectivePath, undefined, opts)
@@ -277,6 +278,9 @@ export async function buildOpenLinkTool(registry, args = {}, _deps = {}) {
   // Resolved ONCE for this call — see the note in buildOneLink. A 200-path
   // batch reads data.json once, not 400 times, and every link in it agrees.
   const port = resolveInsecurePort(vault);
+  // Same for the click-to-open prefix the bridge announced (the dispatcher
+  // asked it before this call — see warmOpenPrefix in index.mjs).
+  const openPrefix = getOpenPrefix(vault);
 
   // WHICH BACKEND VERIFIES THE PATH, and why it is not "local vs remote" as a
   // matter of taste. A local vault has a disk, and one `stat` beats an HTTP
@@ -325,7 +329,7 @@ export async function buildOpenLinkTool(registry, args = {}, _deps = {}) {
     // per-entry hint is the brief one; the full explanation is said once, on the batch.
     const links = [];
     for (const p of paths) {
-      links.push(await buildOneLink(vault, p, { throwOnMiss: false, port, resolve, network: false }));
+      links.push(await buildOneLink(vault, p, { throwOnMiss: false, port, openPrefix, resolve, network: false }));
     }
     const unlinked = links.some((l) => !l.error && !l.clickToOpenUrl && !l.viewLink);
     const batchHint = !unlinked
@@ -339,6 +343,6 @@ export async function buildOpenLinkTool(registry, args = {}, _deps = {}) {
   // Single: a bad path THROWS — the caller cannot walk away with a dead URL.
   return ({
     vault: vault.name,
-    ...(await buildOneLink(vault, filePath, { anchor, throwOnMiss: true, port, resolve })),
+    ...(await buildOneLink(vault, filePath, { anchor, throwOnMiss: true, port, openPrefix, resolve })),
   });
 }

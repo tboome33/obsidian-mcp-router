@@ -90,6 +90,28 @@ function readInsecurePort(vaultPath) {
   }
 }
 
+/**
+ * The click-to-open prefix this vault's bridge serves, from the plugin version
+ * on disk: bridge 0.10.0+ → `/mcp-router-bridge/open/` (the only one Local REST
+ * API 5.4.0 accepts — it reserves `/open/`), older → `/open/`. A hook runs in
+ * its own process and cannot ask the bridge's /ping like the router does; the
+ * tool results' `clickToOpenUrl` carry the announced prefix.
+ */
+function readOpenPrefix(vaultPath) {
+  if (!vaultPath || typeof vaultPath !== 'string') return '/open/';
+  const isWindowsStyle = /^[A-Za-z]:[\\/]/.test(vaultPath) || /^\\\\/.test(vaultPath);
+  const lib = isWindowsStyle ? path.win32 : path.posix;
+  try {
+    const m = JSON.parse(fs.readFileSync(
+      lib.join(vaultPath, '.obsidian', 'plugins', 'mcp-router-bridge', 'manifest.json'), 'utf8',
+    ));
+    const [maj, min] = String(m?.version ?? '').split('.').map((n) => Number.parseInt(n, 10) || 0);
+    return maj > 0 || min >= 10 ? '/mcp-router-bridge/open/' : '/open/';
+  } catch {
+    return '/open/';
+  }
+}
+
 const TRUTHY = new Set(['true', '1', 'yes', 'on']);
 
 // ---- Read hook input from stdin ---------------------------------------
@@ -210,7 +232,8 @@ const pathRulesBlock = isWorkspaceBound ? [
   '',
   '  1. Obsidian wikilink: `[[basename]]` — resolves by basename across',
   '     the vault, survives file renames/moves. ✅ Best default.',
-  '  2. Click-to-open link: `[label](http://127.0.0.1:<insecurePort>/open/<url-encoded-vault-relative-path>)`',
+  '  2. Click-to-open link: `[label](http://127.0.0.1:<insecurePort>/mcp-router-bridge/open/<url-encoded-vault-relative-path>)`',
+  '     (`/open/` instead only for a bridge older than 0.10.0 — take the URL from a tool result when you can)',
   '     — cf ~/.claude/CLAUDE.md "Obsidian vault links" section. Reads the',
   `     port from \`${ctx.vaultPath}/.obsidian/plugins/obsidian-local-rest-api/data.json\``,
   '     `insecurePort` field. ✅ When a clickable cross-vault link is needed.',
@@ -251,7 +274,7 @@ const pathRulesBlock = isWorkspaceBound ? [
 // inline-code or to ask the user to enable the insecure server.
 const insecurePort = readInsecurePort(ctx.vaultPath);
 const urlPrefix = insecurePort
-  ? `http://127.0.0.1:${insecurePort}/open/`
+  ? `http://127.0.0.1:${insecurePort}${readOpenPrefix(ctx.vaultPath)}`
   : null;
 
 const chatLinkBlock = urlPrefix ? [
