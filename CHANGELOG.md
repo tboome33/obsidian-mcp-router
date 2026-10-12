@@ -10,6 +10,35 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.99.1] — 2026-10-13 — dependency security update: 21 known vulnerabilities down to 5, no critical left
+
+### Security
+
+On 2026-10-12, `npm install` of the plugin reported 21 known vulnerabilities in its dependencies:
+4 critical, 12 high, 4 moderate, 1 low. All 21 were in runtime dependencies (the package has no
+dev dependencies), so every machine installing the plugin received them. This release brings the
+count to 5 high, 0 critical (`npm audit`, measured on the release tree):
+
+- `npm audit fix` (no `--force`) within the ranges already declared: `@modelcontextprotocol/sdk`
+  1.29.0 → 1.32.1, `repomix` 1.14.0 → 1.18.1, `undici` 7.25.0 → 7.30.0, plus their transitive
+  dependencies. This clears the four criticals: `handlebars`, `tar` and `tinypool` (pulled in by
+  `repomix`, the engine of `git_repo_to_markdown`) and `proxy-addr` (pulled in by `express` inside
+  the MCP SDK), and `repomix`'s own command-injection advisory.
+- `defuddle` ^0.18.1 → ^0.19.5 (XSS advisory on ≤ 0.19.0). A semver-major step on 0.x, so it is
+  declared in `package.json` rather than left to `npm audit fix --force`. Checked through the
+  router's own wrapper (`src/helpers/defuddle-extract.mjs`) on the same page under 0.18.1 and
+  0.19.5: same title, author and article body, navigation and footer stripped in both, no fallback.
+- `git_repo_to_markdown`'s engine checked the same way: `fromRepo` on a small public repository
+  gives the same output length under `repomix` 1.14.0 and 1.18.1.
+- **Remaining, no fix published**: `braces` ≤ 3.0.3 (stack-exhaustion denial of service on deeply
+  nested glob patterns; the advisory covers every published version) and the four packages that
+  only carry it (`micromatch`, `fast-glob`, `globby`, `repomix`). It is reachable only through
+  `git_repo_to_markdown`, which runs `repomix` as a separate process: a hostile repository could
+  make that conversion fail, not stop the router.
+
+> Numbering note: the local tag v0.97.2 held an earlier build of this same fix on top of v0.97.1;
+> it was never pushed and is superseded by this release.
+
 ## [0.99.0] — 2026-10-12 — click-to-open links work again on Local REST API 5.4.0
 
 Everything merged since v0.97.1. The headline: click-to-open links follow the prefix the bridge announces, so a click on a link to a vault running Local REST API 5.4.0 opens the note again instead of answering 401.
