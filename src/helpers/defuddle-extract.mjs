@@ -29,8 +29,9 @@
  *     this one page", not "the whole ingestion errored out".
  *
  * v0.14.7 P2 hardening — defuddle's deps are `optionalDependencies`:
- *   `defuddle@0.18.1` declares `linkedom`, `mathml-to-latex`, `temml`
- *   and `turndown` as OPTIONAL dependencies. With a normal `npm install`
+ *   `defuddle@0.18.1` declared `linkedom`, `mathml-to-latex`, `temml`
+ *   and `turndown` as OPTIONAL dependencies (0.19.5 still does for all
+ *   but `mathml-to-latex`). With a normal `npm install`
  *   they're installed; but `npm ci --omit=optional` (used in some CI
  *   pipelines, containerized installs, and `node:slim` Docker images)
  *   skips them — then `import 'defuddle/node'` throws `ERR_MODULE_NOT_FOUND`
