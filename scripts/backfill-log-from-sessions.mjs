@@ -52,6 +52,7 @@ import { reconcileVaultSessions } from '../hooks/_helpers/session-reconcile.mjs'
 import { resolveScaffold } from '../src/helpers/wiki-meta-scaffolds.mjs';
 import { cmp } from '../src/helpers/total-order.mjs';
 import { registeredVaultPaths, resolveVaultBySlug } from '../src/helpers/vault-slug.mjs';
+import { redactSecrets } from '../src/helpers/redact-secrets.mjs';
 
 // State dir where session-auto-journal.mjs persists per-session JSON (used by
 // --include-open for recap enrichment + liveness). Mirrors the hook's path.
@@ -143,7 +144,10 @@ function extractRecapResult(content) {
  */
 function extractFirstPrompt(content) {
   const m = content.match(/^## \d{2}:\d{2}:\d{2} — User prompt\n+([^\n]+)/m);
-  return m ? m[1].trim().slice(0, 120) : null;
+  // Masked before the cut (router v0.100.0): a journal written before then
+  // holds the prompt as typed, and cutting first can strip the context that
+  // identifies a secret while keeping its first characters.
+  return m ? redactSecrets(m[1]).trim().slice(0, 120) : null;
 }
 
 /**
@@ -163,8 +167,9 @@ function reconstructEntry(sessionPath) {
   // pre-v0.12.8 sessions or manual notes) → chrono prompt → fallback.
   // v0.12.10 (review+ pass 1 — codex P3): the header documented `prompt:`
   // as a fallback but the code skipped it — adding now.
-  const objective = (fm.firstUserPrompt && fm.firstUserPrompt.trim())
-    || (fm.prompt && fm.prompt.trim())
+  // Every candidate is masked: frontmatter values were written as typed too.
+  const objective = (fm.firstUserPrompt && redactSecrets(fm.firstUserPrompt).trim())
+    || (fm.prompt && redactSecrets(fm.prompt).trim())
     || extractFirstPrompt(content)
     || '(historical session — no objective captured)';
 

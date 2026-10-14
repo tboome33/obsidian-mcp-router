@@ -301,3 +301,54 @@ describe('backfill-log-from-sessions — error paths', () => {
     assert.equal(fs.existsSync(path.join(vaultDir, 'wiki-meta', 'journal.md')), false, 'journal.md must NOT be created');
   });
 });
+
+// Sessions journaled before router v0.100.0 were not masked; the backfill
+// copies their first prompt into journal.md, so it masks again. Values are
+// built at run time: the release scan reads tests/.
+describe('backfill-log-from-sessions — secrets from older sessions are masked', () => {
+  const PW = ['Qx7', 'mV2', 'pL9', 'zK4'].join('');
+
+  test('a first prompt from the chrono section is masked before its 120-character cut', () => {
+    const prefix = `${'p'.repeat(120 - 8 - "echo '".length - 1)} `;
+    const prompt = `${prefix}echo '${PW}' | sudo -S whoami`;
+    // The script keeps the first 120 characters.
+    const kept = prompt.slice(0, 120);
+    assert.ok(kept.includes(PW.slice(0, 4)) && !kept.includes(PW),
+      'fixture: a cut at 120 must keep the start of the password, not all of it');
+    writeSession('2026-05-23-1000-test-sec1.md', {
+      chronoPrompts: [prompt],
+      recap: { label: '1 user prompts' },
+    });
+    const r = runScript('--vault', vaultDir);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const log = readLog();
+    assert.match(log, /\[\[2026-05-23-1000-test-sec1\]\]/, 'the line was written');
+    assert.ok(!log.includes(PW.slice(0, 4)), `journal.md holds the start of the password:\n${log}`);
+  });
+
+  test('a firstUserPrompt read from the frontmatter is masked', () => {
+    writeSession('2026-05-23-1000-test-sec2.md', {
+      firstUserPrompt: `DB_PASSWORD=${PW} relance`,
+      recap: { label: '1 user prompts' },
+    });
+    const r = runScript('--vault', vaultDir);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const log = readLog();
+    assert.ok(!log.includes(PW.slice(0, 4)), `journal.md holds the password:\n${log}`);
+    assert.match(log, /DB_PASSWORD=«redacted» relance/, `journal.md:\n${log}`);
+  });
+
+  test('a legacy prompt: frontmatter field is masked', () => {
+    const sessionPath = path.join(vaultDir, 'wiki-meta', 'Sessions', '2026-05-23-1000-test-sec3.md');
+    fs.writeFileSync(sessionPath, (
+      '---\ntype: session\nsession-id: test-sec3\nstarted-at: 2026-05-23T10:00:00.000Z\nstatus: closed\n'
+      + `prompt: SMTP_PASS=${PW} envoie\nduration: 30m\n---\n\n# Session\n\n`
+      + '## Recap (auto-generated)\n\n- **1 user prompts** · **0 tool calls**\n'
+    ), 'utf8');
+    const r = runScript('--vault', vaultDir);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const log = readLog();
+    assert.ok(!log.includes(PW.slice(0, 4)), `journal.md holds the password from prompt:\n${log}`);
+    assert.match(log, /SMTP_PASS=«redacted» envoie/, `journal.md:\n${log}`);
+  });
+});

@@ -55,9 +55,18 @@
  * `~/.claude/obsidian-mcp-router/session-journals/<session-id>.json`.
  * Cleaned up on SessionEnd.
  *
- * Privacy: user prompts and tool args are written VERBATIM. Don't paste
- * secrets in prompts if the vault syncs externally. Per the design
- * decision: "verbatim recommended, vaults locaux non-syncés extérieurement".
+ * Privacy: user prompts and tool args are written as typed EXCEPT for
+ * secrets, which are masked as `«redacted»` before anything is written
+ * (`src/helpers/redact-secrets.mjs`, router v0.100.0+). The original design
+ * wrote everything verbatim on the premise "vaults locaux non-syncés
+ * extérieurement"; that premise broke once vaults were served from a server
+ * and shared over the network, and on 2026-10-04 a session note was found
+ * holding a sudo password piped into `sudo -S`. Masking runs BEFORE every
+ * truncation (a cut can split the pattern that identifies a secret). A prompt
+ * or command longer than CHECK_MAX_CHARS (512 Ki characters) is not read: the
+ * journal gets a notice instead. The masking recognises shapes and names, not
+ * intent: a session that handles secrets on purpose should still set
+ * OBSIDIAN_ROUTER_NO_SESSION_JOURNAL.
  *
  * Wire up in ~/.claude/settings.json:
  *   "SessionStart": [{ "matcher": "startup|resume|clear", "hooks": [
@@ -90,10 +99,11 @@ import {
   readRouterConfig,
   detectVaultContext,
 } from './_helpers/workspace-vault.mjs';
-import { reconcileVaultSessions } from './_helpers/session-reconcile.mjs';
+import { reconcileVaultSessions, buildLogLineSummary } from './_helpers/session-reconcile.mjs';
 import { isLoggedTool, isRouterWriteTool, routerWriteToolName } from './_helpers/tool-names.mjs';
 import { writeTargets } from '../src/helpers/write-targets.mjs';
 import { resolveScaffold } from '../src/helpers/wiki-meta-scaffolds.mjs';
+import { redactSecrets, redactDeep } from '../src/helpers/redact-secrets.mjs';
 
 // Same truthy vocabulary as check-router-update.mjs and the other hooks.
 const TRUTHY = new Set(['true', '1', 'yes', 'on']);
@@ -186,8 +196,14 @@ function resolveCwd(payload) {
 }
 
 // ---------------------------------------------------------------------------
-// Tool-argument summarization (short, lossy, safe for verbatim)
+// Tool-argument summarization (short, lossy, secrets masked)
 // ---------------------------------------------------------------------------
+//
+// Every free-text value copied from a payload goes through `redactSecrets`
+// (or `redactDeep` for an object) BEFORE `truncate`: cutting first could leave
+// the start of a password in clear once the pattern around it is gone. A text
+// too long to check comes back as a notice; an object is read only as far as
+// the 200 characters kept of its JSON (`budget`).
 
 function truncate(s, max) {
   if (s == null) return '';
@@ -204,14 +220,14 @@ function summarizeToolInput(toolName, input) {
     case 'MultiEdit':
       return `file: ${input.file_path || '?'}`;
     case 'Bash':
-      return `\`\`\`bash\n${truncate(input.command || '', 200)}\n\`\`\``;
+      return `\`\`\`bash\n${truncate(redactSecrets(input.command || ''), 200)}\n\`\`\``;
     case 'Read':
       return `file: ${input.file_path || '?'}`;
     default:
       // MCP router tools — most have a path or vault+path. Try common keys.
       if (input.path) return `path: ${input.path}${input.vault ? ` (vault: ${input.vault})` : ''}`;
       if (input.target) return `target: ${input.target}`;
-      return truncate(JSON.stringify(input), 200);
+      return truncate(JSON.stringify(redactDeep(input, { budget: 200 })), 200);
   }
 }
 
@@ -475,11 +491,14 @@ const MAX_PROMPT_BYTES = 100_000;
 function handleUserPromptSubmit(payload) {
   const state = ensureJournalForSession(payload);
   if (!state) return;
-  const promptRaw = String(payload.prompt || '').trim();
+  // Masked first: both the journal block and the journal.md objective
+  // (`firstUserPrompt`) are cut from this string.
+  const original = String(payload.prompt || '');
+  const promptRaw = redactSecrets(original).trim();
   if (!promptRaw) return;
   const prompt = promptRaw.length > MAX_PROMPT_BYTES
     ? promptRaw.slice(0, MAX_PROMPT_BYTES) +
-      `\n\n> [truncated by session-auto-journal — original prompt was ${promptRaw.length} chars; full content in Claude Code transcript]\n`
+      `\n\n> [truncated by session-auto-journal — original prompt was ${original.trim().length} chars; full content in Claude Code transcript]\n`
     : promptRaw;
 
   const time = hhmmColon();
@@ -516,7 +535,9 @@ function handlePostToolUse(payload) {
     if (fp && !state.files.includes(fp)) state.files.push(fp);
   } else if (toolName === 'Bash') {
     state.counters.bash = (state.counters.bash || 0) + 1;
-    const cmd = String(payload.tool_input?.command || '').trim();
+    // Masked before the 80-character cut below; the highlight is copied into
+    // the recap and into the journal.md line.
+    const cmd = redactSecrets(String(payload.tool_input?.command || '')).trim();
     if (cmd && state.bashHighlights.length < 8) {
       // Keep up to 8 distinct bash commands as recap highlights, first
       // ~80 chars each (enough to recognize the command + first arg).
@@ -572,7 +593,9 @@ function buildRecap(state, endedAt) {
     : null;
 
   const bashLine = (state.bashHighlights || []).length
-    ? '- **Bash highlights**: ' + state.bashHighlights.map((b) => '`' + b + '`').join(' · ')
+    // Masked again here: a state file written by a hook older than v0.100.0
+    // holds the highlights as typed.
+    ? '- **Bash highlights**: ' + state.bashHighlights.map((b) => '`' + redactSecrets(b) + '`').join(' · ')
     : null;
 
   const duration = humanDuration(state.startedAt, endedAt);
@@ -662,37 +685,10 @@ function sanitizeForLogEntry(s) {
   return out;
 }
 
-// v0.12.8: compose a one-line "objectif" + "résultat" summary used by the
-// log.md auto-append. The objective is the first user prompt (captured at
-// UserPromptSubmit); the result is a compact heuristic from the counters
-// already collected during the session — same data buildRecap() uses, but
-// flattened to a single line that fits in a markdown log entry.
-function buildLogLineSummary(state, endedAt) {
-  const objective = (state.firstUserPrompt && state.firstUserPrompt.trim())
-    || '(no user prompt captured)';
-
-  const c = state.counters || {};
-  const parts = [];
-  if (c.writes) parts.push(`${c.writes} writes`);
-  if (c.mcpWrites) parts.push(`${c.mcpWrites} mcp writes`);
-  if (c.bash) parts.push(`${c.bash} bash`);
-  const fileCount = (state.files || []).length;
-  if (fileCount) parts.push(`${fileCount} files`);
-  // Add the first bash highlight as a quick "what happened" anchor.
-  // v0.12.10 (review+ pass 1 — codex P2-1): collapse any embedded newlines
-  // and runs of whitespace to a single space so a multiline heredoc/script
-  // doesn't break the 2-line log entry format.
-  const bashHint = (state.bashHighlights || [])[0];
-  if (bashHint) {
-    const flat = bashHint.replace(/\s+/g, ' ').trim();
-    parts.push(`first bash: ${truncate(flat, 60)}`);
-  }
-  const duration = humanDuration(state.startedAt, endedAt);
-  parts.push(duration);
-
-  const result = parts.length ? parts.join(' · ') : 'no-op session';
-  return { objective, result };
-}
+// v0.12.8: the one-line "objectif" + "résultat" summary of the log.md
+// auto-append. Since v0.100.0 it is IMPORTED from `_helpers/session-reconcile.mjs`
+// (`buildLogLineSummary`): this file kept its own copy, the two drifted, and the
+// copy here was the one that did not mask a state file written before v0.100.0.
 
 // v0.12.8: append a 2-line entry to <vault>/wiki-meta/journal.md at SessionEnd
 // (`wiki-meta/log.md` before v0.58.0 — still accepted, see

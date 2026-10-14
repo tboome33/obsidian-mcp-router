@@ -47,8 +47,16 @@
  * Idempotent: log.md dedup is by `[[basename]]` grep; the frontmatter flip
  * is a no-op once `status: closed`; the recap is inserted at most once.
  *
- * Zero deps on src/. Pure functions where possible; all I/O is best-effort
- * and never throws (callers are hooks that must not block Claude Code).
+ * Depends only on small pure helpers under src/helpers/. Pure functions where
+ * possible; all I/O is best-effort and never throws (callers are hooks that
+ * must not block Claude Code).
+ *
+ * SECRETS (router v0.100.0): every prompt and Bash highlight this module copies
+ * into journal.md or into a recap goes through `redactSecrets` first, and
+ * BEFORE any truncation. The material it reads (an orphaned journal, a state
+ * JSON) may predate the masking the journal hook now does at capture time.
+ * A value an older hook already cut can stay partly unrecognisable: masking
+ * cannot restore the context a truncation removed.
  *
  * Introduced: router v0.19.0.
  */
@@ -59,10 +67,12 @@ import path from 'node:path';
 import { isRouterWriteTool } from './tool-names.mjs';
 import { resolveScaffold, scaffoldWritePath } from '../../src/helpers/wiki-meta-scaffolds.mjs';
 import { cmp } from '../../src/helpers/total-order.mjs';
+import { redactSecrets } from '../../src/helpers/redact-secrets.mjs';
 
 // ---------------------------------------------------------------------------
-// Pure helpers (single source of truth — imported by session-auto-journal.mjs
-// so the hook and this module can never drift on sanitize/summary format)
+// Pure helpers. `buildLogLineSummary` is imported by session-auto-journal.mjs
+// (since v0.100.0; before, the hook kept a copy that drifted and did not mask).
+// `sanitizeForLogEntry` still has an identical copy in the hook.
 // ---------------------------------------------------------------------------
 
 export function pad2(n) { return String(n).padStart(2, '0'); }
@@ -143,7 +153,7 @@ export function parseFrontmatter(content) {
  * reconstructed from a journal file). Same logic the SessionEnd path uses.
  */
 export function buildLogLineSummary(state, endedAt) {
-  const objective = (state.firstUserPrompt && String(state.firstUserPrompt).trim())
+  const objective = (state.firstUserPrompt && redactSecrets(state.firstUserPrompt).trim())
     || '(no user prompt captured)';
 
   const c = state.counters || {};
@@ -155,7 +165,7 @@ export function buildLogLineSummary(state, endedAt) {
   if (fileCount) parts.push(`${fileCount} files`);
   const bashHint = (state.bashHighlights || [])[0];
   if (bashHint) {
-    const flat = String(bashHint).replace(/\s+/g, ' ').trim();
+    const flat = redactSecrets(bashHint).replace(/\s+/g, ' ').trim();
     parts.push(`first bash: ${truncate(flat, 60)}`);
   }
   if (state.startedAt && endedAt) parts.push(humanDuration(state.startedAt, endedAt));
@@ -217,7 +227,9 @@ export function reconstructStateFromContent(content, fm) {
     else if (isRouterWriteTool(tool)) mcpWrites += 1;
   }
   const firstPromptMatch = content.match(RE_FIRST_PROMPT);
-  const firstUserPrompt = firstPromptMatch ? truncate(firstPromptMatch[1].trim(), 120) : null;
+  // Masked before the cut: a journal written before router v0.100.0 holds the
+  // prompt as typed.
+  const firstUserPrompt = firstPromptMatch ? truncate(redactSecrets(firstPromptMatch[1]).trim(), 120) : null;
 
   return {
     counters: { prompts, toolCalls, writes, bash, mcpWrites, reads: 0 },
@@ -250,7 +262,7 @@ function buildReconcileRecap(state, endedAt) {
       + (state.files.length > 15 ? ' …' : '')
     : null;
   const bashLine = (state.bashHighlights || []).length
-    ? '- **Bash highlights**: ' + state.bashHighlights.map((b) => '`' + b + '`').join(' · ')
+    ? '- **Bash highlights**: ' + state.bashHighlights.map((b) => '`' + redactSecrets(b) + '`').join(' · ')
     : null;
   const duration = state.startedAt ? humanDuration(state.startedAt, endedAt) : 'unknown';
 

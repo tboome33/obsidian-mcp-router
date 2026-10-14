@@ -60,6 +60,7 @@ import {
   DOS_EPOCH_DATE,
   DOS_EPOCH_TIME,
 } from './deterministic-zip.mjs';
+import { SECRET_RULES } from './secret-shapes.mjs';
 
 export { createDeterministicZip, readZipDirectory, readZipEntryContent, compareLocalHeader };
 
@@ -203,27 +204,9 @@ export function applyAllowlist(paths, zones) {
 // 2. Scan
 // ---------------------------------------------------------------------------
 
-/**
- * High-confidence credential shapes. Each is a *format* with a checkable
- * prefix and length — not a guess — so a hit is worth stopping a release for.
- */
-const SECRET_RULES = Object.freeze([
-  { id: 'private-key-block', re: /-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----/g },
-  { id: 'aws-access-key-id', re: /\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA)[0-9A-Z]{16}\b/g },
-  { id: 'github-token', re: /\bgh[pousr]_[A-Za-z0-9]{36,}/g },
-  { id: 'github-fine-grained-pat', re: /\bgithub_pat_[A-Za-z0-9_]{60,}/g },
-  { id: 'slack-token', re: /\bxox[baprs]-[A-Za-z0-9-]{10,}/g },
-  { id: 'anthropic-api-key', re: /\bsk-ant-[A-Za-z0-9_-]{24,}/g },
-  { id: 'openai-api-key', re: /\bsk-(?:proj-)?[A-Za-z0-9]{20,}/g },
-  { id: 'google-api-key', re: /\bAIza[0-9A-Za-z_-]{35}\b/g },
-  { id: 'jwt', re: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g },
-  { id: 'npm-token', re: /\bnpm_[A-Za-z0-9]{36}\b/g },
-  {
-    id: 'authorization-header',
-    re: /\bauthorization["'\s]*[:=]\s*["'`]?\s*(?:Bearer|Basic|Token)\s+([A-Za-z0-9._~+/=-]{12,})/gi,
-    valueGroup: 1,
-  },
-]);
+// The high-confidence credential shapes (`SECRET_RULES`) live in
+// `./secret-shapes.mjs` since they gained a second reader: the session journal
+// masks the same formats before writing to a vault. Imported at the top.
 
 /**
  * The generic `key = <opaque blob>` rule. Far more prone to false positives

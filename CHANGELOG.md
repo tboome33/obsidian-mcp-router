@@ -10,6 +10,157 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.100.0] — 2026-10-13 — the session journal masks secrets before anything reaches a vault
+
+> Numbering note: this change was built and reviewed on 2026-10-04 as v0.98.0 but never pushed;
+> v0.99.0 and v0.99.1 were published meanwhile, so it ships as v0.100.0, on top of both.
+
+On 2026-10-04 a vault session note was found holding a sudo password. The `session-auto-journal`
+hook had copied a Bash command of the form `echo '<password>' | sudo -S …` into the note, as it
+copied every prompt and command: by design, on the premise that a vault is a local folder nobody
+else reads. That premise no longer holds — vaults are now served from a server and shared over the
+network — so the journal now masks what it recognises as a secret, as `«redacted»`, before it
+writes anything.
+
+### What is masked
+
+`src/helpers/redact-secrets.mjs` (new) runs an ordered table of 30 rules — 20 structural rules
+and 10 of the 11 credential formats the export gate already knows (its private-key format only
+spots the BEGIN line; a structural rule masks the whole block instead). Only the secret VALUE is
+replaced, so the journal still says what was done (`echo «redacted» | sudo -S ip6tables -S`):
+
+- a password fed to `sudo -S`: the `echo` / `printf` arguments piped into it — directly, or into
+  `ssh` / `plink` whose remote command runs `sudo -S`, never past a `;`, `&` or another pipe — and
+  a here-string; sudo options before `-S` included, while a `-S` after the command word
+  (`pacman -S`) belongs to the command and is left alone;
+- credential flags (`--password`, `--token`, `--api-key`, `-pw`, `--oauth2-bearer`, `--auth`, …;
+  not `--password-file` nor `--no-password`), `mysql -p<value>`, `sshpass -p`, `docker`/`podman`
+  `login -p`, `redis-cli -a`, openssl `pass:` sources, `curl -u user:<password>`, `curl -b`, a
+  password inside a URL (the user and the host stay readable), PowerShell
+  `ConvertTo-SecureString '<value>'`;
+- Authorization headers, to the closing quote or the end of the line (a known scheme such as
+  Bearer is kept; an unknown one such as `SSWS` is masked with its token), and credential-named
+  headers (`X-Api-Key`, `Cookie`, …);
+- assignments and key/value pairs whose NAME is a credential name: `DB_PASSWORD=…`,
+  `PGPASSWORD=…`, `"apiKey": "…"`, `"X-Api-Key" = "…"`, `\"password\":\"…\"` (escaped JSON on a
+  Windows command line), `password: …` at the start of a line, `?access_token=…` and `&sig=…` in
+  a URL, `:_authToken=…`. Values that only refer to a secret are kept: `$VAR`, `${VAR}`,
+  `$(cat …)`, `<placeholder>`, `***` — but `$(echo …)` / `$(printf …)` print a literal and are
+  masked;
+- the credential formats of `SECRET_RULES` (AWS, GitHub, Slack, Anthropic, OpenAI, Google, JWT,
+  npm, Authorization) wherever they appear, and private key blocks: THROUGH their END line
+  whenever it is present — whatever the line endings, blank lines, `> ` quoting or rewrapping in
+  between — and, when it is missing, to the next code fence or to a blank line followed by
+  something that is not key material, so the markdown around them survives. A block never runs
+  through a code fence or into the next BEGIN line.
+
+A command continued over several lines with backslashes is read as one. A value is always masked
+whole, whatever its length. The table is applied again while it changes something (at most three
+passes): masking a token can bring a `-p` back within reach of its `mysql`.
+
+### Where it applies — every place a session's text is copied into a vault
+
+- the journal hook: the user-prompt block, the Bash block, the JSON summary of router-tool
+  arguments (masked as an object, before serialisation; anything under a credential-named key is
+  replaced whole, and only the strings that can reach the 200 kept characters are read), the Bash
+  highlights of the recap, and the objective and "first bash" hint of the `journal.md` line;
+- reconciliation of orphaned sessions (`hooks/_helpers/session-reconcile.mjs`): the first prompt
+  read from an old journal, the objective, hint and recap highlights read from an old state file;
+- `scripts/backfill-log-from-sessions.mjs`: the first prompt read from the chrono section, and the
+  `firstUserPrompt:` and legacy `prompt:` frontmatter fields.
+
+The hook's SessionEnd used to build its `journal.md` line with its own copy of
+`buildLogLineSummary`; it now imports the one in `session-reconcile.mjs`, so a session started by
+an older hook and ended by this one is masked too.
+
+Masking always runs BEFORE a cut: `truncate` first would turn `echo '<password>' | sudo -S` into
+`echo '<start of password>…`, no longer recognisable, with its start in clear. The tests place a
+password across each cut (80, 120, 200 characters) to hold that order.
+
+### The masking has a bounded cost
+
+The first version was measured before release: 100 KB of the word `echo` kept it busy for more
+than 280 seconds, each `echo` reading to the end of its line in search of `| sudo -S`. The journal
+runs on every prompt and every tool call. Every rule that searches forward for context that may be
+absent now reads a bounded stretch (16 echo arguments, 8 sudo options, 256 characters between a
+command and its `-p`, blank runs of 8). Two formats of the export gate had the same defect — a
+long run of blanks after `authorization:`, and `-eyJ` repeated — and are repaired in
+`secret-shapes.mjs`: blank runs of at most 16 around an Authorization scheme, and a JWT must now
+START a run of token characters (it is no longer recognised right after `-` or `_`), which removes
+the repeated starting points without limiting the length of a header that carries a certificate
+chain. The gate's 135 tests pass unchanged.
+
+A text longer than 524 288 characters (`CHECK_MAX_CHARS`, 512 Ki) is not read at all: it comes
+back as `«redacted: N characters, too long to check»`. The journal keeps 100 000 characters of a
+prompt, so only a paste or a generated blob that size loses its journal entry, and nothing it holds
+is published unread.
+
+Measured on 40 crafted 100 KB texts: worst 62 ms, and four times the text costs 3.7–4.8 times
+the time. The tests time 14 crafted 400 KB texts in child processes, killed at 10 s,
+with a 2 s limit.
+
+### Reviewed before release
+
+An adversarial review of the first version (a Security Engineer agent, given the list of claims)
+found the incident's own pattern still leaking through `plink … -pw`, through
+`echo … | ssh host 'sudo -S …'` and through backslash-continued lines; long values (a kubectl JWT)
+masked only in part; three regexes whose time grew with the square of the input; a SessionEnd path
+that did not mask a state file written by an older hook; a way for the "excerpt" optimisation of
+that first version to let a password through; and four false numbers in this entry. Every finding
+is fixed above and has its own test; the excerpt optimisation was removed in favour of the 512 Ki
+limit. Three more rounds attacked the repairs. The second found one new leak in them — stopping a
+key block at any blank line wrote the body of an encrypted PEM key in clear — and a narrower
+regression in the export gate (a JWT with a header longer than 1 024 characters went
+unrecognised). The third found four ways of pasting a key that still left its body in clear even
+with the END line present; the key rule was rewritten to mask through the END line first, as the
+reviewer proposed. The fourth round found no leak in the repairs and closed with "OK to merge",
+asking only that the limits below be stated exactly.
+
+### Limits, stated
+
+The masking recognises shapes and names, not intent. Not masked: a password passed as a plain
+positional argument (`net use <share> <password>`), sent to `sudo -S` through a multi-line
+heredoc, `cat <<< … |`, a subshell `(echo …) |` or ANSI-C quoting `$'…'`, a token used as the URL
+user (`https://<token>@host`), a JWT glued right after a `-`, `.netrc` lines, YAML block values
+(`password: |`), and a credential in prose with no credential word next to it.
+
+Private keys, precisely: a key whose END line is missing AND whose lines are doubled (a blank line
+between every line, as some copies produce) can leave its last line in clear — or, for an
+encrypted PEM whose header lines precede the body, the whole body. A key split by a code fence
+keeps the part after the fence in clear (an END beyond a fence is taken to belong to another
+key). A header with a dash missing is not recognised. An END whose label differs from its BEGIN
+falls back to the guess, which may mask the prose after the key. An HTML comment or `<details>`
+opened before a key and closed inside it is left open.
+
+The masking also over-masks on purpose rather than
+leak: the rest of an unquoted line after `authorization:`, and a line that starts with `cookie:`
+or `signature:`, are masked whole. A tool-argument object nested more than a few
+thousand levels deep throws, as `JSON.stringify` would; the hook catches it and that entry is not
+journaled. Outside this change, the review measured the export gate's e-mail rule (`EMAIL_RE`)
+taking time that grows with the square of a crafted file; it slows a release scan, never the
+journal, and is left to a follow-up. A session that handles secrets on purpose should still set
+`OBSIDIAN_ROUTER_NO_SESSION_JOURNAL=true`. Notes written before this version are not modified:
+cleaning them, removing a secret from a vault's git history, and changing a password found in one
+are the vault owner's decisions.
+
+### Proof
+
+- Tests: `tests/redact-secrets.test.mjs` (new, 104), `session-auto-journal` 37 (+5),
+  `session-reconcile` 21 (+2), `backfill-log-from-sessions` 19 (+3), `export-gate` 135
+  (unchanged). Every credential-shaped value in them is built at run time; the gate's shaped rules
+  find nothing in the touched files.
+- Mutations: 104/104 killed as declared, on a private copy of the repository — one per rule,
+  per credential word, per bound, per call site and per ordering, each with the test that must go
+  red and the reason it must give, plus declared survivors showing that two rules cover different
+  forms. Eight of them put a length bound back on a value and check that a 3 000-character secret
+  is then left partly in clear.
+- `npm test`: 8 127/8 138 pass, 10 skipped, 1 failure that does not come from this change:
+  `the mode list has exactly one definition, repo-wide` scans the directory and finds the copies
+  under `.claude/worktrees/` left by other sessions; on a copy of the repository without them it
+  passes (69/69). `npm run validate` and `npm run gate` pass. The gate itself caught a private-path
+  shape in the first draft of this entry.
+
+
 ## [0.99.1] — 2026-10-13 — dependency security update: 21 known vulnerabilities down to 5, no critical left
 
 ### Security
