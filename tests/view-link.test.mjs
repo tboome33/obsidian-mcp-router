@@ -117,6 +117,35 @@ describe('fetchViewLink — pure transport', () => {
     assert.deepEqual(askedNames(), ['la méthode licares', 'La méthode LICARES']);
   });
 
+  test('a refusal other than "unknown vault" is retried under the listed casing too', async () => {
+    process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = baseUrl;
+    // As the live agent answers once its detection has tried the unlisted name.
+    respond = (req, res) => {
+      const asked = new URL(req.url, 'http://x').searchParams.get('vault');
+      if (asked === 'La méthode LICARES') return okRespond(req, res);
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          error: 'container obsidian-commun publishes its GUI port 3001 several times',
+          vault: asked,
+          vaults: ['3amtalks', 'La méthode LICARES'],
+        }),
+      );
+    };
+    await fetchViewLink({ vaultName: 'la méthode licares', note: 'wiki/index.md' });
+    assert.deepEqual(askedNames(), ['la méthode licares', 'La méthode LICARES']);
+  });
+
+  test('a listed vault refused for its own reason is not retried under another casing', async () => {
+    process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = baseUrl;
+    respond = (_req, res) => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'bad note path', vaults: ['notes', 'NOTES'] }));
+    };
+    await assert.rejects(() => fetchViewLink({ vaultName: 'notes', note: 'a.md' }), /bad note path/);
+    assert.deepEqual(askedNames(), ['notes']);
+  });
+
   test('an agent that refuses each casing while listing the other is asked twice, not forever', async () => {
     process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = baseUrl;
     respond = (req, res) => {

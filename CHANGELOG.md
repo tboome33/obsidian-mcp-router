@@ -10,6 +10,22 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.104.2] — 2026-10-23 — `la méthode licares` opens itself, and 💎 brings an open vault to the front
+
+Reported on v0.104.1: 🌐 on `la méthode licares` showed `KIVES-MCP-ROUTER`, and an open local vault
+had no 💎.
+
+- **The casing retry no longer waits for "unknown vault".** The live agent, asked for a name it
+  does not list, first tries it as a detected container and refuses with what that found
+  (`container obsidian-commun publishes its GUI port 3001 several times`), so v0.104.1's retry,
+  keyed on "unknown vault", never ran: the panel fell back to the UI's own address, which showed
+  the vault last brought to the front. The router now retries, once, on any 4xx where the agent
+  lists exactly one other casing of a name it does not list. A listed name refused for its own
+  reason is not retried. Measured: `La méthode LICARES` answers a `/go` link that redirects to
+  its UI (`:3004`).
+- **💎 on every local vault Obsidian knows, open or closed.** `obsidian://open?vault=<id>` opens a
+  closed vault and brings an open one's window to the front.
+
 ## [0.104.1] — 2026-10-22 — 🌐 and 🪟 show the vault clicked, not whichever is in front
 
 Reported on v0.103.1: 🌐 showed the `obsidian-mcp-router` vault whatever vault was clicked. The
