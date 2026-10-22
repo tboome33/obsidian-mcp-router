@@ -20,6 +20,8 @@ export type Snapshot = {
   primary: VaultRow | null
   /** The binding restricts the session to the primary. */
   isLocked: boolean
+  /** A session lock from lock_vault: runtime only, never written to the binding. */
+  lockedTo: string | null
   /** The binding came from the one-time .env import, nobody confirmed it. */
   isImported: boolean
   secondaries: Secondary[]
@@ -34,6 +36,8 @@ declare module 'claude-code' {
       /** The action in flight, drawn in the header; null when idle. */
       busy: string | null
       error: string | null
+      /** Why the last button's change was refused; cleared by the next action only. */
+      failure: string | null
       filter: string
       tab: Tab
     }

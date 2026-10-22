@@ -17,6 +17,7 @@ const ROUTER_TOOL =
 const snapshot = atom({ plugin: 'obsidian-router', key: 'snapshot' } as const, null)
 const busy = atom({ plugin: 'obsidian-router', key: 'busy' } as const, null)
 const error = atom({ plugin: 'obsidian-router', key: 'error' } as const, null)
+const failure = atom({ plugin: 'obsidian-router', key: 'failure' } as const, null)
 const filter = atom({ plugin: 'obsidian-router', key: 'filter' } as const, '')
 const tab = atom({ plugin: 'obsidian-router', key: 'tab' } as const, 'locaux')
 
@@ -49,11 +50,25 @@ type ListVaults = {
   vaults: { name: string; type?: string; online?: boolean; description?: string; baseUrl?: string }[]
   disabled: { name: string; type?: string; awaitingDeclaration?: boolean }[]
   configPath?: string
+  /** A session lock set by lock_vault: runtime only, not in the binding. */
+  lockedTo?: string | null
 }
 
 let server: string | null = null
 let ticker: Timer | null = null
 let isPaneOpen = false
+// The pane was closed (by the person or an unload) since this
+// session started: the startup read must not open it any more.
+let isStartupCancelled = false
+// This session opted out: a pane an earlier start was opening is closed.
+let isOptedOut = false
+// Bumped by every open and close of the pane (see openPane).
+let paneEpoch = 0
+// Bumped by every session.start: work a previous start left running reads a
+// stale number and drops its result.
+let generation = 0
+// Bumped by every refresh: a slower, older answer never overwrites a newer one.
+let lastRefresh = 0
 
 // Calls a router tool, finding which name the router is connected under.
 async function call($: EngineInterface, tool: string, args: Record<string, unknown> = {}) {
@@ -125,7 +140,7 @@ function toSnapshot(data: ListVaults, fetchedAt: number): Snapshot {
     }
   }
   const b = data.workspaceBinding
-  const bound = new Set(b ? [b.vault, ...b.also] : [])
+  const bound = new Set(b ? [b.vault, ...(b.also ?? [])] : [])
   const available = [
     ...data.vaults.filter(v => !bound.has(v.name)).map(v => row(v.name)),
     ...data.disabled
@@ -136,6 +151,7 @@ function toSnapshot(data: ListVaults, fetchedAt: number): Snapshot {
   return {
     primary: b ? row(b.vault) : null,
     isLocked: b?.locked ?? false,
+    lockedTo: data.lockedTo ?? null,
     isImported: b?.confirmedVia === 'migration',
     secondaries: (b?.also ?? []).map(name => ({
       ...row(name),
@@ -163,9 +179,18 @@ async function localPorts($: EngineInterface, configPath: string) {
       const name = entry.path
         ? (config.vaultNames?.[entry.path] ?? entry.path.split(/[\\/]/).filter(Boolean).pop())
         : undefined
-      const port = entry.ports?.http ?? entry.ports?.https
-      if (name && port) {
-        ports.set(name.toLowerCase(), entry.ports?.http ? `http://127.0.0.1:${port}/` : `https://127.0.0.1:${port}/`)
+      // A port is a number in range, or nothing: a string from a malformed
+      // config could otherwise move the probe off 127.0.0.1.
+      const isPort = (p: unknown): p is number => Number.isInteger(p) && (p as number) > 0 && (p as number) < 65536
+      const http = entry.ports?.http
+      const https = entry.ports?.https
+      const url = isPort(http)
+        ? `http://127.0.0.1:${http}/`
+        : isPort(https)
+          ? `https://127.0.0.1:${https}/`
+          : null
+      if (name && url) {
+        ports.set(name.toLowerCase(), url)
       }
     }
   } catch {
@@ -204,68 +229,142 @@ async function fillUnknown($: EngineInterface, snap: Snapshot, configPath: strin
   )
 }
 
+const message = (err: unknown) => (err instanceof Error ? err.message : String(err))
+
+// Reads the state back and draws it. Only the newest refresh writes, checked
+// before EACH write: an older answer landing late never overwrites a newer one.
 async function refresh($: EngineInterface): Promise<boolean> {
+  const id = ++lastRefresh
   try {
     const data = JSON.parse(await call($, 'list_vaults')) as ListVaults
     const next = toSnapshot(data, await $.clock.now())
     await fillUnknown($, next, data.configPath)
-    await update($, snapshot, () => next)
-    await update($, error, () => null)
+    if (id === lastRefresh) {
+      await update($, snapshot, () => next)
+    }
+    if (id === lastRefresh) {
+      await update($, error, () => null)
+    }
 
     return true
   } catch (err) {
-    await update($, error, () => (err instanceof Error ? err.message : String(err)))
+    if (id === lastRefresh) {
+      await update($, error, () => message(err))
+    }
 
     return false
   }
 }
 
-// Runs one change against the router, then reads the state back.
-async function act($: EngineInterface, label: string, tool: string, args: Record<string, unknown>) {
+// A refresh nobody awaits: what it could not write (a session that ended
+// meanwhile) is dropped, never left as an unhandled rejection.
+function background($: EngineInterface) {
+  void refresh($).catch(() => undefined)
+}
+
+// Runs one change against the router, then reads the state back. A refused
+// change is kept in `failure`, which no refresh clears: only the next action
+// does.
+async function act($: EngineInterface, label: string, tool: string, args: Record<string, unknown> | (() => Promise<Record<string, unknown>>)) {
   if (await read($, busy)) {
     return
   }
   await update($, busy, () => label)
+  await update($, failure, () => null)
   try {
-    await call($, tool, args)
+    await call($, tool, typeof args === 'function' ? await args() : args)
     $.ui.toast(label)
   } catch (err) {
-    await update($, error, () => (err instanceof Error ? err.message : String(err)))
+    await update($, failure, () => message(err))
   }
   await refresh($)
   await update($, busy, () => null)
 }
 
-// Re-confirms the binding with a new list of secondaries: tiers of the
-// secondaries that stay are kept by the router, the lock is passed back.
-async function rebind($: EngineInterface, label: string, also: string[]) {
-  const snap = await read($, snapshot)
-  if (!snap?.primary) {
-    return
-  }
-  await act($, label, 'confirm_workspace_binding', {
-    vault: snap.primary.name,
-    also,
-    locked: snap.isLocked,
+// Re-confirms the binding with a new list of secondaries, computed from the
+// binding as the router has it NOW — read straight from list_vaults, not from
+// the snapshot on screen, which another session may have made stale. The
+// click names the primary it was drawn for: if the router's primary is no
+// longer that one, nothing is sent. `locked` is left out on purpose: the
+// router keeps the binding's own lock when the field is absent, so a click
+// never unlocks (or locks) a workspace. Tiers of the secondaries that stay
+// are kept by the router.
+async function rebind($: EngineInterface, label: string, shown: string, change: (also: string[]) => string[]) {
+  await act($, label, 'confirm_workspace_binding', async () => {
+    const binding = (JSON.parse(await call($, 'list_vaults')) as ListVaults).workspaceBinding
+    if (binding?.vault !== shown) {
+      throw new Error(
+        `La liaison a changé entre-temps (principal : ${binding?.vault ?? 'aucun'}) : rien n'a été envoyé, le panneau est rafraîchi.`,
+      )
+    }
+
+    return { vault: binding.vault, also: change(binding.also ?? []) }
   })
 }
 
-async function openPane($: EngineInterface) {
+// Picks the primary of an unbound workspace, only if it is still unbound: a
+// binding another session made meanwhile is never replaced by a stale click.
+async function choosePrimary($: EngineInterface, name: string) {
+  await act($, `${name} principal`, 'confirm_workspace_binding', async () => {
+    const binding = (JSON.parse(await call($, 'list_vaults')) as ListVaults).workspaceBinding
+    if (binding) {
+      throw new Error(
+        `Un principal a été choisi entre-temps (${binding.vault}) : rien n'a été envoyé, le panneau est rafraîchi.`,
+      )
+    }
+
+    return { vault: name }
+  })
+}
+
+function stopTicker() {
+  ticker?.cancel()
+  ticker = null
+}
+
+// `start` is the session.start that asked for it, when one did: a later start
+// (an opted-out one included) makes it a no-op, checked again once the pane is
+// up, since a start can land while ui.open is pending. Every open and every
+// close bumps `paneEpoch`: an open that finds it moved on (a close, or another
+// open, landed meanwhile) leaves the pane to whoever moved it.
+async function openPane($: EngineInterface, start?: number) {
+  if (start !== undefined && start !== generation) {
+    return
+  }
+  const mine = ++paneEpoch
   await $.ui.open({ id: PANE, title: TITLE })
+  if (mine !== paneEpoch) {
+    return
+  }
+  if (start !== undefined && (start !== generation || isStartupCancelled)) {
+    // Opened for a start that no longer wants it: a later, opted-out start,
+    // or a person's close that landed while ui.open was pending. A later
+    // start that wants the pane opens it itself, so it is left alone.
+    if (isOptedOut || isStartupCancelled) {
+      await $.ui.close({ id: PANE }).catch(() => undefined)
+    }
+
+    return
+  }
   isPaneOpen = true
   if (!ticker) {
-    ticker = $.clock.every(REFRESH_MS, () => void refresh($))
+    ticker = $.clock.every(REFRESH_MS, () => background($))
   }
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    ticker = null
+    const start = ++generation
+    stopTicker()
     isPaneOpen = false
+    isStartupCancelled = false
+    // A read the previous session left running writes nothing into this one.
+    lastRefresh += 1
     // Shipped on by default with the plugin, so it carries an opt-out like
     // the plugin's other hooks: no command, no pane, no router call.
     const optOut = await $.env.get('OBSIDIAN_ROUTER_NO_VAULT_PANEL')
-    if (TRUTHY.has((optOut ?? '').trim().toLowerCase())) {
+    isOptedOut = TRUTHY.has((optOut ?? '').trim().toLowerCase())
+    if (isOptedOut) {
       return next(e)
     }
     await $.command.register({
@@ -273,12 +372,31 @@ export const register: Register = on => {
       description: 'Afficher les vaults du router (principal, secondaires, disponibles)',
     })
     // Opens only where the router answers: the panel follows the MCP's install.
-    void refresh($).then(isUp => (isUp ? openPane($) : undefined))
+    // A pane the person closed meanwhile stays closed.
+    void refresh($)
+      .then(isUp => (isUp && !isStartupCancelled ? openPane($, start) : undefined))
+      .catch(() => undefined)
+
+    return next(e)
+  })
+
+  // Closing the pane stops its polling and its redraws after tool calls.
+  on('ui.close', { id: PANE }, async ($, e, next) => {
+    paneEpoch += 1
+    stopTicker()
+    isPaneOpen = false
+    // The person's close, or an unload, also cancels the startup open; a
+    // plugin's close (this module's own clean-up included) does not, so it
+    // never poisons a later start that wants the pane.
+    if (e.origin.kind !== 'plugin') {
+      isStartupCancelled = true
+    }
 
     return next(e)
   })
 
   on('command.run', { command: 'vaults' }, async $ => {
+    isStartupCancelled = false
     await openPane($)
     await refresh($)
     const err = await read($, error)
@@ -290,12 +408,12 @@ export const register: Register = on => {
 
   // The model may change the binding too: redraw after its router calls.
   // An observer, not a guard: no .catch, so a failure here fails open and the
-  // tool's own result stands. Only once the pane was opened:
-  // nobody reads the snapshot otherwise.
+  // tool's own result stands. Only while the pane is open: nobody reads the
+  // snapshot otherwise.
   on('tool.call', async ($, e, next) => {
     const ran = await next(e)
     if (isPaneOpen && ROUTER_TOOL.test(e.tool)) {
-      void refresh($)
+      background($)
     }
 
     return ran
@@ -309,6 +427,7 @@ export const register: Register = on => {
     const snap = await read($, snapshot)
     const working = await read($, busy)
     const err = await read($, error)
+    const failed = await read($, failure)
     // A tab kept from an earlier version of the panel reads as the first one.
     const current: Tab = (await read($, tab)) === 'distants' ? 'distants' : 'locaux'
     const typed = await read($, filter)
@@ -363,7 +482,7 @@ export const register: Register = on => {
         <Text bold>Vaults enregistrés dans le router</Text>
         <Box flexDirection="row" gap={1} alignItems="center">
           {working ? <Text color="warning">{working}…</Text> : snap && <Text dimColor>màj {time(snap.fetchedAt)}</Text>}
-          <Button key="refresh" label="Rafraîchir" dimColor onPress={() => void refresh($)} />
+          <Button key="refresh" label="Rafraîchir" dimColor onPress={() => background($)} />
         </Box>
       </Box>
     )
@@ -377,7 +496,8 @@ export const register: Register = on => {
       )
     }
 
-    const also = snap.secondaries.map(s => s.name)
+    // The primary every binding button was drawn for: rebind refuses another.
+    const shown = snap.primary?.name ?? ''
     const isRemote = (r: VaultRow) => r.type === 'remote'
     const remotes = snap.available.filter(isRemote)
     const locals = snap.available.filter(v => !isRemote(v))
@@ -387,7 +507,7 @@ export const register: Register = on => {
 
     // Re-confirming the binding as it stands opens every bound vault whose
     // Obsidian does not answer: the router's own way to open one.
-    const reopen = (name: string) => void rebind($, `Ouverture de ${name}`, also)
+    const reopen = (name: string) => void rebind($, `Ouverture de ${name}`, shown, current => current)
 
     // What a bound vault that does not answer needs: opening, or the tunnel.
     const down = (row: VaultRow) =>
@@ -448,13 +568,18 @@ export const register: Register = on => {
                 key="confirm-binding"
                 label={`Confirmer ${snap.primary.name} comme principal`}
                 variant="primary"
-                onPress={() => void rebind($, 'Liaison confirmée', also)}
+                onPress={() => void rebind($, 'Liaison confirmée', shown, current => current)}
               />
             </Box>
           </Box>
         )}
         {snap.isLocked && (
           <Text color="warning">Session verrouillée sur le principal : les secondaires ne répondent pas.</Text>
+        )}
+        {snap.lockedTo && (
+          <Text color="warning">
+            Router verrouillé sur {snap.lockedTo} pour cette session (lock_vault) : les autres vaults ne répondent pas.
+          </Text>
         )}
       </Box>
     )
@@ -477,7 +602,8 @@ export const register: Register = on => {
                     void rebind(
                       $,
                       `${s.name} retiré`,
-                      also.filter(n => n !== s.name),
+                      shown,
+                      current => current.filter(n => n !== s.name),
                     )
                   }
                 />
@@ -549,13 +675,17 @@ export const register: Register = on => {
                 <Button
                   key={`add-${v.name}`}
                   label="Ajouter"
-                  onPress={() => void rebind($, `${v.name} ajouté (écriture sur accord)`, [...also, v.name])}
+                  onPress={() =>
+                    void rebind($, `${v.name} ajouté (écriture sur accord)`, shown, current =>
+                      current.includes(v.name) ? current : [...current, v.name],
+                    )
+                  }
                 />
               ) : (
                 <Button
                   key={`primary-${v.name}`}
                   label="Principal"
-                  onPress={() => void act($, `${v.name} principal`, 'confirm_workspace_binding', { vault: v.name })}
+                  onPress={() => void choosePrimary($, v.name)}
                 />
               )}
             </Box>
@@ -579,6 +709,7 @@ export const register: Register = on => {
         {header}
         {legend}
         {err && <Text color="error">{err}</Text>}
+        {failed && failed !== err && <Text color="error">{failed}</Text>}
         {primary}
         {secondaries}
         {adding}

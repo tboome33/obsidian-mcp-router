@@ -47,10 +47,58 @@ binding calls (`confirm_workspace_binding`, `set_secondary_vault_mode`, `lock_va
   `.claude-plugin/types/`, which Claude
   Code writes beside a plugin it loads from a local folder, is ignored by git.
 
+### Hardened after an adversarial review (Codex), before release
+
+Four review rounds; each one after the first attacked the previous round's repairs.
+
+- **A click can no longer unlock a workspace.** The mod sent back the `locked` value of the
+  snapshot on screen, so a click made after another session locked the binding sent
+  `locked: false` — which the router reads as an unlock. A click now leaves `locked` out (the
+  router keeps the binding's own lock).
+- **A click works from the binding as the router has it at that moment**, read straight from
+  `list_vaults` rather than from the pane's snapshot, and carries the primary it was drawn for: if
+  another session changed the primary meanwhile, nothing is sent and the pane says why. (Round 2:
+  the first repair re-read through the shared snapshot, which a concurrent refresh could leave
+  stale, and could retarget a click at a different primary's binding.)
+- The **Principal** button of an unbound workspace sends nothing once another session has bound
+  it meanwhile (round 3: it had no such check).
+- An older `list_vaults` answer landing last no longer overwrites a newer one — checked before
+  each write, not once — and a read a previous session left running writes nothing into the next
+  one.
+- A binding answer without `also` no longer breaks the pane or its buttons.
+- A refused change keeps its error on screen until the next action: it lives in its own state key
+  (`failure`), which no refresh clears.
+- A port read from the router config must be a number from 1 to 65535: a malformed string could
+  otherwise move the local probe off `127.0.0.1`.
+- Closing the pane stops its two-minute polling and its redraws after tool calls; a pane the person
+  closed is not reopened by the session's startup read. A later `session.start` (an opted-out one
+  included) cancels the pane an earlier one was still opening — checked again once `ui.open`
+  returns, and the pane is closed again when the later start opted out or a close landed
+  meanwhile. Every open and close bumps a pane counter, so an open that a close (or another open)
+  overtook leaves the pane alone — `/vaults` included — and only the person's close or an unload
+  cancels the startup open, never a plugin's own clean-up close (round 4).
+- A session lock from `lock_vault` (runtime only, not in the binding) is now shown.
+- Refreshes nobody awaits no longer leave unhandled rejections behind.
+- Not fixed: a probe that times out is abandoned, not aborted — the engine's `$.http.fetch` takes
+  no abort signal.
+- Not fixed: between the click's read of the binding and its write, another session can still
+  change the binding (a window of one router round trip). Closing it needs a conditional write in
+  `confirm_workspace_binding` (compare-and-set on the current primary), which the router does not
+  offer yet.
+
 ### Tests
 
-- `tests/vault-panel.test.tsx` runs under `claude plugin test .`: the pane on the terminal and
-  desktop surfaces, the binding changes its buttons send, and the opt-out.
+- `tests/vault-panel.test.tsx` runs under `claude plugin test .`: 13 tests — the pane on the
+  terminal and desktop surfaces, the binding changes its buttons send, the opt-out, a click
+  against a binding changed meanwhile (no `locked` sent), a click whose primary changed meanwhile
+  (nothing sent), a refused change keeping its error through a later refresh, an older read landing
+  last, a read left running by a previous session, a start superseded while its pane opens (the
+  pane closed again), a stale Principal button, a binding without `also`, a malformed config port,
+  the `lock_vault` session lock, and the redraw after the model's binding calls (rendered, not just
+  counted). Each was seen
+  red under a mutation of the rule it covers. Not covered by a test: a close by the person and the
+  pane counter (the test kit cannot close a pane; only the module's own clean-up close is
+  exercised).
 - `tests/lot5-plugin-server.test.mjs` now pins `hooks/hooks.json` to exactly `modules` + `hooks`,
   the module list, the opt-out and the state contract.
 
