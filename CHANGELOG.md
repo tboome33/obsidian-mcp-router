@@ -10,6 +10,33 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.104.0] — 2026-10-22 — the view-link provider moves into this repository
+
+The view agent — the reference provider of the router's `/view` contract, which mints the read
+links to a remote vault's live Obsidian GUI — lived in its own repository,
+`tboome33/obsidian-mcp-router-view-agent`. It now lives here, under **`view-agent/`**, imported with
+`git subtree add`: its 25 commits stay reachable from this repository's history.
+
+- **What it is not**: part of the Claude Code plugin's runtime. It is a separate service (stdlib
+  Python) deployed on the host where the Obsidian GUIs run — the Dedibox here, at
+  `/opt/view-agent-direct` — and reached by the router over `OBSIDIAN_ROUTER_VIEW_AGENT_URL`. The
+  plugin installs the folder along with the rest of the repository; nothing runs it there.
+- **Its deployment does not change**: same paths on the server, same contract. Only where its code
+  comes from: `view-agent/README.md` now clones this repository and copies the folder.
+- **Links** in `README.md` (EN, FR), `docs/features/10-liens-et-navigation.md` and
+  `docs/remote-vaults.md` point to `view-agent/` (and its `docs/CONTRACT.md`) instead of the former
+  repository.
+- **Export**: `view-agent/**` is part of the source release (`contracts/export-allowlist.json`,
+  `release` zone) and not of the MCPHub bundle (`mcpb`), which runs the router only. One test
+  fixture had to change for the release gate: an absolute Windows path of the form
+  `C:\Users\<name>\…` (a made-up user) matched the "user profile path" rule; it is now
+  `C:\Data\…`, which tests the same refusal.
+- **Tests**: `npm run test:view-agent` runs its suite (150 tests). One fails on Python 3.12.6, as it
+  did in the former repository: `test_rest_hint_refusals` expects `http://[::1]x:80` to be refused,
+  and this Python's URL parser accepts it — a fix for the agent itself, not part of this move. The
+  suite is not in CI yet for that reason.
+- `AGENTS.md` lists `view-agent/` in its layout table.
+
 ## [0.103.0] — 2026-10-22 — the vault panel opens one vault at a time, and says when WireGuard is down
 
 Asked for on v0.102: the "Interface" link of a remote vault did not open; the only way to open a

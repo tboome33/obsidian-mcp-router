@@ -134,7 +134,7 @@ The value must be an absolute directory. Two ways to set it:
 **One thing to know about the session hooks.** The hooks are not the server: with `localPath`, the session journal hooks (`session-auto-journal`, `session-reconcile`) treat the directory like a local vault's and **write** `wiki-meta/journal.md` and the session notes to it directly, not over REST. On a vault served by a container that runs as another user (linuxserver's PUID), files created from the host may not be writable by Obsidian, and a write from both sides at once is not arbitrated. `--attach --local-path` verifies that a note READS the same on both sides; it does not probe writability. If that setup is yours, watch the journal for permission errors, or leave `localPath` out and accept `unknown` for plugins and conventions in the final state.
 ### Optional — `obsidianName`, the vault's label inside Obsidian
 
-When a view-link provider is configured (`OBSIDIAN_ROUTER_VIEW_AGENT_URL`), every `GET /view` the router sends carries two optional *vault hints* defined by the provider contract (`docs/CONTRACT.md`, section "Vault hints", in [obsidian-mcp-router-view-agent](https://github.com/tboome33/obsidian-mcp-router-view-agent)):
+When a view-link provider is configured (`OBSIDIAN_ROUTER_VIEW_AGENT_URL`), every `GET /view` the router sends carries two optional *vault hints* defined by the provider contract ([`view-agent/docs/CONTRACT.md`](../view-agent/docs/CONTRACT.md), section "Vault hints"):
 
 | Parameter | Value |
 |---|---|

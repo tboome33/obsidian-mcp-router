@@ -32,6 +32,7 @@ Layout, all paths relative to the repository root:
 | `templates/` | Files copied into vaults during setup |
 | `tests/` | `node:test` suites |
 | `docs/` | Long-form documentation |
+| `view-agent/` | The view-link provider (stdlib Python, its own `unittest` suite: `npm run test:view-agent`) — a separate service deployed on the host where the Obsidian GUIs run, not part of the plugin's runtime |
 
 ## The three gates
 

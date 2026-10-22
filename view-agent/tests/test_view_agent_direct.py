@@ -185,7 +185,9 @@ class TestObsidianUri(AgentTestBase):
         self.assertEqual(code, 400)
 
     def test_go_refuses_windows_and_other_absolute_paths(self):
-        for bad in ("C:\\Users\\r\\secret.md", "C:/Users/r/secret.md", "c:secret.md",
+        # Any absolute Windows path: not a user-profile one, which the router
+        # repository's release gate refuses to publish, fixture or not.
+        for bad in ("C:\\Data\\secret.md", "C:/Data/secret.md", "c:secret.md",
                     "\\\\host\\share\\x.md", "/etc/x.md", "wiki/../../x.md"):
             link = va.build_go_link(self.cfg, "desk", bad)
             code, headers, _ = self.get(link.split("agent.test:27200", 1)[-1])

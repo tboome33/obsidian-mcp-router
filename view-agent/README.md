@@ -1,5 +1,10 @@
-# obsidian-mcp-router-view-agent
+# view-agent — obsidian-mcp-router's view-link provider
 
+> **Lives in the router's repository since obsidian-mcp-router v0.104.0**, under `view-agent/`
+> (imported with its history from the former standalone repository
+> `tboome33/obsidian-mcp-router-view-agent`). It is **not** part of the Claude Code plugin's
+> runtime: it is a separate service, deployed on the host where the Obsidian GUIs run.
+>
 > **Reference implementation** of the [`/view` provider contract](docs/CONTRACT.md) for [obsidian-mcp-router](https://github.com/tboome33/obsidian-mcp-router) — mints **ephemeral, one-click browser links** to a vault's live Obsidian GUI, navigated to a specific note, credentials baked into the URL.
 >
 > 🇫🇷 *Implémentation de référence du contrat `/view` du router — fabrique des **liens navigateur éphémères en un clic** vers le GUI Obsidian d'un vault, navigué sur la note demandée, identifiants inclus dans l'URL. [Résumé français ci-dessous.](#-version-française)*
@@ -48,7 +53,8 @@ Both speak the same [contract](docs/CONTRACT.md) on the same port: the router is
 ## Quickstart
 
 ```bash
-git clone https://github.com/tboome33/obsidian-mcp-router-view-agent /opt/view-agent
+git clone --depth 1 https://github.com/tboome33/obsidian-mcp-router /tmp/obsidian-mcp-router
+sudo cp -r /tmp/obsidian-mcp-router/view-agent /opt/view-agent
 cd /opt/view-agent
 cp config.example.json config.json        # edit: bind, vaults, GUI creds, REST endpoints
 openssl rand -hex 24 > view-agent.token   # optional but recommended (2nd lock)
@@ -107,6 +113,9 @@ Rules: a `vaults` entry always wins; detection needs both `token_file` and a sig
 Why `docker exec`: the bridge's `/open` route answers loopback callers only. From the host, a Docker-published port presents the Docker bridge IP, so the call gets `403`. The agent therefore runs `curl http://127.0.0.1:<port>/open/...` **inside** the container. With a host-network container, `open_mode: "http"` calls it directly.
 
 ```bash
+# from the view-agent/ folder of a clone of obsidian-mcp-router:
+#   git clone --depth 1 https://github.com/tboome33/obsidian-mcp-router && cd obsidian-mcp-router/view-agent
+
 # 0. on the host running the Obsidian container — read-only checks, prints config values
 bash deploy/preflight-direct.sh 27180
 
