@@ -10,6 +10,42 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.103.0] — 2026-10-22 — the vault panel opens one vault at a time, and says when WireGuard is down
+
+Asked for on v0.102: the "Interface" link of a remote vault did not open; the only way to open a
+closed local vault was the button that opens all of them; and nothing said that WireGuard was off.
+
+- **💎 opens one closed local vault in Obsidian.** The panel hands `obsidian://open?vault=<folder
+  name>` to the system — `explorer.exe` on Windows (an argument vector, no shell: nothing in the
+  address is interpreted), `open` on a Mac, `xdg-open` elsewhere — through `$.process.run`. A
+  `Link` cannot do it: on the desktop surface a link may only be `https`, anything else is drawn as
+  plain text (found by the test kit). The open-all button stays.
+- **A vault Obsidian does not know says so.** `obsidian://open` only finds vaults listed in
+  Obsidian's own `obsidian.json`; for one that is not (the TANGIBLE "vault not found" popup), the
+  row reads "à ouvrir une fois dans Obsidian" instead of offering a 💎 that would fail. The list is
+  read from `%APPDATA%\obsidian\obsidian.json` (or `~/.config/obsidian/` elsewhere); unreadable,
+  every 💎 stays.
+- **🌐 / 🪟 for a remote vault's web UI.** 🌐 is an `https` link the app hands to the default browser
+  (Chrome); 🪟 opens the app's own browser pane, now tried under both names it goes by
+  (`Claude_Browser`, `Claude Browser`). When neither answers, the panel says so and points to 🌐.
+- **A WireGuard banner** at the top when every remote vault is silent at once: "WireGuard semble
+  inactif : les vaults distants ne sont pas disponibles." The panel cannot ask WireGuard itself,
+  hence "semble"; one remote vault answering is enough to clear it.
+- A one-line caption under "Secondaires" says what 💎, 🌐 and 🪟 do.
+- Reviewed by Codex (no P1; four P2, fixed): the 💎 opens a vault by **Obsidian's own id** for its
+  folder (from the same `obsidian.json`), so two vaults whose folders share a name cannot be
+  mistaken; a launcher other than `explorer.exe` that exits non-zero counts as a failure and the
+  next is tried (`explorer.exe` answers 1 even when it opened the address); Obsidian's list is also
+  looked for in `~/Library/Application Support/obsidian/` on a Mac; a web UI address is parsed and
+  must be `http(s)`, and 🌐 is drawn for an `https` one only (the desktop opens no other).
+- Buttons can only carry text on this engine (no picture, no clickable `Svg`), so the icons are
+  emoji. The design asked for "liquid glass" cannot be done here: the engine draws flat colours,
+  borders and text weights — no translucency, no blur.
+- Tests: `tests/vault-panel.test.tsx` 33 (was 29) — 💎 for a known vault and the launch it runs, the
+  note for an unknown one, 🌐 and 🪟, the browser-pane failure, the WireGuard banner on and off. Each
+  seen red under a mutation of its rule. Not established: that `$.process.run` and the `https` link
+  behave in the desktop app as in the kit — to check in the app.
+
 ## [0.102.2] — 2026-10-22 — the vault panel's edits no longer lock it for ten seconds
 
 Reported on v0.102.1: pressing ✕ on a secondary showed "tribu retiré" and stayed there; a second

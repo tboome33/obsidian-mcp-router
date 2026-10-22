@@ -58,7 +58,7 @@ type OnFile = { digest: string; vault: string | null; also: string[]; aliases?: 
 
 type ListVaults = {
   workspaceBinding: Binding | null
-  vaults: { name: string; type?: string; online?: boolean; description?: string; baseUrl?: string }[]
+  vaults: { name: string; type?: string; online?: boolean; description?: string; baseUrl?: string; path?: string | null }[]
   disabled: { name: string; type?: string; awaitingDeclaration?: boolean }[]
   configPath?: string
   /** A session lock set by lock_vault: runtime only, not in the binding. */
@@ -157,7 +157,14 @@ async function call($: EngineInterface, tool: string, args: Record<string, unkno
 function uiUrlOf(baseUrl: string | undefined, description: string | undefined) {
   const full = description?.match(/UI\s+(https?:\/\/[^\s,)]+)/)
   if (full?.[1]) {
-    return full[1]
+    // Parsed, not taken as written: only an http(s) address goes on.
+    try {
+      const url = new URL(full[1])
+
+      return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null
+    } catch {
+      return null
+    }
   }
   const port = description?.match(/UI\s*:(\d{2,5})/)?.[1]
   if (!port || !baseUrl) {
@@ -170,19 +177,73 @@ function uiUrlOf(baseUrl: string | undefined, description: string | undefined) {
   }
 }
 
-// Shows a remote vault's web UI in the app's own browser pane.
+// The app's own browser pane, as the session names it: the tool-name spelling
+// first, then the /mcp one.
+const BROWSERS = ['Claude_Browser', 'Claude Browser']
+
+// Shows a remote vault's web UI in the app's own browser pane. Its other way,
+// the default browser (Chrome), is a plain link: no call to make.
 async function openUi($: EngineInterface, row: VaultRow) {
   if (!row.uiUrl) {
     return
   }
-  try {
-    const result = await $.mcp.call('Claude_Browser', 'preview_start', { url: row.uiUrl })
-    if (result.isError) {
-      throw new Error(result.content.map(block => block.text ?? '').join(' '))
+  let lastError = 'navigateur interne introuvable'
+  for (const name of BROWSERS) {
+    try {
+      const result = await $.mcp.call(name, 'preview_start', { url: row.uiUrl })
+      if (result.isError) {
+        throw new Error(result.content.map(block => block.text ?? '').join(' '))
+      }
+
+      return
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err)
     }
-  } catch (err) {
-    await update($, error, () => `Navigateur interne : ${err instanceof Error ? err.message : String(err)}`)
   }
+  await update(
+    $,
+    failure,
+    () => `Navigateur interne : ${lastError}. Le lien 🌐 ouvre la même interface dans ton navigateur.`,
+  )
+}
+
+// A local vault opens alone through Obsidian's own protocol, by the name
+// Obsidian registered: its folder's name, casing kept.
+// Obsidian's own id for the folder when its list gave one (`vault` takes a
+// name or an id), the folder's name otherwise.
+const obsidianUri = (row: VaultRow & { path: string }) => {
+  const folder = row.path.split(/[\\/]/).filter(Boolean).pop() ?? row.path
+
+  return `obsidian://open?vault=${encodeURIComponent(row.obsidianId ?? folder)}`
+}
+
+// Hands the obsidian:// address to the system, the way a click in a browser
+// would: explorer.exe on Windows (no shell, so nothing in the address is
+// interpreted), `open` on a Mac, `xdg-open` elsewhere.
+async function openInObsidian($: EngineInterface, row: VaultRow) {
+  if (!row.path) {
+    return
+  }
+  const uri = obsidianUri({ ...row, path: row.path })
+  const launchers = (await $.env.get('APPDATA')) ? [['explorer.exe', uri]] : [['open', uri], ['xdg-open', uri]]
+  let lastError = 'aucun lanceur disponible'
+  for (const argv of launchers) {
+    try {
+      const ran = await $.process.run(argv, { timeoutMs: 10_000 })
+      // explorer.exe answers 1 even when it did open the address; for the
+      // others, a non-zero exit is a failure, and the next launcher is tried.
+      if (argv[0] !== 'explorer.exe' && ran.exitCode !== 0) {
+        throw new Error(ran.stderr.trim() || `${argv[0]} a répondu ${ran.exitCode}`)
+      }
+      $.ui.toast(`Ouverture de ${row.name} dans Obsidian`)
+      await update($, failure, () => null)
+
+      return
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err)
+    }
+  }
+  await update($, failure, () => `Obsidian n'a pas pu être lancé pour ${row.name} : ${lastError}`)
 }
 
 function toSnapshot(data: ListVaults, fetchedAt: number): Snapshot {
@@ -195,6 +256,7 @@ function toSnapshot(data: ListVaults, fetchedAt: number): Snapshot {
       type: v?.type ?? null,
       description: v?.description ?? null,
       uiUrl: v?.type === 'remote' ? uiUrlOf(v.baseUrl, v.description) : null,
+      path: v?.type === 'remote' ? null : (v?.path ?? null),
     }
   }
   const b = data.workspaceBinding
@@ -287,6 +349,83 @@ async function fillUnknown($: EngineInterface, snap: Snapshot, configPath: strin
   )
 }
 
+// Where Obsidian keeps the list of the vaults it knows, on each platform.
+// The places to look, in order: Windows, then a Mac, then Linux.
+async function obsidianRegistries($: EngineInterface) {
+  const appData = await $.env.get('APPDATA')
+  if (appData) {
+    return [`${appData}/obsidian/obsidian.json`]
+  }
+  const home = await $.env.get('HOME')
+  if (!home) {
+    return []
+  }
+  const xdg = await $.env.get('XDG_CONFIG_HOME')
+
+  return [
+    `${home}/Library/Application Support/obsidian/obsidian.json`,
+    `${xdg || `${home}/.config`}/obsidian/obsidian.json`,
+  ]
+}
+
+// A folder path as Obsidian's list and the router's config may both spell it.
+const samePath = (p: string) => p.replace(/[\\/]+/g, '/').replace(/\/$/, '').toLowerCase()
+
+// Marks every local row with its folder and whether Obsidian lists it: the 💎
+// link (obsidian://open?vault=…) only opens a vault Obsidian already knows,
+// and for one it does not, Obsidian pops "vault not found" up — the panel says
+// to open it once by hand instead. Rows the router listed without a folder
+// (a vault this workspace has not declared) get theirs from the router config.
+async function markObsidianKnown($: EngineInterface, snap: Snapshot, configPath: string | undefined) {
+  const rows = [snap.primary, ...snap.secondaries, ...snap.available].filter(
+    (r): r is VaultRow => r !== null && r.type !== 'remote',
+  )
+  if (rows.length === 0) {
+    return
+  }
+  if (configPath && rows.some(r => !r.path)) {
+    try {
+      const config = JSON.parse(await $.fs.read(configPath)) as RouterConfig
+      const byName = new Map<string, string>()
+      for (const entry of Object.values(config.vaultsById ?? {})) {
+        const name = entry.path
+          ? (config.vaultNames?.[entry.path] ?? entry.path.split(/[\\/]/).filter(Boolean).pop())
+          : undefined
+        if (name && entry.path) {
+          byName.set(name.toLowerCase(), entry.path)
+        }
+      }
+      for (const r of rows) {
+        r.path = r.path ?? byName.get(r.name.toLowerCase()) ?? null
+      }
+    } catch {
+      // No config to read: those rows keep no folder, and no 💎.
+    }
+  }
+  // Folder → Obsidian's own id for it: the 💎 opens a vault by that id, so two
+  // vaults whose folders share a name cannot be mistaken for each other.
+  let known: Map<string, string> | null = null
+  for (const registry of await obsidianRegistries($)) {
+    try {
+      const parsed = JSON.parse(await $.fs.read(registry)) as { vaults?: Record<string, { path?: string }> }
+      known = new Map(
+        Object.entries(parsed.vaults ?? {})
+          .filter((pair): pair is [string, { path: string }] => typeof pair[1]?.path === 'string')
+          .map(([id, v]) => [samePath(v.path), id]),
+      )
+      break
+    } catch {
+      // Not here: the next place, if any. Unreadable everywhere is not
+      // evidence that a vault is unknown — the 💎 stays, opening by name.
+    }
+  }
+  for (const r of rows) {
+    const id = r.path && known ? known.get(samePath(r.path)) : undefined
+    r.isKnownToObsidian = r.path && known ? id !== undefined : null
+    r.obsidianId = id ?? null
+  }
+}
+
 // The router's refusal of a stale precondition speaks of a repair diagnostic;
 // for a click, what happened is simpler.
 const STALE = /binding entry now differs/
@@ -321,6 +460,7 @@ async function refresh($: EngineInterface): Promise<boolean> {
     const data = JSON.parse(await withTimeout($, call($, 'list_vaults'))) as ListVaults
     const next = toSnapshot(data, await $.clock.now())
     await fillUnknown($, next, data.configPath)
+    await markObsidianKnown($, next, data.configPath)
     if (id === lastRefresh) {
       if ('workspaceBindingOnFile' in data) {
         lastOnFile = data.workspaceBindingOnFile ?? null
@@ -656,6 +796,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
+    const Link = 'Link' in els ? els.Link : null
     // The phone draws no field and no menu (its table may still name them):
     // the list is drawn unfiltered there, and the tier as buttons.
     const isPhone = e.surface === 'mobile'
@@ -778,10 +919,29 @@ export const register: Register = on => {
       })
 
     // A remote vault's web UI, in the app's browser.
+    // A remote vault's web UI, two ways: 🌐 a link the app hands to the
+    // default browser (Chrome), 🪟 the app's own browser pane.
     const uiLink = (row: VaultRow) =>
       row.uiUrl ? (
-        <Button key={`ui-${row.name}`} label="Interface ↗" plain dimColor onPress={() => void openUi($, row)} />
+        <Box flexDirection="row" gap={1} alignItems="center">
+          {/* The desktop opens https links only: an http UI has 🪟 alone. */}
+          {Link && row.uiUrl.startsWith('https://') && <Link href={row.uiUrl} label="🌐" />}
+          <Button key={`ui-${row.name}`} label="🪟" plain onPress={() => void openUi($, row)} />
+        </Box>
       ) : null
+
+    // A closed local vault, opened alone in Obsidian (💎). One Obsidian does
+    // not list yet cannot be opened that way — its protocol only finds vaults
+    // it knows — so the row says what to do instead. A button, not a link: on
+    // the desktop a link may only be https.
+    const obsidianLink = (row: VaultRow) =>
+      isRemote(row) || row.online !== false || !row.path ? null : row.isKnownToObsidian === false ? (
+        <Text size="caption" color="warning">
+          à ouvrir une fois dans Obsidian
+        </Text>
+      ) : (
+        <Button key={`obsidian-${row.name}`} label="💎" plain onPress={() => void openInObsidian($, row)} />
+      )
 
     const name = (row: VaultRow, isStrong = false) => (
       <Box flexDirection="row" gap={1} flexShrink={1} alignItems="center">
@@ -814,9 +974,7 @@ export const register: Register = on => {
                   verrouillé
                 </Text>
               )}
-              {snap.primary.online === false && !isRemote(snap.primary) && (
-                <Button key="open-primary" label="Ouvrir" plain onPress={openAll} />
-              )}
+              {obsidianLink(snap.primary)}
               {uiLink(snap.primary)}
             </Box>
           </Box>
@@ -882,6 +1040,7 @@ export const register: Register = on => {
               injoignable
             </Text>
           )}
+          {obsidianLink(s)}
           {uiLink(s)}
           {Select ? (
             <Select
@@ -937,7 +1096,12 @@ export const register: Register = on => {
     const secondaries = (
       <Box flexDirection="column" gap={1}>
         <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
-          {label(`Secondaires · ${snap.secondaries.length}`)}
+          <Box flexDirection="column">
+            {label(`Secondaires · ${snap.secondaries.length}`)}
+            <Text size="caption" dimColor>
+              💎 ouvrir dans Obsidian · 🌐 dans ton navigateur · 🪟 dans le navigateur interne
+            </Text>
+          </Box>
           {Input && (
             <Input
               key="filter"
@@ -1025,11 +1189,6 @@ export const register: Register = on => {
                 />
               ))}
             </Box>
-            {current === 'distants' && isTunnelDown && (
-              <Text size="caption" color="warning">
-                Aucun vault distant ne répond : WireGuard est-il actif ?
-              </Text>
-            )}
             {list.length === 0 && (
               <Text size="caption" dimColor>
                 Aucun vault ne correspond.
@@ -1090,6 +1249,18 @@ export const register: Register = on => {
       <Box flexDirection="column" gap={1}>
         {header}
         {problems}
+        {isTunnelDown && (
+          // Every remote vault silent at once: the tunnel, not the vaults. The
+          // panel cannot ask WireGuard itself, hence "semble".
+          <Box key="tunnel-down" flexDirection="column" borderStyle="round" borderColor="warning" paddingX={1}>
+            <Text color="warning" weight="semibold">
+              WireGuard semble inactif : les vaults distants ne sont pas disponibles.
+            </Text>
+            <Text size="caption" dimColor>
+              Active le tunnel, puis ↻ Rafraîchir.
+            </Text>
+          </Box>
+        )}
         {primary}
         {secondaries}
         {adding}
