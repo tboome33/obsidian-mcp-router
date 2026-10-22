@@ -1,0 +1,40 @@
+{
+  "_comment": "Copy to config.json and edit. EVERYTHING is configuration — the agent hardcodes nothing. Secrets are best kept in *_file paths (re-read on every use → rotate without restart); never commit config.json or the secrets/ folder (both are .gitignored).",
+
+  "bind": "127.0.0.1",
+  "_bind": "The interface THIS agent listens on. Keep it private: loopback if the MCP router runs on the same host, or a private/WireGuard IP (e.g. 10.x.y.z) so a remote router host can reach it. NEVER a public interface — and firewall the port to that network anyway.",
+
+  "port": 27200,
+
+  "idle_timeout_s": 1800,
+  "_idle_timeout_s": "Seconds without any /view call before a vault's tunnel auto-closes. Generous values keep tunnels warm across a conversation (a warm tunnel answers <1s; a cold start takes ~15-18s).",
+
+  "url_wait_s": 18,
+  "cloudflared_path": "/usr/local/bin/cloudflared",
+
+  "token_file": "view-agent.token",
+  "_token_file": "Optional shared secret (2nd lock after the network). When this file exists, /view requires a matching X-View-Token header — set the SAME value as OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN on the router instance. Generate one with: openssl rand -hex 24 > view-agent.token. Absent file = gate disabled.",
+
+  "vaults": {
+    "alice": {
+      "gui_url": "http://127.0.0.1:3001",
+      "_gui_url": "Local URL of this vault's Obsidian GUI (e.g. a linuxserver/obsidian Selkies container published on loopback). This is what the tunnel exposes.",
+
+      "gui_user": "obsidian",
+      "gui_password_file": "secrets/alice.gui-password",
+      "_gui": "Basic-auth credentials of the GUI — baked into the returned URL so the user types nothing. Omit both if the GUI has no auth (the raw tunnel URL is returned). Inline `gui_password` is also accepted but a *_file keeps the config secret-free.",
+
+      "open_url": "http://127.0.0.1:27123",
+      "open_api_key_file": "secrets/alice.api-key",
+      "_open": "Optional: base URL of the vault's Local REST API + its key, used to navigate Obsidian onto the requested note (POST {open_url}/open/<note>, served by the mcp-router-bridge plugin >= 0.2.0) before returning the link. Omit to skip navigation — the link still works, just lands on the last-open note."
+    },
+
+    "work": {
+      "gui_url": "http://127.0.0.1:3002",
+      "gui_user": "obsidian",
+      "gui_password_file": "secrets/work.gui-password",
+      "open_url": "http://127.0.0.1:27124",
+      "open_api_key_file": "secrets/work.api-key"
+    }
+  }
+}

@@ -43,7 +43,7 @@ Quand Claude cite une note, ce lien doit **ouvrir la note dans Obsidian d'un cli
 
 **Ce que ça fait.** En configurant `OBSIDIAN_ROUTER_VIEW_AGENT_URL` (plus un secret partagé optionnel), le router interroge un *view-link provider* et attache à chaque écriture de note un `viewLink` prêt à cliquer vers l'interface live du vault, naviguée sur la note. L'outil `get_view_link` apparaît alors (il est masqué tant que rien n'est configuré — pas de surface morte).
 
-**À savoir.** Le router ne dépend que d'un petit contrat HTTP (`GET /view?vault=…&note=…` → `{"url": …}`), pas d'une infrastructure précise. Implémentation de référence : [obsidian-mcp-router-view-agent](https://github.com/tboome33/obsidian-mcp-router-view-agent) (Python stdlib, tunnels cloudflared éphémères).
+**À savoir.** Le router ne dépend que d'un petit contrat HTTP (`GET /view?vault=…&note=…` → `{"url": …}`), pas d'une infrastructure précise. Implémentation de référence : [`view-agent/`](../../view-agent/), dans ce dépôt (Python stdlib, tunnels cloudflared éphémères).
 
 ## Smart links — des liens signés, stables, sans appel réseau
 

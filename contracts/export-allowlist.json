@@ -73,6 +73,7 @@
           "agents/**",
           "hooks/**",
           "types/**",
+          "view-agent/**",
           "templates/**",
           "contracts/**",
           ".claude-plugin/**",

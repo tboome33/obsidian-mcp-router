@@ -1,0 +1,27 @@
+# systemd unit — the cleaner alternative to the cron launcher.
+#   sudo cp deploy/view-agent.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now view-agent
+[Unit]
+Description=obsidian-mcp-router view-agent (ephemeral GUI view links)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Run as an unprivileged user that can read the config + secrets and exec cloudflared.
+User=viewagent
+ExecStart=/usr/bin/python3 /opt/view-agent/view-agent.py /opt/view-agent/config.json
+Restart=on-failure
+RestartSec=5
+# cloudflared children die with the agent -> no orphan tunnels.
+KillMode=control-group
+
+# Hardening (optional but cheap)
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/view-agent
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

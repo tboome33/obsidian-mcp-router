@@ -1,0 +1,27 @@
+# systemd unit — view-agent-direct (tunnel-less provider: signed /go links to an
+# already-private GUI).
+#   sudo cp deploy/view-agent-direct.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now view-agent-direct
+[Unit]
+Description=obsidian-mcp-router view-agent-direct (signed /go links to a private GUI)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Dedicated user in the docker group (docker exec into the Obsidian container).
+User=viewagent
+Group=docker
+ExecStart=/usr/bin/python3 /opt/view-agent-direct/view-agent-direct.py /opt/view-agent-direct/config.json
+Restart=on-failure
+RestartSec=5
+
+# Hardening (optional but cheap)
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/view-agent-direct
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
