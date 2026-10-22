@@ -511,3 +511,94 @@ test("a read the previous session left running writes nothing into the next one"
   expect(await ui.find({ type: 'Text', text: /Lecture du router/ })).toBeTruthy()
   await ui.unmount()
 })
+
+test('the router is reached under the name mcp.connect gives for the plugin server', async ($, on) => {
+  const servers: string[] = []
+  mock.env(on, {})
+  mock.clock(on)
+  on('mcp.connect', (_, e) => {
+    expect(e.server).toBe('router')
+
+    // The session runs the same server under another name.
+    return { value: { isConnected: true, server: 'router-as-the-session-names-it' } }
+  })
+  on('mcp.call', (_, e) => {
+    servers.push(e.server)
+
+    return { value: { content: [{ type: 'text', text: JSON.stringify(LIST) }], isError: false } }
+  })
+  on('command.register', () => ({ value: { command: 'vaults' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('command.run', () => ({ text: '' }))
+  await begin($)
+  expect(servers.length).toBeGreaterThan(0)
+  expect([...new Set(servers)]).toEqual(['router-as-the-session-names-it'])
+})
+
+test('a router still starting at session start: the startup read retries, then opens the pane', async ($, on) => {
+  let failures = 2
+  let opens = 0
+  mock.env(on, {})
+  const clock = mock.clock(on)
+  on('mcp.call', () => {
+    if (failures > 0) {
+      failures -= 1
+
+      return { value: { content: [{ type: 'text', text: 'server not connected yet' }], isError: true } }
+    }
+
+    return { value: { content: [{ type: 'text', text: JSON.stringify(LIST) }], isError: false } }
+  })
+  on('command.register', () => ({ value: { command: 'vaults' } }))
+  on('ui.open', () => {
+    opens += 1
+
+    return { value: { isPlaced: true } }
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start(START)
+  expect(opens).toBe(0)
+  // Two failed reads, three seconds apart; the third answers.
+  await clock.advance(3_000)
+  await clock.advance(3_000)
+  expect(opens).toBe(1)
+})
+
+test('a pane /vaults opened during the startup retries is not opened a second time', async ($, on) => {
+  let failures = 1
+  let opens = 0
+  mock.env(on, {})
+  const clock = mock.clock(on)
+  on('mcp.call', (_, e) => {
+    if (e.tool === 'list_vaults' && failures > 0) {
+      failures -= 1
+
+      return { value: { content: [{ type: 'text', text: 'server not connected yet' }], isError: true } }
+    }
+
+    return { value: { content: [{ type: 'text', text: JSON.stringify(LIST) }], isError: false } }
+  })
+  on('command.register', () => ({ value: { command: 'vaults' } }))
+  on('ui.open', () => {
+    opens += 1
+
+    return { value: { isPlaced: true } }
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('command.run', () => ({ text: '' }))
+
+  await $.session.start(START)
+  // The first startup read failed; the person opens the pane by hand.
+  await $.command.run({
+    command: 'vaults',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 80 },
+  })
+  expect(opens).toBe(1)
+  // The startup retry now succeeds: the pane is already open.
+  await clock.advance(3_000)
+  expect(opens).toBe(1)
+})
