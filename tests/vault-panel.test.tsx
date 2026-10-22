@@ -909,3 +909,16 @@ test('every remote vault silent: a WireGuard banner; one answering: none', async
   expect(await ui.find({ type: 'Text', text: /^WireGuard semble inactif/ })).toBeFalsy()
   await ui.unmount()
 })
+
+test('every tier menu sits in a box of one fixed width, whatever tier it shows', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openClosed(ui)
+  const tree = JSON.stringify(await ui.drawn())
+  // docs is read-only (locked), notes write-on-request: two tiers, one width.
+  const widths = [...tree.matchAll(/"width":(\d+),"minWidth":\d+,"flexShrink":0},"children":\[\{"type":"Select"/g)].map(m => m[1])
+  expect(widths.length).toBe(2)
+  expect(new Set(widths).size).toBe(1)
+  await ui.unmount()
+})

@@ -44,6 +44,9 @@ const MODES: { mode: SecondaryMode; label: string }[] = [
   { mode: 'soft', label: 'Écriture sur accord' },
   { mode: 'writable', label: 'Lecture/écriture' },
 ]
+// The tier menu's width, in the surface's cells: the longest label plus room
+// for the menu's own arrow and padding.
+const MODE_WIDTH = Math.max(...MODES.map(m => m.label.length)) + 6
 
 type Binding = {
   vault: string
@@ -1043,12 +1046,16 @@ export const register: Register = on => {
           {obsidianLink(s)}
           {uiLink(s)}
           {Select ? (
-            <Select
-              key={`mode-${s.name}`}
-              options={MODES.map(m => ({ value: m.mode, label: m.label }))}
-              value={s.mode}
-              onSelect={(value: string) => setMode(s, value)}
-            />
+            // One width for every menu, whatever tier it shows: sized on the
+            // longest label, so the column lines up from row to row.
+            <Box width={MODE_WIDTH} minWidth={MODE_WIDTH} flexShrink={0}>
+              <Select
+                key={`mode-${s.name}`}
+                options={MODES.map(m => ({ value: m.mode, label: m.label }))}
+                value={s.mode}
+                onSelect={(value: string) => setMode(s, value)}
+              />
+            </Box>
           ) : (
             // A surface with no menu (the phone) keeps the three choices, as
             // quiet buttons, the current one lit.
