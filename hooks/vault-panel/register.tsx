@@ -369,8 +369,17 @@ async function bindingNow($: EngineInterface) {
 // nothing is sent. `locked` is left out on purpose: the router keeps the
 // binding's own lock when the field is absent, so a click never unlocks (or
 // locks) a workspace. Tiers of the secondaries that stay are kept by the
-// router.
-async function rebind($: EngineInterface, label: string, shown: string, change: (also: string[]) => string[]) {
+// router. And the router OPENS every bound vault that does not answer unless
+// told `open: false` — so removing or adding one vault would launch Obsidian on
+// all the closed ones (a closed vault Obsidian does not know by that name pops
+// an error up). Only the open-all asks for that (`isOpening`).
+async function rebind(
+  $: EngineInterface,
+  label: string,
+  shown: string,
+  change: (also: string[]) => string[],
+  isOpening = false,
+) {
   await act($, label, 'confirm_workspace_binding', async () => {
     const now = await bindingNow($)
     if (now.vault !== shown) {
@@ -379,7 +388,7 @@ async function rebind($: EngineInterface, label: string, shown: string, change: 
       )
     }
 
-    return { vault: now.vault, also: change(now.also), ...now.precondition }
+    return { vault: now.vault, also: change(now.also), ...now.precondition, ...(isOpening ? {} : { open: false }) }
   })
 }
 
@@ -649,7 +658,7 @@ export const register: Register = on => {
     // Re-confirming the binding as it stands opens EVERY bound vault whose
     // Obsidian does not answer — the router's own way to open one. So it is
     // one button for all of them, not one per row that would open them all.
-    const openAll = () => void rebind($, 'Ouverture des vaults fermés', shown, current => current)
+    const openAll = () => void rebind($, 'Ouverture des vaults fermés', shown, current => current, true)
 
     // A remote vault's web UI, in the app's browser.
     const uiLink = (row: VaultRow) =>

@@ -103,8 +103,11 @@ test('the panel lists the binding and changes it through the router', async ($, 
   expect(calls.find(c => c.tool === 'confirm_workspace_binding')?.args).toEqual({
     vault: 'main',
     also: ['docs', 'notes', 'extra'],
+    open: false,
   })
 
+  // The open-all is the one binding call that lets the router open the closed
+  // vaults: no `open: false` here, where adding and removing carry it.
   await ui.press({ key: 'open-closed' })
   expect(calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args).toEqual({
     vault: 'main',
@@ -115,6 +118,7 @@ test('the panel lists the binding and changes it through the router', async ($, 
   expect(calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args).toEqual({
     vault: 'main',
     also: ['notes'],
+    open: false,
   })
   await ui.unmount()
 })
@@ -246,7 +250,7 @@ test('a click works from the binding as the router has it now, and never sends t
   state.list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, locked: true, also: ['notes'] } }
   await ui.press({ key: 'add-extra' })
   const sent = calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args
-  expect(sent).toEqual({ vault: 'main', also: ['notes', 'extra'] })
+  expect(sent).toEqual({ vault: 'main', also: ['notes', 'extra'], open: false })
   expect(sent && 'locked' in sent).toBe(false)
   await ui.unmount()
 })
@@ -270,6 +274,7 @@ test('a click is computed from the entry on file and sent with its digest', asyn
     vault: 'main',
     also: ['notes', 'extra'],
     ifBindingDigest: 'd'.repeat(64),
+    open: false,
   })
   await ui.unmount()
 })
@@ -512,7 +517,7 @@ test('a binding answer without `also` draws, and a click still sends a list', as
   await openAdd(ui)
   await ui.press({ key: 'tab-distants' })
   await ui.press({ key: 'add-extra' })
-  expect(calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args).toEqual({ vault: 'main', also: ['extra'] })
+  expect(calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args).toEqual({ vault: 'main', also: ['extra'], open: false })
   await ui.unmount()
 })
 

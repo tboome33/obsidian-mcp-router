@@ -10,6 +10,23 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.102.1] — 2026-10-22 — removing or adding a vault in the panel no longer launches Obsidian on the closed ones
+
+Reported on v0.102.0: removing the `tradingview` secondary popped an Obsidian error, "Coffre
+introuvable … obsidian://open/?vault=TANGIBLE". The panel removes or adds a secondary by
+re-confirming the binding, and `confirm_workspace_binding` OPENS every bound vault that does not
+answer unless it is told `open: false` (its default is `true`). So one removal tried to launch
+Obsidian on every closed vault of the workspace — here one that Obsidian on this machine does not
+know by that name.
+
+- The panel now sends `open: false` on every binding change it makes — remove, add, confirm an
+  imported binding. Only the "Ouvrir les N vaults locaux fermés" button still lets the router open
+  them. An added vault that is closed shows up in the folded "Fermés" group, one click from opening.
+- Tests: the expected calls carry `open: false` for add and remove, and not for the open-all; both
+  directions seen red under a mutation.
+- Not fixed here: the open-all itself still asks Obsidian for each closed vault by name, so a vault
+  Obsidian does not know under that name (TANGIBLE here) still pops the same error from that button.
+
 ## [0.102.0] — 2026-10-22 — the vault panel, redrawn: one line per vault, closed ones folded away
 
 The panel of v0.101 drew every secondary as a block of four to five heavy buttons — three tier
