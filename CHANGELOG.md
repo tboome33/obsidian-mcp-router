@@ -49,7 +49,7 @@ binding calls (`confirm_workspace_binding`, `set_secondary_vault_mode`, `lock_va
 
 ### Hardened after an adversarial review (Codex), before release
 
-Four review rounds; each one after the first attacked the previous round's repairs.
+Five review rounds; each one after the first attacked the previous round's repairs.
 
 - **A click can no longer unlock a workspace.** The mod sent back the `locked` value of the
   snapshot on screen, so a click made after another session locked the binding sent
@@ -81,14 +81,32 @@ Four review rounds; each one after the first attacked the previous round's repai
 - Refreshes nobody awaits no longer leave unhandled rejections behind.
 - Not fixed: a probe that times out is abandoned, not aborted — the engine's `$.http.fetch` takes
   no abort signal.
-- Not fixed: between the click's read of the binding and its write, another session can still
-  change the binding (a window of one router round trip). Closing it needs a conditional write in
-  `confirm_workspace_binding` (compare-and-set on the current primary), which the router does not
-  offer yet.
+- **The click's write is now conditional (compare-and-set).** Rounds 3 and 4 left one window
+  open: between the click's read of the binding and its write, another session could still change
+  the entry and be overwritten. The router already checked an `ifBindingDigest` precondition
+  inside its config write lock, for repair calls; what was missing was a read that hands out that
+  digest together with the values it was taken on. **`list_vaults` now returns
+  `workspaceBindingOnFile`** — `{ digest, vault, also[] }` from ONE read of the config file (the
+  live `workspaceBinding` can lag the file) — and `confirm_workspace_binding`'s `ifBindingDigest`
+  accepts that digest. The panel computes its click from this field and sends the digest, the
+  **Principal** button included (an unbound entry has a digest too); a write the router refuses as
+  stale shows "La liaison a été modifiée pendant l'envoi…" and nothing is written. Against a router
+  older than the field (the field ABSENT), the panel falls back to its unconditioned write; a
+  router that has the field but could not read its file (`null`) gets no write at all (round 5).
+- `workspaceBindingOnFile.aliases` counts the other stored spellings of the workspace (a hand
+  edit): the digest covers the selected entry only, while a write collapses every spelling, so the
+  panel refuses to write while it is non-zero (round 5). What remains: a hand edit adding a
+  spelling inside the read-to-write round trip — the router's own writers never create one.
 
 ### Tests
 
-- `tests/vault-panel.test.tsx` runs under `claude plugin test .`: 13 tests — the pane on the
+- `tests/binding-on-file-cas.test.mjs` (new, in `npm test`, 8 tests): `bindingOnFile` on a bound,
+  an unbound and an unreadable config, its alias count, and the compare-and-set against the real
+  `confirm_workspace_binding` — a write that lands when nobody moved the entry, refused (and the
+  sibling's work intact) when someone did, a stale primary pick refused.
+- `tests/vault-panel.test.tsx` runs under `claude plugin test .`: 18 tests (the 13 below, plus the
+  click sent with the file's digest, the Principal pick with the unbound entry's digest, and the
+  stale refusal's plain message): — the pane on the
   terminal and desktop surfaces, the binding changes its buttons send, the opt-out, a click
   against a binding changed meanwhile (no `locked` sent), a click whose primary changed meanwhile
   (nothing sent), a refused change keeping its error through a later refresh, an older read landing

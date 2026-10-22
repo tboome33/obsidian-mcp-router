@@ -30,7 +30,7 @@ import { probeConversionToolbox } from '../helpers/conversion-readiness.mjs';
 import { DEFAULT_PROJECT_ROOT as PROJECT_ROOT } from '../markdownify/markitdown.mjs';
 import { isVaultReachable } from '../helpers/vault-reach.mjs';
 import { sharingRequirement } from '../helpers/vault-sharing.mjs';
-import { HINT_STATUS } from '../helpers/workspace-bindings.mjs';
+import { HINT_STATUS, bindingEntryAliases, rawBindingEntry, rawEntryDigest, readBinding } from '../helpers/workspace-bindings.mjs';
 import { classifyVaultReachability } from '../helpers/vault-reachability.mjs';
 import { portEntryOf } from '../helpers/port-registry.mjs';
 import { viewAgentStatus, probeViewAgentHealth, VIEW_AGENT_SETUP } from '../helpers/view-link.mjs';
@@ -561,6 +561,17 @@ export async function listVaults(registry, sharedConfig = null) {
     // a --also b` wrote only `a` to the dotenv file, and `b` lived solely in a
     // CLAUDE.md prose block the router never read.
     workspaceBinding: bindingOrNull(registry.workspaceBinding),
+    // THE ENTRY AS THE FILE HOLDS IT NOW, for a caller about to rewrite it
+    // (v0.101.0, the vault panel). `workspaceBinding` above is the LIVE copy,
+    // which can lag the file (`--no-watch`, a sibling session); a caller that
+    // builds `{ vault, also }` from it and writes would put an old photograph
+    // over newer work. This field is ONE read of the file: the digest is the
+    // `ifBindingDigest` precondition confirm_workspace_binding checks inside
+    // its write lock, and `vault`/`also` are the values it was taken on — a
+    // caller computes its write from THESE and passes the digest, so the
+    // write lands only on the entry it was computed from. null when the file
+    // cannot be read.
+    workspaceBindingOnFile: bindingOnFile(registry.configPath),
     // What this workspace's dotenv file PROPOSED, and how it stands against
     // the binding. A SEPARATE field, never an origin: a hint that was not
     // applied is not the source of what replaced it. `status` is one of
@@ -639,6 +650,33 @@ function safeBuild() {
     return { version: b.version, fingerprint: b.fingerprint, gitHead: b.gitHead, hooksManifest: b.hooksManifest, root: b.root, identify: b.identify };
   } catch (err) {
     return { unavailable: String(err?.message ?? err).slice(0, 200) };
+  }
+}
+
+/**
+ * This workspace's binding entry as the config FILE holds it, read once:
+ * `{ digest, vault, also, aliases }` (digest = `rawEntryDigest` of the raw entry, the
+ * value confirm_workspace_binding's `ifBindingDigest` compares; an absent
+ * entry has a digest too, so "still unbound" is a precondition like any
+ * other). null when there is no config path or the file cannot be read.
+ */
+export function bindingOnFile(configPath, { cwd = process.cwd(), readFile = (p) => fs.readFileSync(p, 'utf8') } = {}) {
+  if (typeof configPath !== 'string' || !configPath) return null;
+  try {
+    const cfg = JSON.parse(readFile(configPath));
+    const binding = readBinding(cfg, cwd);
+    return {
+      digest: rawEntryDigest(rawBindingEntry(cfg, cwd)),
+      vault: binding?.vault ?? null,
+      also: Array.isArray(binding?.also) ? [...binding.also] : [],
+      // Other stored spellings of this same workspace (a hand edit). The digest
+      // covers the selected entry only, while a write collapses EVERY spelling
+      // into the canonical key — so a caller doing a compare-and-set must not
+      // write while this is non-zero: the collapse would be unconditioned.
+      aliases: bindingEntryAliases(cfg, cwd).length,
+    };
+  } catch {
+    return null;
   }
 }
 

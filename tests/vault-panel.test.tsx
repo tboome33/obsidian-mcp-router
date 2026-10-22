@@ -142,7 +142,7 @@ test('OBSIDIAN_ROUTER_NO_VAULT_PANEL turns the panel off: no command, no pane, n
 // Answers every engine call the panel makes; `list` is read at each list_vaults.
 // `hold`, when set, holds the next list_vaults answer until the test calls
 // the function it returns: the way to make two reads overlap.
-function wire(on: On, state: { list: unknown; refuse?: string; held?: Promise<void>; env?: Record<string, string>; opens?: number; closes?: number; openHeld?: Promise<void> }) {
+function wire(on: On, state: { list: unknown; refuse?: string; refuseText?: string; held?: Promise<void>; env?: Record<string, string>; opens?: number; closes?: number; openHeld?: Promise<void> }) {
   const calls: { server: string; tool: string; args: Record<string, unknown> }[] = []
   on('env.get', (_, e) => ({ value: state.env?.[e.name] }))
   on('mcp.call', async (_, e) => {
@@ -153,7 +153,9 @@ function wire(on: On, state: { list: unknown; refuse?: string; held?: Promise<vo
     state.held = undefined
     await held
     if (e.tool === state.refuse) {
-      return { value: { content: [{ type: 'text', text: `${e.tool} refused: binding changed meanwhile` }], isError: true } }
+      const text = state.refuseText ?? `${e.tool} refused: binding changed meanwhile`
+
+      return { value: { content: [{ type: 'text', text }], isError: true } }
     }
     const text = e.tool === 'list_vaults' ? list : '{"ok":true}'
 
@@ -221,6 +223,80 @@ test('a click works from the binding as the router has it now, and never sends t
   const sent = calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args
   expect(sent).toEqual({ vault: 'main', also: ['notes', 'extra'] })
   expect(sent && 'locked' in sent).toBe(false)
+  await ui.unmount()
+})
+
+// A router of v0.101.0+ also says what the FILE holds, with the digest of it.
+const ON_FILE = {
+  ...LIST,
+  // The live copy lags: it still lists `docs`, which the file has dropped.
+  workspaceBindingOnFile: { digest: 'd'.repeat(64), vault: 'main', also: ['notes'] },
+}
+
+test('a click is computed from the entry on file and sent with its digest', async ($, on) => {
+  const state: { list: unknown } = { list: ON_FILE }
+  const calls = wire(on, state)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'tab-distants' })
+  await ui.press({ key: 'add-extra' })
+  expect(calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args).toEqual({
+    vault: 'main',
+    also: ['notes', 'extra'],
+    ifBindingDigest: 'd'.repeat(64),
+  })
+  await ui.unmount()
+})
+
+test('a router that has the field but could not read its file gets no write at all', async ($, on) => {
+  const calls = wire(on, { list: { ...LIST, workspaceBindingOnFile: null } })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'remove-docs' })
+  expect(calls.some(c => c.tool === 'confirm_workspace_binding')).toBe(false)
+  expect(await ui.find({ type: 'Text', text: /pas pu relire sa config/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('a config holding the workspace under several spellings gets no write', async ($, on) => {
+  const calls = wire(on, {
+    list: { ...LIST, workspaceBindingOnFile: { digest: 'd'.repeat(64), vault: 'main', also: ['docs', 'notes'], aliases: 1 } },
+  })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'remove-docs' })
+  expect(calls.some(c => c.tool === 'confirm_workspace_binding')).toBe(false)
+  expect(await ui.find({ type: 'Text', text: /sous plusieurs écritures/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('a Principal pick is sent with the digest of the unbound entry', async ($, on) => {
+  const unbound = { ...LIST, workspaceBinding: null, workspaceBindingOnFile: { digest: 'e'.repeat(64), vault: null, also: [] } }
+  const calls = wire(on, { list: unbound })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'tab-locaux' })
+  await ui.press({ key: 'primary-notes' })
+  expect(calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args).toEqual({
+    vault: 'notes',
+    ifBindingDigest: 'e'.repeat(64),
+  })
+  await ui.unmount()
+})
+
+test('a write the router refuses as stale says so plainly', async ($, on) => {
+  const state = {
+    list: ON_FILE as unknown,
+    refuse: 'confirm_workspace_binding',
+    // The router's own words for a stale ifBindingDigest.
+    refuseText: 'confirm_workspace_binding: this workspace binding entry now differs from the one that diagnostic described',
+  }
+  wire(on, state)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'tab-distants' })
+  await ui.press({ key: 'add-extra' })
+  expect(await ui.find({ type: 'Text', text: /La liaison a été modifiée pendant l'envoi/ })).toBeTruthy()
   await ui.unmount()
 })
 

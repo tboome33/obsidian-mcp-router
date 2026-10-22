@@ -52,6 +52,8 @@ type ListVaults = {
   configPath?: string
   /** A session lock set by lock_vault: runtime only, not in the binding. */
   lockedTo?: string | null
+  /** The binding entry as the config file holds it, read once (router v0.101.0+). */
+  workspaceBindingOnFile?: { digest: string; vault: string | null; also: string[]; aliases?: number } | null
 }
 
 let server: string | null = null
@@ -229,6 +231,12 @@ async function fillUnknown($: EngineInterface, snap: Snapshot, configPath: strin
   )
 }
 
+// The router's refusal of a stale precondition speaks of a repair diagnostic;
+// for a click, what happened is simpler.
+const STALE = /binding entry now differs/
+const STALE_TEXT =
+  "La liaison a été modifiée pendant l'envoi (par une autre session) : rien n'a été écrit, le panneau est rafraîchi."
+
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
 // Reads the state back and draws it. Only the newest refresh writes, checked
@@ -275,45 +283,74 @@ async function act($: EngineInterface, label: string, tool: string, args: Record
     await call($, tool, typeof args === 'function' ? await args() : args)
     $.ui.toast(label)
   } catch (err) {
-    await update($, failure, () => message(err))
+    await update($, failure, () => (STALE.test(message(err)) ? STALE_TEXT : message(err)))
   }
   await refresh($)
   await update($, busy, () => null)
 }
 
-// Re-confirms the binding with a new list of secondaries, computed from the
-// binding as the router has it NOW — read straight from list_vaults, not from
-// the snapshot on screen, which another session may have made stale. The
-// click names the primary it was drawn for: if the router's primary is no
-// longer that one, nothing is sent. `locked` is left out on purpose: the
-// router keeps the binding's own lock when the field is absent, so a click
-// never unlocks (or locks) a workspace. Tiers of the secondaries that stay
-// are kept by the router.
-async function rebind($: EngineInterface, label: string, shown: string, change: (also: string[]) => string[]) {
-  await act($, label, 'confirm_workspace_binding', async () => {
-    const binding = (JSON.parse(await call($, 'list_vaults')) as ListVaults).workspaceBinding
-    if (binding?.vault !== shown) {
+// The binding entry a click works from, as the config FILE holds it now, with
+// the digest that makes the write conditional on it: confirm_workspace_binding
+// checks `ifBindingDigest` inside its write lock, so a click lands only on the
+// entry it was computed from — never over a change another session made
+// between this read and the write. Only a router older than the field — the
+// field ABSENT — gets the old, unconditioned write computed from its live
+// binding. A router that has the field but could not read its file (null)
+// gets nothing: falling back there would silently drop the protection. Nor
+// does a config holding this workspace under several spellings: the write
+// would collapse them all, and the digest covers one.
+async function bindingNow($: EngineInterface) {
+  const data = JSON.parse(await call($, 'list_vaults')) as ListVaults
+  if ('workspaceBindingOnFile' in data) {
+    const onFile = data.workspaceBindingOnFile
+    if (!onFile || typeof onFile.digest !== 'string') {
+      throw new Error("Le router n'a pas pu relire sa config : rien n'a été envoyé. Réessaie dans un instant.")
+    }
+    if ((onFile.aliases ?? 0) > 0) {
       throw new Error(
-        `La liaison a changé entre-temps (principal : ${binding?.vault ?? 'aucun'}) : rien n'a été envoyé, le panneau est rafraîchi.`,
+        "La config du router contient ce workspace sous plusieurs écritures (une édition à la main) : rien n'a été envoyé. Répare la liaison d'abord.",
       )
     }
 
-    return { vault: binding.vault, also: change(binding.also ?? []) }
+    return { vault: onFile.vault, also: onFile.also ?? [], precondition: { ifBindingDigest: onFile.digest } }
+  }
+  const live = data.workspaceBinding
+
+  return { vault: live?.vault ?? null, also: live?.also ?? [], precondition: {} }
+}
+
+// Re-confirms the binding with a new list of secondaries, computed from the
+// binding as the file holds it NOW, not from the snapshot on screen. The click
+// names the primary it was drawn for: if the primary is no longer that one,
+// nothing is sent. `locked` is left out on purpose: the router keeps the
+// binding's own lock when the field is absent, so a click never unlocks (or
+// locks) a workspace. Tiers of the secondaries that stay are kept by the
+// router.
+async function rebind($: EngineInterface, label: string, shown: string, change: (also: string[]) => string[]) {
+  await act($, label, 'confirm_workspace_binding', async () => {
+    const now = await bindingNow($)
+    if (now.vault !== shown) {
+      throw new Error(
+        `La liaison a changé entre-temps (principal : ${now.vault ?? 'aucun'}) : rien n'a été envoyé, le panneau est rafraîchi.`,
+      )
+    }
+
+    return { vault: now.vault, also: change(now.also), ...now.precondition }
   })
 }
 
-// Picks the primary of an unbound workspace, only if it is still unbound: a
-// binding another session made meanwhile is never replaced by a stale click.
+// Picks the primary of an unbound workspace, only if it is still unbound: the
+// digest of the absent entry is a precondition like any other.
 async function choosePrimary($: EngineInterface, name: string) {
   await act($, `${name} principal`, 'confirm_workspace_binding', async () => {
-    const binding = (JSON.parse(await call($, 'list_vaults')) as ListVaults).workspaceBinding
-    if (binding) {
+    const now = await bindingNow($)
+    if (now.vault) {
       throw new Error(
-        `Un principal a été choisi entre-temps (${binding.vault}) : rien n'a été envoyé, le panneau est rafraîchi.`,
+        `Un principal a été choisi entre-temps (${now.vault}) : rien n'a été envoyé, le panneau est rafraîchi.`,
       )
     }
 
-    return { vault: name }
+    return { vault: name, ...now.precondition }
   })
 }
 
