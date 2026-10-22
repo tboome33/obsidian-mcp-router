@@ -10,6 +10,22 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.103.1] — 2026-10-22 — 🪟 shows the browser it opened, 💎 really launches Obsidian
+
+Reported on v0.103.0: 🪟 seemed to do nothing, 💎 opened no vault, and the tier menus changed
+width with the tier they showed.
+
+- **🪟 brings the browser pane into view.** The tab did open, in a pane that was hidden: in the
+  session that reported it, a tab on the vault's UI sat in a browser pane the app was not
+  showing. After `preview_start`, the panel now calls the app's own `show_pane` (`ccd_view`,
+  `{ pane: 'preview' }`). If the app refuses or has no such server, the tab stays open and no
+  error is shown, since the tab did open.
+- **💎 goes through `cmd /c start "" <uri>`, the router's own launcher.** `explorer.exe`, handed
+  the same `obsidian://open?vault=<id>` address, opened nothing (measured by hand on Windows 11:
+  no vault opened; `start` opened it). The address is percent-encoded, so cmd finds none of its
+  own characters in it. A non-zero exit is now reported as a failure for every launcher.
+- **Every tier menu has one fixed width**, the width of its longest label, whatever tier it shows.
+
 ## [0.103.0] — 2026-10-22 — the vault panel opens one vault at a time, and says when WireGuard is down
 
 Asked for on v0.102: the "Interface" link of a remote vault did not open; the only way to open a
