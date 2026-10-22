@@ -10,6 +10,30 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.101.2] — 2026-10-22 — a vault pane the app restores, or whose first read hangs, fills itself
+
+Reported right after v0.101.1: after a restart the app showed the Vaults pane, but stuck on
+"Lecture du router…" — no list and no error — until **Rafraîchir** was pressed. No error means no
+read ever finished. The likely path: the app restores the pane from the last session's layout, and
+the module's first router call, made while the plugin's MCP server was still connecting, stays
+pending; with no timeout, the startup tries never moved on, and nothing else read.
+
+- **Every `list_vaults` read is bounded (15 s)** — the panel's refreshes and the re-read before a
+  click alike. A read that does not answer counts as a failure, so the startup tries go on.
+- **A pane the app drew on its own is the module's pane**: it gets the two-minute polling and the
+  redraws after the model's binding calls. Drawn with nothing to show, no error and no read under
+  way, it starts the read itself — once, not at every redraw; never before this session's opt-out is
+  known, nor in an opted-out session.
+- Reviewed by Codex before release: no P1; its three P2 (an opted-out session reading from a
+  restored pane before its opt-out was known; a restored pane without polling or redraws; the
+  click's re-read unbounded) and its P3 (the timeout test could pass without a retry) are fixed.
+- Tests: `tests/vault-panel.test.tsx` 23 (was 21) — a hung first read given up and retried (two
+  calls, nothing opened before the second), and a pane the app drew on its own redrawn after a
+  binding call. Each seen red under a mutation of its rule. Not covered by a test: the read a pane
+  starts on its own (the kit cannot empty the pane's state), the opt-out-not-yet-known guard, the
+  bound on the click's re-read. Not established either: that a restored pane was the path; the
+  repair covers it and the hung read alike.
+
 ## [0.101.1] — 2026-10-22 — the vault panel opens at session start, even while the router is still starting
 
 Reported right after v0.101.0 shipped: the panel appeared at once when the plugin was updated in a

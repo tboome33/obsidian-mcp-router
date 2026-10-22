@@ -9,6 +9,9 @@ const REFRESH_MS = 120_000
 // The startup read: tried every 3 s for 30 s while the router comes up.
 const STARTUP_TRIES = 10
 const STARTUP_RETRY_MS = 3_000
+// list_vaults pings every vault (2 s budget for the view agent): 15 s is
+// several times what a healthy read takes.
+const READ_TIMEOUT_MS = 15_000
 // The same opt-out values as the plugin's other hooks.
 const TRUTHY = new Set(['true', '1', 'yes', 'on'])
 
@@ -69,6 +72,8 @@ let isPaneOpen = false
 let isStartupCancelled = false
 // This session opted out: a pane an earlier start was opening is closed.
 let isOptedOut = false
+// This session's opt-out has been read: until then a drawn pane reads nothing.
+let isEnvKnown = false
 // Bumped by every open and close of the pane (see openPane).
 let paneEpoch = 0
 // Bumped by every session.start: work a previous start left running reads a
@@ -76,6 +81,8 @@ let paneEpoch = 0
 let generation = 0
 // Bumped by every refresh: a slower, older answer never overwrites a newer one.
 let lastRefresh = 0
+// Reads of the router in flight, whoever started them.
+let reading = 0
 
 // Calls a router tool, finding which name the router is connected under.
 async function call($: EngineInterface, tool: string, args: Record<string, unknown> = {}) {
@@ -260,10 +267,23 @@ const message = (err: unknown) => (err instanceof Error ? err.message : String(e
 
 // Reads the state back and draws it. Only the newest refresh writes, checked
 // before EACH write: an older answer landing late never overwrites a newer one.
+// A read that never answers (a router call made while the server was still
+// connecting can stay pending) is given up after READ_TIMEOUT_MS: it then
+// counts as a failure, so the startup tries go on and the pane is not left
+// on "Lecture du router…" for good.
+function withTimeout<T>($: EngineInterface, work: Promise<T>): Promise<T> {
+  const late = $.clock.sleep(READ_TIMEOUT_MS).then(() => {
+    throw new Error('le router ne répond pas (délai dépassé)')
+  })
+
+  return Promise.race([work, late])
+}
+
 async function refresh($: EngineInterface): Promise<boolean> {
   const id = ++lastRefresh
+  reading += 1
   try {
-    const data = JSON.parse(await call($, 'list_vaults')) as ListVaults
+    const data = JSON.parse(await withTimeout($, call($, 'list_vaults'))) as ListVaults
     const next = toSnapshot(data, await $.clock.now())
     await fillUnknown($, next, data.configPath)
     if (id === lastRefresh) {
@@ -280,6 +300,8 @@ async function refresh($: EngineInterface): Promise<boolean> {
     }
 
     return false
+  } finally {
+    reading -= 1
   }
 }
 
@@ -319,7 +341,7 @@ async function act($: EngineInterface, label: string, tool: string, args: Record
 // does a config holding this workspace under several spellings: the write
 // would collapse them all, and the digest covers one.
 async function bindingNow($: EngineInterface) {
-  const data = JSON.parse(await call($, 'list_vaults')) as ListVaults
+  const data = JSON.parse(await withTimeout($, call($, 'list_vaults'))) as ListVaults
   if ('workspaceBindingOnFile' in data) {
     const onFile = data.workspaceBindingOnFile
     if (!onFile || typeof onFile.digest !== 'string') {
@@ -373,6 +395,14 @@ async function choosePrimary($: EngineInterface, name: string) {
   })
 }
 
+// The pane is up: it polls, and the model's binding calls redraw it.
+function adoptPane($: EngineInterface) {
+  isPaneOpen = true
+  if (!ticker) {
+    ticker = $.clock.every(REFRESH_MS, () => background($))
+  }
+}
+
 function stopTicker() {
   ticker?.cancel()
   ticker = null
@@ -402,10 +432,7 @@ async function openPane($: EngineInterface, start?: number) {
 
     return
   }
-  isPaneOpen = true
-  if (!ticker) {
-    ticker = $.clock.every(REFRESH_MS, () => background($))
-  }
+  adoptPane($)
 }
 
 export const register: Register = on => {
@@ -414,6 +441,7 @@ export const register: Register = on => {
     stopTicker()
     isPaneOpen = false
     isStartupCancelled = false
+    isEnvKnown = false
     // A read the previous session left running writes nothing into this one,
     // and the router is looked up afresh.
     lastRefresh += 1
@@ -423,6 +451,7 @@ export const register: Register = on => {
     // the plugin's other hooks: no command, no pane, no router call.
     const optOut = await $.env.get('OBSIDIAN_ROUTER_NO_VAULT_PANEL')
     isOptedOut = TRUTHY.has((optOut ?? '').trim().toLowerCase())
+    isEnvKnown = true
     if (isOptedOut) {
       // A pane an earlier start opened while this one read its environment
       // is closed: the earlier start's own check ran before this answer.
@@ -507,6 +536,18 @@ export const register: Register = on => {
     const working = await read($, busy)
     const err = await read($, error)
     const failed = await read($, failure)
+    // A pane the app drew on its own (restored from the last session's layout)
+    // is this module's pane all the same: it gets the polling and the redraws
+    // after the model's binding calls. And drawn with nothing to show and no
+    // read under way, it starts the read itself; its answer (data or error) is
+    // written, so this fires once, not at every redraw. Neither happens before
+    // this session's opt-out is known, nor in an opted-out session.
+    if (isEnvKnown && !isOptedOut) {
+      adoptPane($)
+      if (!snap && !err && reading === 0) {
+        background($)
+      }
+    }
     // A tab kept from an earlier version of the panel reads as the first one.
     const current: Tab = (await read($, tab)) === 'distants' ? 'distants' : 'locaux'
     const typed = await read($, filter)
