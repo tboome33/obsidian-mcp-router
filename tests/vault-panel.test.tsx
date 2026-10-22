@@ -150,7 +150,7 @@ test('OBSIDIAN_ROUTER_NO_VAULT_PANEL turns the panel off: no command, no pane, n
 // Answers every engine call the panel makes; `list` is read at each list_vaults.
 // `hold`, when set, holds the next list_vaults answer until the test calls
 // the function it returns: the way to make two reads overlap.
-function wire(on: On, state: { list: unknown; refuse?: string; refuseOnce?: string; refuseText?: string; writeAnswer?: unknown; held?: Promise<void>; env?: Record<string, string>; opens?: number; closes?: number; openHeld?: Promise<void> }) {
+function wire(on: On, state: { list: unknown; refuse?: string; refuseOnce?: string; unreachable?: string; refuseText?: string; writeAnswer?: unknown; held?: Promise<void>; env?: Record<string, string>; opens?: number; closes?: number; openHeld?: Promise<void> }) {
   const calls: { server: string; tool: string; args: Record<string, unknown> }[] = []
   on('env.get', (_, e) => ({ value: state.env?.[e.name] }))
   on('mcp.call', async (_, e) => {
@@ -160,6 +160,10 @@ function wire(on: On, state: { list: unknown; refuse?: string; refuseOnce?: stri
     const held = e.tool === 'list_vaults' ? state.held : undefined
     state.held = undefined
     await held
+    // A server the session does not run: the call itself rejects.
+    if (e.tool === state.unreachable) {
+      throw new Error(`${e.server}: server not found`)
+    }
     if (e.tool === state.refuse || e.tool === state.refuseOnce) {
       if (e.tool === state.refuseOnce) {
         state.refuseOnce = undefined
@@ -855,7 +859,7 @@ test('a closed local vault Obsidian knows gets its own 💎, which launches it; 
   on('process.run', (_, e) => {
     launched.push(e.argv)
 
-    return { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
@@ -864,8 +868,24 @@ test('a closed local vault Obsidian knows gets its own 💎, which launches it; 
   expect(await ui.find({ type: 'Button', key: 'obsidian-lost' })).toBeFalsy()
   expect(await ui.find({ type: 'Text', text: /^à ouvrir une fois dans Obsidian$/ })).toBeTruthy()
   await ui.press({ key: 'obsidian-notes' })
-  // By Obsidian's own id for that folder, not its name: two folders may share one.
-  expect(launched).toEqual([['explorer.exe', 'obsidian://open?vault=id0']])
+  // By Obsidian's own id for that folder, not its name: two folders may share
+  // one. Through `start`, with its empty title: explorer.exe opened nothing.
+  expect(launched).toEqual([['cmd', '/c', 'start', '', 'obsidian://open?vault=id0']])
+  expect(await ui.find({ type: 'Text', text: /n'a pas pu être lancé/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('a 💎 launch that exits non-zero says so', async ($, on) => {
+  wire(on, { list: LOCAL_LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  obsidianKnows(on, ['C:\\VAULTS\\Notes'])
+  on('process.run', () => ({
+    value: { exitCode: 1, stdout: '', stderr: 'protocol not registered', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openClosed(ui)
+  await ui.press({ key: 'obsidian-notes' })
+  expect(await ui.find({ type: 'Text', text: /Obsidian n'a pas pu être lancé pour notes : protocol not registered/ })).toBeTruthy()
   await ui.unmount()
 })
 
@@ -878,8 +898,27 @@ test('a remote vault with a web UI: 🌐 links to it, 🪟 opens it in the app b
   expect(await drawnText(ui)).toContain('"href":"https://10.8.0.1:3002/"')
   await ui.press({ key: 'ui-extra' })
   expect(calls.some(c => c.tool === 'preview_start')).toBe(true)
+  // The tab alone opens in a hidden pane: the pane is brought into view after it.
+  const shown = await eventually(async () => calls.find(c => c.tool === 'show_pane'))
+  expect(shown).toEqual({ server: 'ccd_view', tool: 'show_pane', args: { pane: 'preview' } })
+  expect(calls.indexOf(shown!)).toBeGreaterThan(calls.findIndex(c => c.tool === 'preview_start'))
   await ui.unmount()
 })
+
+for (const how of ['refused', 'unreachable'] as const) {
+test(`a pane that cannot be brought into view (${how}) leaves 🪟 silent: the tab is open`, async ($, on) => {
+  const calls = wire(on, how === 'refused' ? { list: LIST, refuse: 'show_pane', refuseText: 'server not found' } : { list: LIST, unreachable: 'show_pane' })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdd(ui)
+  await ui.press({ key: 'tab-distants' })
+  await ui.press({ key: 'ui-extra' })
+  expect(await eventually(async () => calls.find(c => c.tool === 'show_pane'))).toBeTruthy()
+  expect(calls.filter(c => c.tool === 'preview_start').length).toBe(1)
+  expect(await ui.find({ type: 'Text', text: /Navigateur interne/ })).toBeFalsy()
+  await ui.unmount()
+})
+}
 
 test('when the app browser cannot be reached, the panel points to the 🌐 link', async ($, on) => {
   // No browser pane answers under either name.

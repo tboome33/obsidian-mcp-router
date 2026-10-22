@@ -183,6 +183,8 @@ function uiUrlOf(baseUrl: string | undefined, description: string | undefined) {
 // The app's own browser pane, as the session names it: the tool-name spelling
 // first, then the /mcp one.
 const BROWSERS = ['Claude_Browser', 'Claude Browser']
+// The app's own panes beside the conversation, the browser's among them.
+const VIEW = 'ccd_view'
 
 // Shows a remote vault's web UI in the app's own browser pane. Its other way,
 // the default browser (Chrome), is a plain link: no call to make.
@@ -197,6 +199,10 @@ async function openUi($: EngineInterface, row: VaultRow) {
       if (result.isError) {
         throw new Error(result.content.map(block => block.text ?? '').join(' '))
       }
+      // The tab opens in the pane as it stands, often hidden: a click would
+      // seem to do nothing. Brought into view after it; where the app cannot,
+      // the tab is open all the same.
+      await $.mcp.call(VIEW, 'show_pane', { pane: 'preview' }).catch(() => undefined)
 
       return
     } catch (err) {
@@ -221,21 +227,23 @@ const obsidianUri = (row: VaultRow & { path: string }) => {
 }
 
 // Hands the obsidian:// address to the system, the way a click in a browser
-// would: explorer.exe on Windows (no shell, so nothing in the address is
-// interpreted), `open` on a Mac, `xdg-open` elsewhere.
+// would: cmd's `start` on Windows (the address is percent-encoded, so cmd
+// finds none of its own characters in it), `open` on a Mac, `xdg-open`
+// elsewhere.
 async function openInObsidian($: EngineInterface, row: VaultRow) {
   if (!row.path) {
     return
   }
   const uri = obsidianUri({ ...row, path: row.path })
-  const launchers = (await $.env.get('APPDATA')) ? [['explorer.exe', uri]] : [['open', uri], ['xdg-open', uri]]
+  // `start` with its empty title argument, as the router launches a vault:
+  // explorer.exe was handed the same address and opened nothing.
+  const launchers = (await $.env.get('APPDATA')) ? [['cmd', '/c', 'start', '', uri]] : [['open', uri], ['xdg-open', uri]]
   let lastError = 'aucun lanceur disponible'
   for (const argv of launchers) {
     try {
       const ran = await $.process.run(argv, { timeoutMs: 10_000 })
-      // explorer.exe answers 1 even when it did open the address; for the
-      // others, a non-zero exit is a failure, and the next launcher is tried.
-      if (argv[0] !== 'explorer.exe' && ran.exitCode !== 0) {
+      // A non-zero exit is a failure, and the next launcher is tried.
+      if (ran.exitCode !== 0) {
         throw new Error(ran.stderr.trim() || `${argv[0]} a répondu ${ran.exitCode}`)
       }
       $.ui.toast(`Ouverture de ${row.name} dans Obsidian`)
