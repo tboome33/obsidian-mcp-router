@@ -147,10 +147,24 @@ test('OBSIDIAN_ROUTER_NO_VAULT_PANEL turns the panel off: no command, no pane, n
   expect(calls).toEqual([])
 })
 
+// The engine's two $.mcp.call errors, as Claude Code words them (read off its
+// binary, 2026-10-23). A permission refusal, which a test hook cannot make it
+// say: carried as the call's text, which the panel reads the same way. One
+// difference: an answered call keeps its server name, a real (rejected) one
+// does not, so in a session the panel asks mcp.connect again, at most 10 times.
+const refusal = (server: string, tool: string) =>
+  `obsidian-router: $.mcp.call(${server}, ${tool}) refused: The server-side auto mode classifier gave no verdict ` +
+  `for mcp__x__${tool}: the request that produced this action did not ask for one.`
+// A server not connected: a hook's `{ deny }` makes the engine reject the call
+// with `<plugin>: $.mcp.call: <reason>`, the very words it uses for this one.
+const notConnected = (server: string, tool: string) => ({
+  deny: `no connected MCP tool "${tool}" on a server named "${server}"`,
+})
+
 // Answers every engine call the panel makes; `list` is read at each list_vaults.
 // `hold`, when set, holds the next list_vaults answer until the test calls
 // the function it returns: the way to make two reads overlap.
-function wire(on: On, state: { list: unknown; answers?: Record<string, unknown>; refuse?: string; refuseOnce?: string; unreachable?: string; refuseText?: string; writeAnswer?: unknown; held?: Promise<void>; env?: Record<string, string>; opens?: number; closes?: number; openHeld?: Promise<void> }) {
+function wire(on: On, state: { list: unknown; answers?: Record<string, unknown>; refuse?: string; refuseOnce?: string; unreachable?: string; refuseText?: string; writeAnswer?: unknown; held?: Promise<void>; env?: Record<string, string>; opens?: number; closes?: number; openHeld?: Promise<void>; blocked?: string[]; toasts?: string[] }) {
   const calls: { server: string; tool: string; args: Record<string, unknown> }[] = []
   on('env.get', (_, e) => ({ value: state.env?.[e.name] }))
   on('mcp.call', async (_, e) => {
@@ -163,6 +177,13 @@ function wire(on: On, state: { list: unknown; answers?: Record<string, unknown>;
     // A server the session does not run: the call itself rejects.
     if (e.tool === state.unreachable) {
       throw new Error(`${e.server}: server not found`)
+    }
+    // Claude Code's permissions refusing the call, in the engine's words. A
+    // test hook's `{ deny }` makes the engine say `$.mcp.call: <reason>`, not
+    // the `(server, tool) refused:` form a real refusal takes, so the words
+    // are carried as the call's text: the panel reads both the same way.
+    if (state.blocked?.includes(e.tool)) {
+      return { value: { content: [{ type: 'text', text: refusal(e.server, e.tool) }], isError: true } }
     }
     if (e.tool === state.refuse || e.tool === state.refuseOnce) {
       if (e.tool === state.refuseOnce) {
@@ -192,7 +213,11 @@ function wire(on: On, state: { list: unknown; answers?: Record<string, unknown>;
 
     return { value: undefined }
   })
-  on('ui.toast', () => ({ value: undefined }))
+  on('ui.toast', (_, e) => {
+    state.toasts?.push(e.text)
+
+    return { value: undefined }
+  })
   mock.clock(on)
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('command.run', () => ({ text: '' }))
@@ -1053,4 +1078,161 @@ test('every tier menu sits in a box of one fixed width, whatever tier it shows',
   expect(widths.length).toBe(2)
   expect(new Set(widths).size).toBe(1)
   await ui.unmount()
+})
+
+// What the pane and /vaults must name when Claude Code's permissions refuse
+// the read: the rules to add, under the server the call went to.
+const READ_RULES =
+  /permissions\.allow.*mcp__plugin_obsidian-router_router__list_vaults\. Pour ses liens 🌐 et 🪟 : mcp__plugin_obsidian-router_router__list_files, mcp__plugin_obsidian-router_router__get_view_link\. Pour que ses clics changent la liaison : mcp__plugin_obsidian-router_router__confirm_workspace_binding, mcp__plugin_obsidian-router_router__set_secondary_vault_mode — ces deux règles laissent aussi le modèle/s
+
+test('a read refused by auto mode names the permissions to add, never "router injoignable"', async ($, on) => {
+  wire(on, { list: LIST, blocked: ['list_vaults'] })
+  await $.session.start(START)
+  const said = await $.command.run({
+    command: 'vaults',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 80 },
+  })
+  expect(JSON.stringify(said)).toMatch(/Claude Code a bloqué \(mode auto\)/)
+  expect(JSON.stringify(said)).not.toMatch(/le router ne répond pas/)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^bloqué par les permissions de Claude Code$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: READ_RULES })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /injoignable/i })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('a server not connected is no refusal: the next name is tried, and the panel fills', async ($, on) => {
+  const servers: string[] = []
+  mock.env(on, {})
+  mock.clock(on)
+  on('mcp.call', (_, e) => {
+    servers.push(e.server)
+    // A router declared by hand: no plugin server under the first name.
+    if (e.server === 'plugin:obsidian-router:router') {
+      return notConnected(e.server, e.tool)
+    }
+
+    return { value: { content: [{ type: 'text', text: JSON.stringify(LIST) }], isError: false } }
+  })
+  on('command.register', () => ({ value: { command: 'vaults' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('command.run', () => ({ text: '' }))
+  await begin($)
+  expect(servers).toContain('obsidian-router')
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Principal$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /bloqué/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('a router never connected still reads "router injoignable", never as a refusal', async ($, on) => {
+  mock.env(on, {})
+  mock.clock(on)
+  on('mcp.call', (_, e) => notConnected(e.server, e.tool))
+  on('command.register', () => ({ value: { command: 'vaults' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  await $.session.start(START)
+  const said = await $.command.run({
+    command: 'vaults',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 80 },
+  })
+  expect(JSON.stringify(said)).toMatch(/le router ne répond pas/)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^router injoignable$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Router injoignable : / })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /bloqué/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('a router still connecting at start is retried, opens, and raises no toast', async ($, on) => {
+  let failures = 4
+  let opens = 0
+  const toasts: string[] = []
+  mock.env(on, {})
+  const clock = mock.clock(on)
+  on('mcp.call', (_, e) => {
+    if (failures > 0) {
+      failures -= 1
+
+      return notConnected(e.server, e.tool)
+    }
+
+    return { value: { content: [{ type: 'text', text: JSON.stringify(LIST) }], isError: false } }
+  })
+  on('command.register', () => ({ value: { command: 'vaults' } }))
+  on('ui.open', () => {
+    opens += 1
+
+    return { value: { isPlaced: true } }
+  })
+  on('ui.toast', (_, e) => {
+    toasts.push(e.text)
+
+    return { value: undefined }
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  await $.session.start(START)
+  // Each try asks both names: two failed tries, three seconds apart.
+  await clock.advance(3_000)
+  await clock.advance(3_000)
+  expect(opens).toBe(1)
+  expect(toasts).toEqual([])
+})
+
+test('a click refused by auto mode says nothing changed and names the two write rules', async ($, on) => {
+  wire(on, { list: LIST, blocked: ['set_secondary_vault_mode'] })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openClosed(ui)
+  await ui.select({ key: 'mode-notes', value: 'writable' })
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: /rien n'a été changé.*mcp__plugin_obsidian-router_router__confirm_workspace_binding, mcp__plugin_obsidian-router_router__set_secondary_vault_mode — ces deux règles laissent aussi le modèle/s,
+    }),
+  ).toBeTruthy()
+  // Only the write rules: the read ones are not what this click needs.
+  expect(await ui.find({ type: 'Text', text: /rien n'a été changé.*list_vaults/s })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('a startup read refused by auto mode is not retried: no pane, one toast pointing to /vaults', async ($, on) => {
+  let reads = 0
+  let opens = 0
+  const toasts: string[] = []
+  mock.env(on, {})
+  const clock = mock.clock(on)
+  on('mcp.call', (_, e) => {
+    reads += 1
+
+    return { value: { content: [{ type: 'text', text: refusal(e.server, e.tool) }], isError: true } }
+  })
+  on('command.register', () => ({ value: { command: 'vaults' } }))
+  on('ui.open', () => {
+    opens += 1
+
+    return { value: { isPlaced: true } }
+  })
+  on('ui.toast', (_, e) => {
+    toasts.push(e.text)
+
+    return { value: undefined }
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start(START)
+  await eventually(async () => (toasts.length > 0 ? true : undefined))
+  for (let i = 0; i < 4; i += 1) {
+    await clock.advance(3_000)
+  }
+  expect(reads).toBe(1)
+  expect(opens).toBe(0)
+  expect(toasts.length).toBe(1)
+  expect(toasts[0]).toMatch(/\/vaults/)
 })

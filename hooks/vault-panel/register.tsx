@@ -117,6 +117,40 @@ function atLeast(version: string | undefined, min: [number, number, number]) {
 // Reads of the router in flight, whoever started them.
 let reading = 0
 
+// The engine's words when Claude Code's permissions refuse a call the panel
+// makes on its own: `$.mcp.call(<server>, <tool>) refused: <reason>` (in auto
+// mode the classifier has no request of the model's to judge the call against,
+// so it gives no verdict). The router was never reached, and asking again in
+// 3 s gets the same answer. Only this form: the engine's other error,
+// `$.mcp.call: no connected MCP tool …`, is a server not (yet) connected, which
+// the next server name or the next startup try may well reach.
+const REFUSED = /\$\.mcp\.call\([^()]*\) refused: (.*)$/s
+const WRITE_TOOLS = ['confirm_workspace_binding', 'set_secondary_vault_mode']
+// Every refusal's text starts with this: how the pane tells it from a router
+// that does not answer.
+const REFUSED_LEAD = 'Claude Code a bloqué'
+
+class Refused extends Error {
+  constructor(server: string, tool: string, reason: string) {
+    const rule = (t: string) => `mcp__${server.replace(/:/g, '_')}__${t}`
+    const by = /auto mode/i.test(reason) ? 'Claude Code a bloqué (mode auto)' : 'Claude Code a bloqué (permissions)'
+    const writes =
+      `${WRITE_TOOLS.map(rule).join(', ')} — ces deux règles laissent aussi le modèle changer la liaison ` +
+      'sans contrôle du mode auto.'
+    super(
+      WRITE_TOOLS.includes(tool)
+        ? `${by} l'appel du panneau à ${tool} : rien n'a été changé. ` +
+            `Pour que les clics du panneau marchent, ajoute à permissions.allow dans les réglages de Claude Code : ${writes}`
+        : `${by} l'appel du panneau à ${tool} : le router n'a pas été interrogé. ` +
+            `Pour que le panneau s'affiche, ajoute à permissions.allow dans les réglages de Claude Code : ${rule('list_vaults')}. ` +
+            `Pour ses liens 🌐 et 🪟 : ${rule('list_files')}, ${rule('get_view_link')}. ` +
+            `Pour que ses clics changent la liaison : ${writes}`,
+    )
+  }
+}
+
+const isRefusal = (text: string | null) => !!text && text.startsWith(REFUSED_LEAD)
+
 // Calls a router tool, finding which name the router is connected under.
 async function call($: EngineInterface, tool: string, args: Record<string, unknown> = {}) {
   // The plugin's own router (`router` in its .mcp.json) is asked to connect
@@ -147,6 +181,10 @@ async function call($: EngineInterface, tool: string, args: Record<string, unkno
       return text
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err)
+      const refused = REFUSED.exec(lastError)
+      if (refused) {
+        throw new Refused(name, tool, refused[1]!)
+      }
       if (server) {
         break
       }
@@ -821,6 +859,17 @@ export const register: Register = on => {
 
           return
         }
+        // Refused by Claude Code's permissions: no retry will change that.
+        // The pane stays shut, but a toast says why and where to look.
+        if (isRefusal(await read($, error))) {
+          if (start === generation && !isStartupCancelled && !isPaneOpen) {
+            await $.ui.toast(
+              'Panneau des vaults : Claude Code bloque ses appels au router (permissions). Tape /vaults pour voir quoi autoriser.',
+            )
+          }
+
+          return
+        }
         await $.clock.sleep(STARTUP_RETRY_MS)
       }
     })().catch(() => undefined)
@@ -850,7 +899,11 @@ export const register: Register = on => {
     const err = await read($, error)
 
     return {
-      text: err ? `Panneau des vaults ouvert, mais le router ne répond pas : ${err}` : 'Panneau des vaults ouvert.',
+      text: !err
+        ? 'Panneau des vaults ouvert.'
+        : isRefusal(err)
+          ? `Panneau des vaults ouvert, mais ${err}`
+          : `Panneau des vaults ouvert, mais le router ne répond pas : ${err}`,
     }
   })
 
@@ -941,9 +994,11 @@ export const register: Register = on => {
     const openCount = bound.filter(r => r.online === true).length
     const summary = snap
       ? `${bound.length} lié${bound.length > 1 ? 's' : ''} · ${openCount} ouvert${openCount > 1 ? 's' : ''} · màj ${time(snap.fetchedAt)}`
-      : err
-        ? 'router injoignable'
-        : 'lecture du router…'
+      : isRefusal(err)
+        ? 'bloqué par les permissions de Claude Code'
+        : err
+          ? 'router injoignable'
+          : 'lecture du router…'
 
     const header = (
       <Box flexDirection="row" justifyContent="space-between" alignItems="center">
@@ -965,7 +1020,7 @@ export const register: Register = on => {
 
     const problems = (
       <Box flexDirection="column">
-        {!!err && <Text color="error">{snap ? err : `Router injoignable : ${err}`}</Text>}
+        {!!err && <Text color="error">{snap || isRefusal(err) ? err : `Router injoignable : ${err}`}</Text>}
         {!!failed && failed !== err && <Text color="error">{failed}</Text>}
       </Box>
     )
