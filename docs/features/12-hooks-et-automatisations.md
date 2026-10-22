@@ -110,7 +110,23 @@ Le briefing est entré dans cet ensemble avec le lot « registre de liaisons ».
 
 Les autres hooks restent opt-in, via `node scripts/setup-vault.mjs --install-hooks`, parce qu'ils committent dans git, écrivent des transcriptions de session dans un vault, bloquent des tours ou appellent le réseau. L'ensemble opt-in complet est dans [`hooks/hooks.example.json`](../../hooks/hooks.example.json).
 
-> ℹ️ **Pourquoi `hooks.json` ne porte aucun commentaire.** Cette justification vivait auparavant dans une clé `_comment` du fichier lui-même. Le chargeur de hooks de Claude Code n'accepte que la clé `hooks` et affichait `unknown key "_comment" ignored` à chaque démarrage de session. Un test vérifie désormais que le fichier ne porte que `hooks`.
+## `vault-panel` — le panneau des vaults, à côté du chat
+
+Depuis la v0.101.0, le plugin livre aussi un **module de hooks-fonctions** : [`hooks/vault-panel/register.tsx`](../../hooks/vault-panel/register.tsx), déclaré sous la clé `modules` de `hooks/hooks.json`. Ce n'est pas un hook de commande : Claude Code charge le module dans la session et lui donne accès à son interface (panneaux, commandes, appels MCP). Il faut donc une version de Claude Code qui exécute ces modules.
+
+Ce qu'il montre, dans un panneau **Vaults** et via la commande `/vaults` :
+
+- le **vault principal** du workspace, avec son état (ouvert, fermé, injoignable) ;
+- les **vaults secondaires**, chacun avec son niveau d'écriture — lecture seule, écriture sur accord, lecture-écriture — et un bouton pour le changer ou retirer le vault ;
+- les **vaults enregistrés** qu'on peut ajouter, en deux onglets (locaux, distants), avec un filtre.
+
+D'où viennent les données : un appel à l'outil `list_vaults` du router au démarrage de la session, puis toutes les deux minutes tant que le panneau est ouvert, et après chaque appel du modèle qui change la liaison (`confirm_workspace_binding`, `set_secondary_vault_mode`, `lock_vault`, `unlock_vaults`). Pour un vault local que le router n'a pas pingué, le module interroge `127.0.0.1` sur son port REST : une réponse veut dire qu'Obsidian l'a ouvert.
+
+Pourquoi il est actif pour tout le monde alors que la règle ci-dessus exclut le réseau : le module n'appelle le réseau qu'à travers le router lui-même, avec le même `list_vaults` que le modèle utiliserait ; il n'ouvre le panneau que si le router répond ; et il **n'écrit rien de lui-même** — la liaison ne change que quand on appuie sur un bouton, par les outils du router, avec leurs propres garde-fous. Comme les hooks de commande, il a son opt-out : `OBSIDIAN_ROUTER_NO_VAULT_PANEL=1` (ni panneau, ni commande, ni appel au router).
+
+Son état de session (`$.state`) est rangé sous le nom du plugin, `obsidian-router`, et déclaré dans [`types/index.d.ts`](../../types/index.d.ts) : Claude Code refuse qu'un plugin écrive une clé d'état qui appartient à un autre.
+
+> ℹ️ **Pourquoi `hooks.json` ne porte aucun commentaire.** Cette justification vivait auparavant dans une clé `_comment` du fichier lui-même. Le chargeur de hooks de Claude Code n'accepte que les clés `hooks` et `modules`, et affichait `unknown key "_comment" ignored` à chaque démarrage de session. Un test vérifie désormais que le fichier ne porte que `modules` et `hooks`.
 >
 > Et une précision qui y figurait : `${CLAUDE_PLUGIN_ROOT}` n'est développé par Claude Code **que** dans les fichiers de composants du plugin. Il ne l'est **pas** dans `~/.claude/settings.json` — c'est pourquoi `hooks.example.json` garde le marqueur `<router-repo>` à la place.
 

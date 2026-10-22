@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.19.0-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.100.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.101.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -263,6 +263,8 @@ Plus one Obsidian-specific reference skill (no slash command — knowledge surfa
 - `workspace-briefing` — opens each session with a few lines saying which vault(s) this workspace is bound to (one, several, or all), what its `.env` proposed and was refused, the auto-enrichment mode and its range, and the two calls that change any of it. It also reports, from the bound vaults' own disk (so it works with Obsidian closed), when Smart Connections is installed-but-not-enabled or enabled-with-an-empty-index — the two states in which `search_smart` can only answer from its BM25 fallback and `find_twin_pages` cannot answer at all (opt-out `OBSIDIAN_ROUTER_NO_SEMANTIC_READINESS`, from the host only). Read-only, pings nothing (opt-out `OBSIDIAN_ROUTER_NO_BINDING_BRIEFING`, **from the host only** — a project file may not switch off the report about itself)
 
 The hooks ship in [`hooks/`](./hooks/); `setup-vault.mjs` wires them automatically at bootstrap.
+
+**Vault panel** (since v0.101.0) — besides those command hooks, the plugin ships one function-hooks module, [`hooks/vault-panel/register.tsx`](./hooks/vault-panel/register.tsx), declared under `modules` in `hooks/hooks.json`. It adds a **Vaults** pane beside the chat and a `/vaults` command: the workspace's primary vault, its secondary vaults with their write tier (read-only / write on request / read-write), and the registered vaults that can be added, split into local and remote tabs. Each button calls the router's own tools (`confirm_workspace_binding`, `set_secondary_vault_mode`); nothing changes until you click. See [Which hooks the plugin turns on by itself](#which-hooks-the-plugin-turns-on-by-itself).
 
 **Auto-enrichment** — Claude proactively suggests wiki saves at three natural moments: **validation** (you say "OK" / "valide" → inline pin), **result obtained** (commit pushed, tests green → digest of candidates), and **topic switch** (mandatory checkpoint before Claude responds to the new topic). Domain-agnostic: works for development, personal life, research, family planning, anything.
 
@@ -687,6 +689,8 @@ Installing the plugin activates exactly three hooks, with no opt-in step, becaus
 | `workspace-briefing` | On session start, says which vault(s) this workspace is bound to and how to change it, and flags a bound vault whose Smart Connections is installed-but-disabled or has an empty index. Read-only, no network. | `OBSIDIAN_ROUTER_NO_BINDING_BRIEFING=1` — **from the host only**; `OBSIDIAN_ROUTER_NO_SEMANTIC_READINESS=1` for the semantic check alone |
 
 All three are silent no-ops if no vault is configured. `workspace-briefing` ships here rather than opt-in on purpose: it is the disclosure that makes the binding registry visible, and a binding the router imported from a project's `.env` is only safe to import because it announces itself at the start of every session. Its opt-out is the one the workspace `.env` cannot set — a file that could silence the report about itself would be the hole this whole feature closes. **The other eight hooks stay opt-in** via `node scripts/setup-vault.mjs --install-hooks`, because they commit to git, write session transcripts into a vault, block the end of a turn, or call the network — none of which is a defensible default for someone who just installed a plugin. `--hooks-status` shows which are wired, which come from the plugin, and warns if any is doing both (which would fire it twice per event).
+
+The plugin also loads the **vault panel** module (v0.101.0, declared under `modules` in `hooks/hooks.json`; it needs a Claude Code build that runs function-hooks modules). At session start it calls the router's `list_vaults` once and opens the **Vaults** pane only if the router answers; while the pane is open it refreshes every two minutes and after the model's binding calls, and it probes `127.0.0.1` on a registered local vault's REST port to tell open from closed. It writes nothing by itself: the binding changes only when you press one of its buttons. Turn it off with `OBSIDIAN_ROUTER_NO_VAULT_PANEL=1` — no pane, no `/vaults` command, no router call.
 
 ### Automatic vault maintenance (and its three knobs)
 
@@ -1388,7 +1392,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.19.0-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.100.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.101.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -1619,6 +1623,8 @@ Plus un skill de référence Obsidian (sans slash command — surfacé quand d'a
 - `workspace-briefing` — ouvre chaque session par quelques lignes : à quel(s) vault(s) ce workspace est rattaché (un, plusieurs, ou tous), ce que son `.env` a proposé et s'est vu refuser, le mode d'enrichissement et sa plage, et les deux appels qui changent tout ça. Il signale aussi, en lisant le disque des vaults liés (donc Obsidian fermé), un Smart Connections installé-mais-désactivé ou activé-avec-un-index-vide — les deux états où `search_smart` ne peut plus répondre que par son repli BM25 et où `find_twin_pages` ne peut plus répondre du tout (opt-out `OBSIDIAN_ROUTER_NO_SEMANTIC_READINESS`, depuis l'hôte uniquement). Lecture seule, ne pingue rien (opt-out `OBSIDIAN_ROUTER_NO_BINDING_BRIEFING`, **depuis l'hôte uniquement** — un fichier de projet ne coupe pas le message qui parle de lui)
 
 Les hooks vivent dans [`hooks/`](./hooks/) ; `setup-vault.mjs` les câble automatiquement au bootstrap.
+
+**Panneau des vaults** (depuis la v0.101.0) — en plus de ces hooks de commande, le plugin livre un module de hooks-fonctions, [`hooks/vault-panel/register.tsx`](./hooks/vault-panel/register.tsx), déclaré sous `modules` dans `hooks/hooks.json`. Il ajoute un panneau **Vaults** à côté du chat et une commande `/vaults` : le vault principal du workspace, ses vaults secondaires avec leur niveau d'écriture (lecture seule / écriture sur accord / lecture-écriture), et les vaults enregistrés qu'on peut ajouter, en deux onglets, locaux et distants. Chaque bouton appelle les outils du router lui-même (`confirm_workspace_binding`, `set_secondary_vault_mode`) ; rien ne change tant qu'on ne clique pas. Voir [Les hooks que le plugin active tout seul](#les-hooks-que-le-plugin-active-tout-seul).
 
 **Auto-enrichissement** — Claude propose proactivement de saver dans le wiki à trois moments naturels : **validation** (tu dis "OK" / "valide" → pin inline), **résultat obtenu** (commit pushé, tests verts → digest de candidats), et **changement de sujet** (checkpoint obligatoire avant que Claude réponde au nouveau sujet). Agnostique du domaine : marche pour le dev, la vie perso, la recherche, la planification familiale, n'importe quoi.
 
@@ -1965,6 +1971,8 @@ Installer le plugin active exactement trois hooks, sans étape d'activation, par
 | `workspace-briefing` | Au démarrage de session, dit à quel(s) vault(s) ce workspace est rattaché et comment en changer, et signale un vault lié dont Smart Connections est installé-mais-désactivé ou dont l'index est vide. Lecture seule, sans réseau. | `OBSIDIAN_ROUTER_NO_BINDING_BRIEFING=1` — **depuis l'hôte uniquement** ; `OBSIDIAN_ROUTER_NO_SEMANTIC_READINESS=1` pour le seul contrôle sémantique |
 
 Les trois sont des no-op silencieux sans vault configuré. `workspace-briefing` est ici plutôt qu'en opt-in par construction : c'est lui qui rend visible le registre de liaisons, et une liaison que le router a importée depuis le `.env` d'un projet n'est sûre à importer que parce qu'elle s'annonce au début de chaque session. Son opt-out est le seul que le `.env` du workspace ne peut pas poser — un fichier capable de couper le message qui parle de lui serait exactement le trou que cette fonctionnalité ferme. **Les huit autres hooks restent opt-in** via `node scripts/setup-vault.mjs --install-hooks` : ils commitent dans git, écrivent les transcriptions de session dans un vault, bloquent la fin d'un tour ou appellent le réseau — rien de tout cela n'est un défaut défendable pour quelqu'un qui vient d'installer un plugin. `--hooks-status` montre lesquels sont câblés, lesquels viennent du plugin, et alerte si l'un fait les deux (il se déclencherait deux fois par événement).
+
+Le plugin charge aussi le module **panneau des vaults** (v0.101.0, déclaré sous `modules` dans `hooks/hooks.json` ; il faut une version de Claude Code qui exécute les modules de hooks-fonctions). Au démarrage de session, il appelle une fois `list_vaults` du router et n'ouvre le panneau **Vaults** que si le router répond ; tant que le panneau est ouvert, il se rafraîchit toutes les deux minutes et après les appels de liaison du modèle, et il interroge `127.0.0.1` sur le port REST d'un vault local enregistré pour savoir s'il est ouvert ou fermé. Il n'écrit rien de lui-même : la liaison ne change que quand on appuie sur l'un de ses boutons. Désactivation : `OBSIDIAN_ROUTER_NO_VAULT_PANEL=1` — ni panneau, ni commande `/vaults`, ni appel au router.
 
 ### Maintenance automatique des vaults (et ses trois boutons)
 

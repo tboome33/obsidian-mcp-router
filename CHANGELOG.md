@@ -10,6 +10,50 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.101.0] — 2026-10-22 — a vault panel beside the chat
+
+The plugin now loads a **vault panel** for everyone who installs or updates it. It was written as a
+standalone Claude Code mod (`vault-panel`) and now ships inside the plugin, so it loads wherever
+the router does, with no separate install.
+
+### What it shows
+
+A **Vaults** pane, opened at session start when the router answers, and a `/vaults` command that
+opens it on demand:
+
+- the workspace's **primary vault**, open, closed or unreachable;
+- its **secondary vaults**, each with its write tier — read-only, write on request, read-write —
+  and buttons to change the tier or remove the vault;
+- the **registered vaults that can be added**, in two tabs (local, remote), with a filter; a remote
+  vault whose description names a web UI gets a button that opens it in the app's browser.
+
+Every change goes through the router's own tools (`confirm_workspace_binding`,
+`set_secondary_vault_mode`) and happens only on a click. The pane redraws after the model's own
+binding calls (`confirm_workspace_binding`, `set_secondary_vault_mode`, `lock_vault`,
+`unlock_vaults`), and every two minutes while it is open.
+
+### How it ships
+
+- `hooks/vault-panel/register.tsx` is a function-hooks module, declared under a new `modules` key
+  in `hooks/hooks.json`, beside the unchanged `hooks` key (`hot-cache-load`, `workspace-briefing`,
+  `decisions-recall`). It needs a Claude Code build that runs function-hooks modules.
+- Its session state lives under the plugin's name, `obsidian-router`, and is declared in the new
+  type contract `types/index.d.ts`, named in `.claude-plugin/plugin.json` as `"types"`. The mod's
+  own keys (`vault-panel.*`) would have been refused: Claude Code does not let a plugin write a
+  state key that another plugin owns.
+- New opt-out, like the plugin's other hooks: `OBSIDIAN_ROUTER_NO_VAULT_PANEL=1` — no pane, no
+  `/vaults` command, no router call.
+- `types/` joins `package.json` `files` and the export allowlist (bundle and release);
+  `.claude-plugin/types/`, which Claude
+  Code writes beside a plugin it loads from a local folder, is ignored by git.
+
+### Tests
+
+- `tests/vault-panel.test.tsx` runs under `claude plugin test .`: the pane on the terminal and
+  desktop surfaces, the binding changes its buttons send, and the opt-out.
+- `tests/lot5-plugin-server.test.mjs` now pins `hooks/hooks.json` to exactly `modules` + `hooks`,
+  the module list, the opt-out and the state contract.
+
 ## [0.100.0] — 2026-10-13 — the session journal masks secrets before anything reaches a vault
 
 > Numbering note: this change was built and reviewed on 2026-10-04 as v0.98.0 but never pushed;

@@ -1,4 +1,7 @@
 {
+  "modules": [
+    "./vault-panel/register.tsx"
+  ],
   "hooks": {
     "SessionStart": [
       {

@@ -326,7 +326,7 @@ describe('plugin manifests', () => {
     );
   });
 
-  test('hooks/hooks.json carries ONLY the `hooks` key — Claude Code rejects anything else, out loud', () => {
+  test('hooks/hooks.json carries ONLY the `modules` and `hooks` keys — Claude Code rejects anything else, out loud', () => {
     // Claude Code's plugin hook loader accepts `hooks` and nothing else. The
     // file used to carry a 23-line `_comment` rationale, and every session start
     // in a terminal printed `obsidian-router: hooks.json: unknown key "_comment"
@@ -334,9 +334,30 @@ describe('plugin manifests', () => {
     // and the comment itself pointed at a documentation file that did not
     // exist. The rationale now lives in docs/features/12-hooks-et-automatisations.md.
     // A key added here for documentation is a warning shipped to every user.
+    // `modules` is the one other key the loader reads: the function-hooks
+    // modules (v0.101.0, the vault panel). Pinned, so a second module is a
+    // decision, not a drift.
     const manifest = readJson('hooks/hooks.json');
-    assert.deepEqual(Object.keys(manifest), ['hooks'],
-      'hooks/hooks.json must have exactly one top-level key, `hooks` — put rationale in docs/, not in the manifest');
+    assert.deepEqual(Object.keys(manifest), ['modules', 'hooks'],
+      'hooks/hooks.json must have exactly two top-level keys, `modules` and `hooks` — put rationale in docs/, not in the manifest');
+    assert.deepEqual(manifest.modules, ['./vault-panel/register.tsx']);
+    for (const mod of manifest.modules) {
+      assert.ok(fs.existsSync(path.join(REPO_ROOT, 'hooks', mod)), `${mod} must exist (relative to hooks/)`);
+    }
+  });
+
+  test('the vault-panel module has an env opt-out and a state contract under the plugin name', () => {
+    // Shipped on by default like the command hooks, so it carries an opt-out
+    // like them. Its $.state keys must live under `obsidian-router`: the
+    // engine refuses a $.state.set on a key another plugin owns, and the mod
+    // was born as a standalone `vault-panel` plugin.
+    const src = fs.readFileSync(path.join(REPO_ROOT, 'hooks', 'vault-panel', 'register.tsx'), 'utf8');
+    assert.ok(src.includes("$.env.get('OBSIDIAN_ROUTER_NO_VAULT_PANEL')"), 'register.tsx must read OBSIDIAN_ROUTER_NO_VAULT_PANEL');
+    const plugins = [...src.matchAll(/atom\(\{ plugin: '([^']+)'/g)].map((m) => m[1]);
+    assert.ok(plugins.length > 0, 'expected the panel atoms');
+    assert.deepEqual([...new Set(plugins)], ['obsidian-router']);
+    assert.equal(readJson('.claude-plugin/plugin.json').types, './types/index.d.ts');
+    assert.match(fs.readFileSync(path.join(REPO_ROOT, 'types', 'index.d.ts'), 'utf8'), /'obsidian-router': \{/);
   });
 
   test('hooks/hooks.json ships only read-only, no-op-without-vault hooks', () => {
