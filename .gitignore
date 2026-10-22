@@ -61,3 +61,8 @@ Thumbs.db
 # Scratch corner for tests that must create files under the repository root
 # (a relative executable override in tests/subprocess-env.test.mjs). Never committed.
 tests/fixtures/.tmp/
+
+# Written by Claude Code beside a function-hooks plugin loaded from a folder it
+# owns (`--plugin-dir`): the API declarations for the editor. Regenerated per
+# build, never source. The plugin's own contract is `types/index.d.ts`.
+.claude-plugin/types/

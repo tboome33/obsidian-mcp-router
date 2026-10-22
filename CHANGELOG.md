@@ -10,6 +10,116 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.101.0] — 2026-10-22 — a vault panel beside the chat
+
+The plugin now loads a **vault panel** for everyone who installs or updates it. It was written as a
+standalone Claude Code mod (`vault-panel`) and now ships inside the plugin, so it loads wherever
+the router does, with no separate install.
+
+### What it shows
+
+A **Vaults** pane, opened at session start when the router answers, and a `/vaults` command that
+opens it on demand:
+
+- the workspace's **primary vault**, open, closed or unreachable;
+- its **secondary vaults**, each with its write tier — read-only, write on request, read-write —
+  and buttons to change the tier or remove the vault;
+- the **registered vaults that can be added**, in two tabs (local, remote), with a filter; a remote
+  vault whose description names a web UI gets a button that opens it in the app's browser.
+
+Every change goes through the router's own tools (`confirm_workspace_binding`,
+`set_secondary_vault_mode`) and happens only on a click. The pane redraws after the model's own
+binding calls (`confirm_workspace_binding`, `set_secondary_vault_mode`, `lock_vault`,
+`unlock_vaults`), and every two minutes while it is open.
+
+### How it ships
+
+- `hooks/vault-panel/register.tsx` is a function-hooks module, declared under a new `modules` key
+  in `hooks/hooks.json`, beside the unchanged `hooks` key (`hot-cache-load`, `workspace-briefing`,
+  `decisions-recall`). It needs a Claude Code build that runs function-hooks modules.
+- Its session state lives under the plugin's name, `obsidian-router`, and is declared in the new
+  type contract `types/index.d.ts`, named in `.claude-plugin/plugin.json` as `"types"`. The mod's
+  own keys (`vault-panel.*`) would have been refused: Claude Code does not let a plugin write a
+  state key that another plugin owns.
+- New opt-out, like the plugin's other hooks: `OBSIDIAN_ROUTER_NO_VAULT_PANEL=1` — no pane, no
+  `/vaults` command, no router call.
+- `types/` joins `package.json` `files` and the export allowlist (bundle and release);
+  `.claude-plugin/types/`, which Claude
+  Code writes beside a plugin it loads from a local folder, is ignored by git.
+
+### Hardened after an adversarial review (Codex), before release
+
+Five review rounds; each one after the first attacked the previous round's repairs.
+
+- **A click can no longer unlock a workspace.** The mod sent back the `locked` value of the
+  snapshot on screen, so a click made after another session locked the binding sent
+  `locked: false` — which the router reads as an unlock. A click now leaves `locked` out (the
+  router keeps the binding's own lock).
+- **A click works from the binding as the router has it at that moment**, read straight from
+  `list_vaults` rather than from the pane's snapshot, and carries the primary it was drawn for: if
+  another session changed the primary meanwhile, nothing is sent and the pane says why. (Round 2:
+  the first repair re-read through the shared snapshot, which a concurrent refresh could leave
+  stale, and could retarget a click at a different primary's binding.)
+- The **Principal** button of an unbound workspace sends nothing once another session has bound
+  it meanwhile (round 3: it had no such check).
+- An older `list_vaults` answer landing last no longer overwrites a newer one — checked before
+  each write, not once — and a read a previous session left running writes nothing into the next
+  one.
+- A binding answer without `also` no longer breaks the pane or its buttons.
+- A refused change keeps its error on screen until the next action: it lives in its own state key
+  (`failure`), which no refresh clears.
+- A port read from the router config must be a number from 1 to 65535: a malformed string could
+  otherwise move the local probe off `127.0.0.1`.
+- Closing the pane stops its two-minute polling and its redraws after tool calls; a pane the person
+  closed is not reopened by the session's startup read. A later `session.start` (an opted-out one
+  included) cancels the pane an earlier one was still opening — checked again once `ui.open`
+  returns, and the pane is closed again when the later start opted out or a close landed
+  meanwhile. Every open and close bumps a pane counter, so an open that a close (or another open)
+  overtook leaves the pane alone — `/vaults` included — and only the person's close or an unload
+  cancels the startup open, never a plugin's own clean-up close (round 4).
+- A session lock from `lock_vault` (runtime only, not in the binding) is now shown.
+- Refreshes nobody awaits no longer leave unhandled rejections behind.
+- Not fixed: a probe that times out is abandoned, not aborted — the engine's `$.http.fetch` takes
+  no abort signal.
+- **The click's write is now conditional (compare-and-set).** Rounds 3 and 4 left one window
+  open: between the click's read of the binding and its write, another session could still change
+  the entry and be overwritten. The router already checked an `ifBindingDigest` precondition
+  inside its config write lock, for repair calls; what was missing was a read that hands out that
+  digest together with the values it was taken on. **`list_vaults` now returns
+  `workspaceBindingOnFile`** — `{ digest, vault, also[] }` from ONE read of the config file (the
+  live `workspaceBinding` can lag the file) — and `confirm_workspace_binding`'s `ifBindingDigest`
+  accepts that digest. The panel computes its click from this field and sends the digest, the
+  **Principal** button included (an unbound entry has a digest too); a write the router refuses as
+  stale shows "La liaison a été modifiée pendant l'envoi…" and nothing is written. Against a router
+  older than the field (the field ABSENT), the panel falls back to its unconditioned write; a
+  router that has the field but could not read its file (`null`) gets no write at all (round 5).
+- `workspaceBindingOnFile.aliases` counts the other stored spellings of the workspace (a hand
+  edit): the digest covers the selected entry only, while a write collapses every spelling, so the
+  panel refuses to write while it is non-zero (round 5). What remains: a hand edit adding a
+  spelling inside the read-to-write round trip — the router's own writers never create one.
+
+### Tests
+
+- `tests/binding-on-file-cas.test.mjs` (new, in `npm test`, 8 tests): `bindingOnFile` on a bound,
+  an unbound and an unreadable config, its alias count, and the compare-and-set against the real
+  `confirm_workspace_binding` — a write that lands when nobody moved the entry, refused (and the
+  sibling's work intact) when someone did, a stale primary pick refused.
+- `tests/vault-panel.test.tsx` runs under `claude plugin test .`: 18 tests (the 13 below, plus the
+  click sent with the file's digest, the Principal pick with the unbound entry's digest, and the
+  stale refusal's plain message): — the pane on the
+  terminal and desktop surfaces, the binding changes its buttons send, the opt-out, a click
+  against a binding changed meanwhile (no `locked` sent), a click whose primary changed meanwhile
+  (nothing sent), a refused change keeping its error through a later refresh, an older read landing
+  last, a read left running by a previous session, a start superseded while its pane opens (the
+  pane closed again), a stale Principal button, a binding without `also`, a malformed config port,
+  the `lock_vault` session lock, and the redraw after the model's binding calls (rendered, not just
+  counted). Each was seen
+  red under a mutation of the rule it covers. Not covered by a test: a close by the person and the
+  pane counter (the test kit cannot close a pane; only the module's own clean-up close is
+  exercised).
+- `tests/lot5-plugin-server.test.mjs` now pins `hooks/hooks.json` to exactly `modules` + `hooks`,
+  the module list, the opt-out and the state contract.
+
 ## [0.100.0] — 2026-10-13 — the session journal masks secrets before anything reaches a vault
 
 > Numbering note: this change was built and reviewed on 2026-10-04 as v0.98.0 but never pushed;

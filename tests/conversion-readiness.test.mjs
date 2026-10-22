@@ -1054,6 +1054,9 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
       // with no reason is what sent a session to "this vault has no link".
       'viewAgent',
       'workspaceBinding',
+      // v0.101.0 — the entry as the FILE holds it, with the digest a
+      // compare-and-set passes as ifBindingDigest (the vault panel's clicks).
+      'workspaceBindingOnFile',
       // Phase 5 of portee-ergonomie-refus-roadmap (decision refus-d-une-
       // proposition-de-liaison) — the vault names this workspace REFUSED, so
       // a retraction has a list to pick from. Added here deliberately.
