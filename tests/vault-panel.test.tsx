@@ -363,12 +363,17 @@ test('an open pane redraws after the model binding calls, and after no other too
   state.list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['notes'] } }
   const before = lists()
   await $.tool.call({ tool: 'mcp__plugin_obsidian-router_router__lock_vault', vault: 'main' })
-  expect(lists()).toBe(before + 1)
-  // The redraw runs detached from the tool's result: wait for it, boundedly.
+  // The redraw runs detached from the tool's result: wait for it, boundedly,
+  // then count — the read is done once the pane shows its answer.
   expect(await eventually(() => ui.find({ type: 'Text', text: /^VAULTS SECONDAIRES \(1\)$/ }))).toBeTruthy()
-  await ui.unmount()
-  await $.tool.call({ tool: 'mcp__plugin_obsidian-router_router__get_file', path: 'a.md' })
   expect(lists()).toBe(before + 1)
+  await $.tool.call({ tool: 'mcp__plugin_obsidian-router_router__get_file', path: 'a.md' })
+  // A read it started would also run detached: give it the same round trips.
+  for (let i = 0; i < 50; i += 1) {
+    await ui.find({ type: 'Text', text: /^VAULT PRINCIPAL$/ })
+  }
+  expect(lists()).toBe(before + 1)
+  await ui.unmount()
 })
 
 test('a click drawn for one primary sends nothing once the router has another', async ($, on) => {
@@ -601,4 +606,63 @@ test('a pane /vaults opened during the startup retries is not opened a second ti
   // The startup retry now succeeds: the pane is already open.
   await clock.advance(3_000)
   expect(opens).toBe(1)
+})
+
+test('a router call that never answers at start is given up, and the next try fills the pane', async ($, on) => {
+  let calls = 0
+  let opens = 0
+  mock.env(on, {})
+  const clock = mock.clock(on)
+  on('mcp.call', async () => {
+    calls += 1
+    if (calls === 1) {
+      // The first read hangs, as a call made while the server connects can.
+      await new Promise(() => {})
+    }
+
+    return { value: { content: [{ type: 'text', text: JSON.stringify(LIST) }], isError: false } }
+  })
+  on('command.register', () => ({ value: { command: 'vaults' } }))
+  on('ui.open', () => {
+    opens += 1
+
+    return { value: { isPlaced: true } }
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start(START)
+  expect(opens).toBe(0)
+  // The hung read is given up after 15 s — a failure, so nothing opens yet…
+  await clock.advance(15_000)
+  expect(opens).toBe(0)
+  expect(calls).toBe(1)
+  // …and the next try, 3 s later, is a second call that answers.
+  await clock.advance(3_000)
+  expect(calls).toBe(2)
+  expect(opens).toBe(1)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^VAULT PRINCIPAL$/ })).toBeTruthy()
+  // Drawn with data: the pane starts no read of its own.
+  expect(calls).toBe(2)
+  await ui.unmount()
+})
+
+test('a pane the app drew on its own gets the redraws after the model binding calls', async ($, on) => {
+  const state: { list: unknown } = { list: LIST }
+  const calls = wire(on, state)
+  on('tool.call', () => ({ result: 'ok' }))
+  // The session starts with a router that never answers: no pane is opened by
+  // the module, and the tries give up.
+  state.list = undefined
+  await $.session.start(START)
+  // The app draws the pane anyway (restored layout): it shows the failed read.
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^VAULT PRINCIPAL$/ })).toBeFalsy()
+  // The router is up now, and the model changes the binding.
+  state.list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['notes'] } }
+  const before = calls.filter(c => c.tool === 'list_vaults').length
+  await $.tool.call({ tool: 'mcp__plugin_obsidian-router_router__lock_vault', vault: 'main' })
+  expect(await eventually(() => ui.find({ type: 'Text', text: /^VAULTS SECONDAIRES \(1\)$/ }))).toBeTruthy()
+  expect(calls.filter(c => c.tool === 'list_vaults').length).toBe(before + 1)
+  await ui.unmount()
 })
