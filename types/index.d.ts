@@ -12,6 +12,16 @@ export type VaultRow = {
   description: string | null
   /** A remote vault's web UI, from the router's description; null when unknown. */
   uiUrl: string | null
+  /** A local vault's folder, as the router has it; null (or absent, in a
+   * snapshot an older panel kept) for a remote one. */
+  path?: string | null
+  /** Whether Obsidian on this machine lists that folder among its vaults (its
+   * own `obsidian.json`): only then can `obsidian://open` open it. null: not
+   * known (a remote vault, or the file could not be read). */
+  isKnownToObsidian?: boolean | null
+  /** Obsidian's own id for that folder, from the same list: what the 💎 opens
+   * it by, so two vaults whose folders share a name stay apart. */
+  obsidianId?: string | null
 }
 
 export type Secondary = VaultRow & { mode: SecondaryMode }

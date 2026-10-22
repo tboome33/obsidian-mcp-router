@@ -822,3 +822,90 @@ test('with a router older than ifNoOtherSpellings, every click reads the entry a
   expect(calls.slice(before, before + 2).map(c => c.tool)).toEqual(['list_vaults', 'confirm_workspace_binding'])
   await ui.unmount()
 })
+
+// A config, an Obsidian vault list and an environment for the 💎 tests.
+const LOCAL_LIST = {
+  workspaceBinding: { vault: 'main', also: ['notes', 'lost'], locked: false },
+  vaults: [
+    { name: 'main', type: 'remote', online: true },
+    { name: 'notes', type: 'local', online: false, path: 'C:\\VAULTS\\Notes' },
+    { name: 'lost', type: 'local', online: false, path: 'M:\\Drive\\Lost' },
+  ],
+  disabled: [],
+}
+
+function obsidianKnows(on: On, folders: string[]) {
+  on('fs.read', (_, e) => {
+    // The engine hands the path over in the platform's own separators.
+    if (/obsidian[\\/]obsidian\.json$/.test(e.path)) {
+      const vaults = Object.fromEntries(folders.map((p, i) => [`id${i}`, { path: p }]))
+
+      return { value: JSON.stringify({ vaults }) }
+    }
+    throw new Error(`no such file: ${e.path}`)
+  })
+}
+
+const drawnText = async (ui: { drawn(): Promise<unknown> }) => JSON.stringify(await ui.drawn())
+
+test('a closed local vault Obsidian knows gets its own 💎, which launches it; one it does not know says so instead', async ($, on) => {
+  wire(on, { list: LOCAL_LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  obsidianKnows(on, ['C:\\VAULTS\\Notes'])
+  const launched: (readonly string[])[] = []
+  on('process.run', (_, e) => {
+    launched.push(e.argv)
+
+    return { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openClosed(ui)
+  expect(await ui.find({ type: 'Button', key: 'obsidian-notes' })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'obsidian-lost' })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /^à ouvrir une fois dans Obsidian$/ })).toBeTruthy()
+  await ui.press({ key: 'obsidian-notes' })
+  // By Obsidian's own id for that folder, not its name: two folders may share one.
+  expect(launched).toEqual([['explorer.exe', 'obsidian://open?vault=id0']])
+  await ui.unmount()
+})
+
+test('a remote vault with a web UI: 🌐 links to it, 🪟 opens it in the app browser', async ($, on) => {
+  const calls = wire(on, { list: LIST })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdd(ui)
+  await ui.press({ key: 'tab-distants' })
+  expect(await drawnText(ui)).toContain('"href":"https://10.8.0.1:3002/"')
+  await ui.press({ key: 'ui-extra' })
+  expect(calls.some(c => c.tool === 'preview_start')).toBe(true)
+  await ui.unmount()
+})
+
+test('when the app browser cannot be reached, the panel points to the 🌐 link', async ($, on) => {
+  // No browser pane answers under either name.
+  const calls = wire(on, { list: LIST, refuse: 'preview_start', refuseText: 'server not found' })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdd(ui)
+  await ui.press({ key: 'tab-distants' })
+  await ui.press({ key: 'ui-extra' })
+  expect(calls.filter(c => c.tool === 'preview_start').length).toBeGreaterThan(0)
+  expect(await ui.find({ type: 'Text', text: /Le lien 🌐 ouvre la même interface/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('every remote vault silent: a WireGuard banner; one answering: none', async ($, on) => {
+  const down = {
+    ...LIST,
+    vaults: LIST.vaults.map(v => (v.type === 'remote' ? { ...v, online: false } : v)),
+  }
+  const state: { list: unknown } = { list: down }
+  wire(on, state)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^WireGuard semble inactif/ })).toBeTruthy()
+  state.list = LIST
+  await ui.press({ key: 'refresh' })
+  expect(await ui.find({ type: 'Text', text: /^WireGuard semble inactif/ })).toBeFalsy()
+  await ui.unmount()
+})
