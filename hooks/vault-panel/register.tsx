@@ -6,6 +6,9 @@ import type { SecondaryMode, Snapshot, Tab, VaultRow } from '../../types'
 const PANE = 'vault-panel'
 const TITLE = 'Vaults'
 const REFRESH_MS = 120_000
+// The startup read: tried every 3 s for 30 s while the router comes up.
+const STARTUP_TRIES = 10
+const STARTUP_RETRY_MS = 3_000
 // The same opt-out values as the plugin's other hooks.
 const TRUTHY = new Set(['true', '1', 'yes', 'on'])
 
@@ -57,6 +60,8 @@ type ListVaults = {
 }
 
 let server: string | null = null
+// How many times this session asked the engine to connect the router.
+let connectTries = 0
 let ticker: Timer | null = null
 let isPaneOpen = false
 // The pane was closed (by the person or an unload) since this
@@ -74,6 +79,20 @@ let lastRefresh = 0
 
 // Calls a router tool, finding which name the router is connected under.
 async function call($: EngineInterface, tool: string, args: Record<string, unknown> = {}) {
+  // The plugin's own router (`router` in its .mcp.json) is asked to connect
+  // first: at session start it is often still connecting, and a call made
+  // then fails. Connecting answers with the exact name to call it by.
+  // Bounded per session: a refusal (a router declared by hand, no plugin
+  // server) is not asked again at every call. A connect a previous session
+  // left pending never names this one's server.
+  if (!server && connectTries < STARTUP_TRIES) {
+    connectTries += 1
+    const asked = generation
+    const linked = await $.mcp.connect('router').catch(() => null)
+    if (linked?.isConnected && asked === generation) {
+      server = linked.server
+    }
+  }
   const names = server ? [server] : SERVERS
   let lastError = 'router obsidian-mcp introuvable'
   for (const name of names) {
@@ -395,13 +414,21 @@ export const register: Register = on => {
     stopTicker()
     isPaneOpen = false
     isStartupCancelled = false
-    // A read the previous session left running writes nothing into this one.
+    // A read the previous session left running writes nothing into this one,
+    // and the router is looked up afresh.
     lastRefresh += 1
+    server = null
+    connectTries = 0
     // Shipped on by default with the plugin, so it carries an opt-out like
     // the plugin's other hooks: no command, no pane, no router call.
     const optOut = await $.env.get('OBSIDIAN_ROUTER_NO_VAULT_PANEL')
     isOptedOut = TRUTHY.has((optOut ?? '').trim().toLowerCase())
     if (isOptedOut) {
+      // A pane an earlier start opened while this one read its environment
+      // is closed: the earlier start's own check ran before this answer.
+      // Closing a pane that is not open does nothing.
+      await $.ui.close({ id: PANE }).catch(() => undefined)
+
       return next(e)
     }
     await $.command.register({
@@ -409,10 +436,25 @@ export const register: Register = on => {
       description: 'Afficher les vaults du router (principal, secondaires, disponibles)',
     })
     // Opens only where the router answers: the panel follows the MCP's install.
-    // A pane the person closed meanwhile stays closed.
-    void refresh($)
-      .then(isUp => (isUp && !isStartupCancelled ? openPane($, start) : undefined))
-      .catch(() => undefined)
+    // The router may still be starting, so the read is tried again for a
+    // while before the panel gives up. A pane the person closed meanwhile
+    // stays closed, and a later start ends these tries.
+    void (async () => {
+      for (let attempt = 0; attempt < STARTUP_TRIES; attempt += 1) {
+        if (start !== generation || isStartupCancelled) {
+          return
+        }
+        if (await refresh($)) {
+          // `/vaults` may have opened it meanwhile: it is not opened twice.
+          if (!isStartupCancelled && !isPaneOpen) {
+            await openPane($, start)
+          }
+
+          return
+        }
+        await $.clock.sleep(STARTUP_RETRY_MS)
+      }
+    })().catch(() => undefined)
 
     return next(e)
   })

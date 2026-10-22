@@ -10,6 +10,31 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.101.1] — 2026-10-22 — the vault panel opens at session start, even while the router is still starting
+
+Reported right after v0.101.0 shipped: the panel appeared at once when the plugin was updated in a
+running session, then did not appear any more after a restart. At session start the plugin's own
+MCP server is often still connecting; the panel made ONE read of `list_vaults`, it failed, and the
+panel stayed closed with nothing to try again. (Updated in a running session, the router was
+already connected, which is why the first sight of it worked.)
+
+- The panel now asks the engine to connect the plugin's own router first (`$.mcp.connect('router')`,
+  the key in `.mcp.json`) and calls it by the name that answer gives — the name the session runs it
+  under, whatever it is. A router declared by hand (not through the plugin) is still found by its
+  usual names.
+- The startup read is tried again every 3 s for 30 s before the panel gives up; a later session
+  start, or a close by the person, ends the tries. `/vaults` still opens the pane at any time.
+- Reviewed by Codex before release; its four P2 findings are fixed: a session that turns out to be
+  opted out closes a pane an earlier start was opening; the router's name is looked up afresh at
+  each session start and a connect a previous session left pending never names this one's; the
+  startup read does not open a pane `/vaults` already opened; a refused connect is not asked again
+  at every call (at most 10 tries a session).
+- Tests: `tests/vault-panel.test.tsx` 21 (was 18) — the router reached under the name
+  `mcp.connect` gives, a router that answers only on the third try still gets its pane, and a pane
+  `/vaults` opened during the retries is not opened twice. Each seen red under a mutation of its
+  rule. Not covered by a test: the opted-out close race, the connect's session guard and its
+  bound.
+
 ## [0.101.0] — 2026-10-22 — a vault panel beside the chat
 
 The plugin now loads a **vault panel** for everyone who installs or updates it. It was written as a
