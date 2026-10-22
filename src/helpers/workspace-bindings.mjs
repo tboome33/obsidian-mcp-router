@@ -338,6 +338,27 @@ function selectBindingKey(all, key) {
  * @param {string} cwd
  * @returns {Array<{ key: string, digest: string }>} sorted by key, empty in the ordinary case
  */
+/**
+ * This workspace's binding entry as a parsed config holds it: `{ digest,
+ * vault, also, aliases }` — the shape `list_vaults` returns as
+ * `workspaceBindingOnFile`, and `confirm_workspace_binding` returns for the
+ * config it has just written. `digest` is what `ifBindingDigest` compares
+ * (an absent entry has one too); `aliases` counts the other stored spellings
+ * of this workspace, which the digest does not cover and a write collapses.
+ *
+ * @param {object} config the parsed router config
+ * @param {string} cwd
+ */
+export function bindingOnFileOf(config, cwd) {
+  const binding = readBinding(config, cwd);
+  return {
+    digest: rawEntryDigest(rawBindingEntry(config, cwd)),
+    vault: binding?.vault ?? null,
+    also: Array.isArray(binding?.also) ? [...binding.also] : [],
+    aliases: bindingEntryAliases(config, cwd).length,
+  };
+}
+
 export function bindingEntryAliases(config, cwd) {
   const key = canonicalWorkspaceKey(cwd);
   if (!key) return [];

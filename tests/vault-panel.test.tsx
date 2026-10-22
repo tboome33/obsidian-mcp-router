@@ -150,7 +150,7 @@ test('OBSIDIAN_ROUTER_NO_VAULT_PANEL turns the panel off: no command, no pane, n
 // Answers every engine call the panel makes; `list` is read at each list_vaults.
 // `hold`, when set, holds the next list_vaults answer until the test calls
 // the function it returns: the way to make two reads overlap.
-function wire(on: On, state: { list: unknown; refuse?: string; refuseText?: string; held?: Promise<void>; env?: Record<string, string>; opens?: number; closes?: number; openHeld?: Promise<void> }) {
+function wire(on: On, state: { list: unknown; refuse?: string; refuseOnce?: string; refuseText?: string; writeAnswer?: unknown; held?: Promise<void>; env?: Record<string, string>; opens?: number; closes?: number; openHeld?: Promise<void> }) {
   const calls: { server: string; tool: string; args: Record<string, unknown> }[] = []
   on('env.get', (_, e) => ({ value: state.env?.[e.name] }))
   on('mcp.call', async (_, e) => {
@@ -160,12 +160,15 @@ function wire(on: On, state: { list: unknown; refuse?: string; refuseText?: stri
     const held = e.tool === 'list_vaults' ? state.held : undefined
     state.held = undefined
     await held
-    if (e.tool === state.refuse) {
+    if (e.tool === state.refuse || e.tool === state.refuseOnce) {
+      if (e.tool === state.refuseOnce) {
+        state.refuseOnce = undefined
+      }
       const text = state.refuseText ?? `${e.tool} refused: binding changed meanwhile`
 
       return { value: { content: [{ type: 'text', text }], isError: true } }
     }
-    const text = e.tool === 'list_vaults' ? list : '{"ok":true}'
+    const text = e.tool === 'list_vaults' ? list : JSON.stringify(state.writeAnswer ?? { ok: true })
 
     return { value: { content: [{ type: 'text', text }], isError: false } }
   })
@@ -260,6 +263,8 @@ const ON_FILE = {
   ...LIST,
   // The live copy lags: it still lists `docs`, which the file has dropped.
   workspaceBindingOnFile: { digest: 'd'.repeat(64), vault: 'main', also: ['notes'] },
+  // A router that refuses a write collapsing another spelling (v0.102.2+).
+  routerBuild: { version: '0.102.2' },
 }
 
 test('a click is computed from the entry on file and sent with its digest', async ($, on) => {
@@ -273,7 +278,7 @@ test('a click is computed from the entry on file and sent with its digest', asyn
   expect(calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args).toEqual({
     vault: 'main',
     also: ['notes', 'extra'],
-    ifBindingDigest: 'd'.repeat(64),
+    ifBindingDigest: 'd'.repeat(64), ifNoOtherSpellings: true,
     open: false,
   })
   await ui.unmount()
@@ -311,7 +316,7 @@ test('a Principal pick is sent with the digest of the unbound entry', async ($, 
   await ui.press({ key: 'primary-notes' })
   expect(calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args).toEqual({
     vault: 'notes',
-    ifBindingDigest: 'e'.repeat(64),
+    ifBindingDigest: 'e'.repeat(64), ifNoOtherSpellings: true,
   })
   await ui.unmount()
 })
@@ -752,4 +757,68 @@ test('on the phone (no menu, no field): the tier keeps its three buttons, and a 
   await phone.press({ key: 'mode-docs-writable' })
   expect(calls.find(c => c.tool === 'set_secondary_vault_mode')?.args).toEqual({ vault: 'docs', mode: 'writable' })
   await phone.unmount()
+})
+
+// The router's own words for a stale ifBindingDigest.
+const STALE_ROUTER_TEXT =
+  'confirm_workspace_binding: this workspace binding entry now differs from the one that diagnostic described'
+
+test('a click starts from the entry the router last reported: no list_vaults before the write', async ($, on) => {
+  const state = {
+    list: ON_FILE as unknown,
+    // The write answers with the entry it left, as router v0.102.2+ does.
+    writeAnswer: { workspaceBindingOnFile: { digest: 'e'.repeat(64), vault: 'main', also: ['notes', 'extra'], aliases: 0 } } as unknown,
+  }
+  const calls = wire(on, state)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdd(ui)
+  await ui.press({ key: 'tab-distants' })
+
+  // First click: computed from the refresh's entry, sent straight away. From
+  // here every read fails, so the second click can only start from what the
+  // write itself answered.
+  ;(state as { refuse?: string }).refuse = 'list_vaults'
+  const before = calls.length
+  await ui.press({ key: 'add-extra' })
+  expect(calls[before]?.tool).toBe('confirm_workspace_binding')
+  expect(calls[before]?.args).toEqual({ vault: 'main', also: ['notes', 'extra'], ifBindingDigest: 'd'.repeat(64), ifNoOtherSpellings: true, open: false })
+
+  // Second click: computed from what the first write answered — still no read first.
+  await openClosed(ui)
+  const second = calls.length
+  await ui.press({ key: 'remove-notes' })
+  expect(calls[second]?.tool).toBe('confirm_workspace_binding')
+  expect(calls[second]?.args).toEqual({ vault: 'main', also: ['extra'], ifBindingDigest: 'e'.repeat(64), ifNoOtherSpellings: true, open: false })
+  await ui.unmount()
+})
+
+test('a write refused as stale is rebuilt once from a fresh read and sent again', async ($, on) => {
+  const state = { list: ON_FILE as unknown, refuseOnce: 'confirm_workspace_binding', refuseText: STALE_ROUTER_TEXT }
+  const calls = wire(on, state)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // Another session changed the entry: the next read reports it.
+  state.list = { ...ON_FILE, workspaceBindingOnFile: { digest: 'f'.repeat(64), vault: 'main', also: ['notes', 'docs'] } }
+  const before = calls.length
+  await ui.press({ key: 'remove-docs' })
+  expect(calls.slice(before, before + 3).map(c => c.tool)).toEqual([
+    'confirm_workspace_binding',
+    'list_vaults',
+    'confirm_workspace_binding',
+  ])
+  expect(calls[before + 2]?.args).toEqual({ vault: 'main', also: ['notes'], ifBindingDigest: 'f'.repeat(64), ifNoOtherSpellings: true, open: false })
+  // It went through: no failure on screen.
+  expect(await ui.find({ type: 'Text', text: /modifiée pendant l'envoi/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('with a router older than ifNoOtherSpellings, every click reads the entry afresh before its write', async ($, on) => {
+  const calls = wire(on, { list: { ...ON_FILE, routerBuild: { version: '0.102.1' } } })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const before = calls.length
+  await ui.press({ key: 'remove-docs' })
+  expect(calls.slice(before, before + 2).map(c => c.tool)).toEqual(['list_vaults', 'confirm_workspace_binding'])
+  await ui.unmount()
 })

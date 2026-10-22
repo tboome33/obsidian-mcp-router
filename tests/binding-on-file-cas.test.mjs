@@ -120,6 +120,32 @@ describe('workspaceBindingOnFile.digest as ifBindingDigest — a compare-and-set
     assert.deepEqual(readBinding(file.config, CWD).also, ['work', 'ref']);
   });
 
+  test('a write returns the entry it left, digest included — the next edit needs no re-read', async () => {
+    const { seam, read, sibling } = disk(BOUND);
+    const first = read();
+    const r = await confirmWorkspaceBinding(
+      registry(),
+      { vault: first.vault, also: [...first.also, 'ref'], ifBindingDigest: first.digest },
+      seam,
+    );
+    // Exactly what a fresh read of the file gives now.
+    assert.deepEqual(r.workspaceBindingOnFile, read());
+    // And it is a working precondition for the next edit…
+    await confirmWorkspaceBinding(
+      registry(),
+      { vault: 'notes', also: ['ref'], ifBindingDigest: r.workspaceBindingOnFile.digest },
+      seam,
+    );
+    assert.deepEqual(readBinding(seam.readFile() && JSON.parse(seam.readFile()), CWD).also, ['ref']);
+    // …that still refuses once a sibling moved the entry.
+    const stale = read().digest;
+    sibling({ ...BOUND, also: [] });
+    await assert.rejects(
+      confirmWorkspaceBinding(registry(), { vault: 'notes', also: ['work'], ifBindingDigest: stale }, seam),
+      /binding entry now differs/,
+    );
+  });
+
   test('a sibling changed the entry after the read: refused, and its work survives', async () => {
     const { file, seam, read, sibling } = disk(BOUND);
     const onFile = read();
@@ -138,6 +164,53 @@ describe('workspaceBindingOnFile.digest as ifBindingDigest — a compare-and-set
     const kept = readBinding(file.config, CWD);
     assert.deepEqual(kept.also, []);
     assert.equal(kept.locked, true);
+  });
+
+  test('ifNoOtherSpellings: an alias added after the read refuses the write, the digest alone does not', async () => {
+    const key = canonicalWorkspaceKey(CWD)
+    const alias = `${key}${path.sep}`
+    const addAlias = (file) => {
+      file.config = {
+        ...file.config,
+        [WORKSPACE_BINDINGS_KEY]: { ...file.config[WORKSPACE_BINDINGS_KEY], [alias]: { ...BOUND, also: ['ref'] } },
+      }
+    }
+
+    // With the flag: refused inside the lock, the hand-edited spelling kept.
+    const guarded = disk(BOUND)
+    const onFile = guarded.read()
+    addAlias(guarded.file)
+    assert.equal(guarded.read().digest, onFile.digest, 'the selected entry did not move: the digest alone cannot see it');
+    await assert.rejects(
+      confirmWorkspaceBinding(
+        registry(),
+        { vault: 'notes', also: ['work'], ifBindingDigest: onFile.digest, ifNoOtherSpellings: true },
+        guarded.seam,
+      ),
+      /several spellings[\s\S]*NO BINDING WAS WRITTEN/,
+    );
+    assert.equal(guarded.file.writes, 0);
+    assert.ok(alias in guarded.file.config[WORKSPACE_BINDINGS_KEY]);
+
+    // Without it (a repair spelled by a diagnostic): the write collapses the spellings, as before.
+    const plain = disk(BOUND)
+    const before = plain.read()
+    addAlias(plain.file)
+    await confirmWorkspaceBinding(registry(), { vault: 'notes', also: ['work'], ifBindingDigest: before.digest }, plain.seam);
+    assert.equal(plain.file.writes, 1);
+    assert.equal(alias in plain.file.config[WORKSPACE_BINDINGS_KEY], false);
+  });
+
+  test('ifNoOtherSpellings is true or absent, and only with ifBindingDigest', async () => {
+    const { seam, read } = disk(BOUND);
+    await assert.rejects(
+      confirmWorkspaceBinding(registry(), { vault: 'notes', ifNoOtherSpellings: true }, seam),
+      /goes with `ifBindingDigest`/,
+    );
+    await assert.rejects(
+      confirmWorkspaceBinding(registry(), { vault: 'notes', ifBindingDigest: read().digest, ifNoOtherSpellings: 'yes' }, seam),
+      /is `true` or absent/,
+    );
   });
 
   test('a workspace bound by a sibling after an unbound read: the stale primary pick is refused', async () => {
