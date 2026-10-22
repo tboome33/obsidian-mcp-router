@@ -10,6 +10,49 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.102.2] — 2026-10-22 — the vault panel's edits no longer lock it for ten seconds
+
+Reported on v0.102.1: pressing ✕ on a secondary showed "tribu retiré" and stayed there; a second
+removal did nothing, and the first one took a long time. Measured on that machine: one
+`list_vaults` call takes **about 5 s** (27 secondaries, two reads in a row: 5124 ms, 5027 ms). A
+panel edit made two of them — a re-read of the binding before the write, and the read-back after
+it — and kept the panel locked through both. The label, the success words, read as if it were done.
+
+- **No read before the write.** The panel keeps the binding entry, with its digest, from its last
+  read; and `confirm_workspace_binding` now **returns the entry its write left**
+  (`workspaceBindingOnFile`, the shape `list_vaults` gives), so a second edit starts from it too.
+  The write stays conditional (`ifBindingDigest`): when another session moved the entry meanwhile,
+  the router refuses, and the panel rebuilds the same edit once from a fresh read and sends it
+  again.
+- **The panel is locked only during the write.** The read-back runs behind; the change is drawn at
+  once (a removed secondary leaves the list, an added one joins it, a new tier shows). A read that
+  started before the write cannot undo it.
+- **Words for while it runs** ("Retrait de tribu…", "Ajout de …", "… : passage en …"), then a
+  toast with the done words ("tribu retiré").
+- **New `confirm_workspace_binding` argument `ifNoOtherSpellings: true`** (with `ifBindingDigest`
+  only). The digest covers the entry under the selected key, while a write collapses every stored
+  spelling of the workspace; an entry kept from an earlier read cannot see a spelling a hand edit
+  added since. With the flag, the router refuses inside its write lock when another spelling is on
+  file. The panel sends it with every digest — and keeps an entry between clicks only when the
+  router reports v0.102.2 or later (`routerBuild.version`); an older router, which ignores the flag,
+  gets a fresh read before each write, as before. Repairs spelled by diagnostics do not send it:
+  their behaviour is unchanged.
+- After a write rebuilt from a fresh read, the change is left for the read-back to draw: a guess
+  made against the first entry could show the wrong tier.
+- Reviewed by Codex, two rounds: round 1's P1 (a kept `aliases: 0` going stale while the digest does
+  not move) and P2 (the drawn add ignoring a tier kept by the router) led to the two points above;
+  round 2's (an older router ignoring the flag; the drawn change after a retry) are closed too.
+- Not changed here: `list_vaults` itself still takes about 5 s on that setup; worth its own look on
+  the router side.
+- Tests: `tests/vault-panel.test.tsx` 29 (was 26) — two clicks in a row with no `list_vaults` before
+  either write (the second from what the first write answered), a write refused as stale rebuilt
+  once from a fresh read, and a fresh read before each write against an older router.
+  `tests/binding-on-file-cas.test.mjs` 11 (was 8) — the entry a write returns equals a fresh read,
+  works as the next precondition and still refuses once a sibling moved it; `ifNoOtherSpellings`
+  refuses an alias added after the read (the digest alone does not), and is validated. Each seen
+  red under a mutation of its rule. Not covered: the lock released before the read-back, the
+  at-once drawing (the kit settles background work before an act returns).
+
 ## [0.102.1] — 2026-10-22 — removing or adding a vault in the panel no longer launches Obsidian on the closed ones
 
 Reported on v0.102.0: removing the `tradingview` secondary popped an Obsidian error, "Coffre

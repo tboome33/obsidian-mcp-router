@@ -64,6 +64,8 @@ import {
   describeBindingRepair,
   rawEntryDigest,
   rawSecondaryTiers,
+  bindingOnFileOf,
+  bindingEntryAliases,
   registryIncoherences,
   registryFactsFor,
   unresolvedSecondaryFacts,
@@ -213,6 +215,19 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       'confirm_workspace_binding: `ifBindingDigest` goes with `vault` (a re-confirmation that repairs a binding) '
       + 'and with nothing else — not with accept, refuse, retract or clear.',
     );
+  }
+  // `ifNoOtherSpellings` NARROWS that precondition (v0.102.2). The digest
+  // covers the entry under the selected key; a write collapses EVERY stored
+  // spelling of this workspace into the canonical key. A caller that computed
+  // its write from an entry it read earlier (the vault panel) cannot tell
+  // whether a hand edit added another spelling since — the digest would not
+  // move — so it asks the router to refuse, inside the write lock, when any
+  // other spelling is on file. Only with `ifBindingDigest`.
+  if (args.ifNoOtherSpellings !== undefined && args.ifNoOtherSpellings !== true) {
+    throw new Error('confirm_workspace_binding: `ifNoOtherSpellings` is `true` or absent.');
+  }
+  if (args.ifNoOtherSpellings === true && args.ifBindingDigest === undefined) {
+    throw new Error('confirm_workspace_binding: `ifNoOtherSpellings` goes with `ifBindingDigest`, and with nothing else.');
   }
   if (verbs.length) {
     const others = ['vault', 'also', 'locked', 'clear'].filter((k) => args[k] !== undefined);
@@ -838,6 +853,15 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         + 'with a fresh digest, a proposal, a success, or a refusal for a reason of its own.',
       );
     }
+    if (args.ifNoOtherSpellings === true && bindingEntryAliases(cfg, cwd).length > 0) {
+      adoptRefusals(readRefusals(cfg, cwd));
+      throw new Error(
+        'confirm_workspace_binding: the config file holds this workspace under several spellings (a hand '
+        + 'edit), and this write would collapse them all into one — so NO BINDING WAS WRITTEN '
+        + '(ifNoOtherSpellings). list_vaults reports the count as workspaceBindingOnFile.aliases; repair the '
+        + 'binding first.',
+      );
+    }
     },
     // A refusal of any vault being bound is dropped by `withBinding` itself;
     // read here, inside the lock, only so the answer can SAY so.
@@ -1098,6 +1122,10 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // the sentences above, for a caller that would rather read data.
     droppedSecondaries: writePlan?.droppedSecondaries ?? [],
     lockMovedTo: writePlan?.lockMovesTo ?? null,
+    // The entry as THIS write left it, with its digest (v0.102.2): a caller
+    // chaining edits (the vault panel) passes it as the next ifBindingDigest
+    // without a list_vaults round trip — the same shape list_vaults returns.
+    workspaceBindingOnFile: bindingOnFileOf(next, cwd),
     // The secondaries above that this session cannot resolve: declared, kept,
     // not answering from here. Empty in the ordinary case.
     notLoadedHere,

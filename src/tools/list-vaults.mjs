@@ -30,7 +30,7 @@ import { probeConversionToolbox } from '../helpers/conversion-readiness.mjs';
 import { DEFAULT_PROJECT_ROOT as PROJECT_ROOT } from '../markdownify/markitdown.mjs';
 import { isVaultReachable } from '../helpers/vault-reach.mjs';
 import { sharingRequirement } from '../helpers/vault-sharing.mjs';
-import { HINT_STATUS, bindingEntryAliases, rawBindingEntry, rawEntryDigest, readBinding } from '../helpers/workspace-bindings.mjs';
+import { HINT_STATUS, bindingOnFileOf } from '../helpers/workspace-bindings.mjs';
 import { classifyVaultReachability } from '../helpers/vault-reachability.mjs';
 import { portEntryOf } from '../helpers/port-registry.mjs';
 import { viewAgentStatus, probeViewAgentHealth, VIEW_AGENT_SETUP } from '../helpers/view-link.mjs';
@@ -663,18 +663,11 @@ function safeBuild() {
 export function bindingOnFile(configPath, { cwd = process.cwd(), readFile = (p) => fs.readFileSync(p, 'utf8') } = {}) {
   if (typeof configPath !== 'string' || !configPath) return null;
   try {
-    const cfg = JSON.parse(readFile(configPath));
-    const binding = readBinding(cfg, cwd);
-    return {
-      digest: rawEntryDigest(rawBindingEntry(cfg, cwd)),
-      vault: binding?.vault ?? null,
-      also: Array.isArray(binding?.also) ? [...binding.also] : [],
-      // Other stored spellings of this same workspace (a hand edit). The digest
-      // covers the selected entry only, while a write collapses EVERY spelling
-      // into the canonical key — so a caller doing a compare-and-set must not
-      // write while this is non-zero: the collapse would be unconditioned.
-      aliases: bindingEntryAliases(cfg, cwd).length,
-    };
+    // `aliases`: other stored spellings of this same workspace (a hand edit).
+    // The digest covers the selected entry only, while a write collapses EVERY
+    // spelling into the canonical key — so a caller doing a compare-and-set
+    // must not write while it is non-zero: the collapse would be unconditioned.
+    return bindingOnFileOf(JSON.parse(readFile(configPath)), cwd);
   } catch {
     return null;
   }

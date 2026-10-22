@@ -54,6 +54,8 @@ type Binding = {
   alsoWritable?: string[]
 }
 
+type OnFile = { digest: string; vault: string | null; also: string[]; aliases?: number }
+
 type ListVaults = {
   workspaceBinding: Binding | null
   vaults: { name: string; type?: string; online?: boolean; description?: string; baseUrl?: string }[]
@@ -61,8 +63,10 @@ type ListVaults = {
   configPath?: string
   /** A session lock set by lock_vault: runtime only, not in the binding. */
   lockedTo?: string | null
+  /** The router's own version, as it reports it. */
+  routerBuild?: { version?: string } | null
   /** The binding entry as the config file holds it, read once (router v0.101.0+). */
-  workspaceBindingOnFile?: { digest: string; vault: string | null; also: string[]; aliases?: number } | null
+  workspaceBindingOnFile?: OnFile | null
 }
 
 let server: string | null = null
@@ -84,6 +88,29 @@ let paneEpoch = 0
 let generation = 0
 // Bumped by every refresh: a slower, older answer never overwrites a newer one.
 let lastRefresh = 0
+// The binding entry the router last reported, by a read or a write, with its
+// digest: what the next click is computed from. null: read it afresh.
+let lastOnFile: OnFile | null = null
+// The router refuses a write that would collapse another spelling of this
+// workspace (ifNoOtherSpellings, v0.102.2+): only then may a click start from
+// an entry kept from an earlier read. An older router ignores the ask, so
+// each click reads the entry afresh, right before its write.
+let canKeepEntry = false
+
+// `version` at least `[major, minor, patch]`; false when it cannot be read.
+function atLeast(version: string | undefined, min: [number, number, number]) {
+  const parts = (version ?? '').split('.').map(Number)
+  if (parts.length < 3 || parts.some(n => !Number.isInteger(n))) {
+    return false
+  }
+  for (let i = 0; i < 3; i += 1) {
+    if (parts[i]! !== min[i]!) {
+      return parts[i]! > min[i]!
+    }
+  }
+
+  return true
+}
 // Reads of the router in flight, whoever started them.
 let reading = 0
 
@@ -265,6 +292,11 @@ async function fillUnknown($: EngineInterface, snap: Snapshot, configPath: strin
 const STALE = /binding entry now differs/
 const STALE_TEXT =
   "La liaison a été modifiée pendant l'envoi (par une autre session) : rien n'a été écrit, le panneau est rafraîchi."
+// And its refusal when a hand edit stored this workspace twice (ifNoOtherSpellings).
+const SPELLINGS = /several spellings/
+const SPELLINGS_TEXT =
+  "La config du router contient ce workspace sous plusieurs écritures (une édition à la main) : rien n'a été envoyé. Répare la liaison d'abord."
+const plainly = (text: string) => (STALE.test(text) ? STALE_TEXT : SPELLINGS.test(text) ? SPELLINGS_TEXT : text)
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
@@ -290,6 +322,10 @@ async function refresh($: EngineInterface): Promise<boolean> {
     const next = toSnapshot(data, await $.clock.now())
     await fillUnknown($, next, data.configPath)
     if (id === lastRefresh) {
+      if ('workspaceBindingOnFile' in data) {
+        lastOnFile = data.workspaceBindingOnFile ?? null
+        canKeepEntry = atLeast(data.routerBuild?.version, [0, 102, 2])
+      }
       await update($, snapshot, () => next)
     }
     if (id === lastRefresh) {
@@ -314,96 +350,172 @@ function background($: EngineInterface) {
   void refresh($).catch(() => undefined)
 }
 
-// Runs one change against the router, then reads the state back. A refused
-// change is kept in `failure`, which no refresh clears: only the next action
-// does.
-async function act($: EngineInterface, label: string, tool: string, args: Record<string, unknown> | (() => Promise<Record<string, unknown>>)) {
+// The digest, and the ask that the router also refuse when a hand edit added
+// another spelling of this workspace since the entry was read: the digest
+// does not cover those, and the write would collapse them all.
+type Precondition = { ifBindingDigest?: string; ifNoOtherSpellings?: true }
+
+// What one action needs: the words for while it runs and for when it is done,
+// the router tool, its arguments — built from the binding as last known, or
+// read afresh (`fresh`) — and how the pane may show the result at once.
+type Action = {
+  doing: string
+  done: string
+  tool: string
+  args: (fresh: boolean) => Promise<Record<string, unknown>> | Record<string, unknown>
+  shows?: (snap: Snapshot) => Snapshot
+}
+
+// Runs one change against the router. The pane is locked only while the
+// write is under way: it shows `doing`, then a toast says `done`, the change
+// is drawn at once (`shows`), and the read-back runs behind — a second click
+// does not wait for it. A refused change is kept in `failure`, which no
+// refresh clears: only the next action does.
+//
+// A binding write is conditional (ifBindingDigest) and computed from the entry
+// as last reported; when the router says it moved meanwhile, the action is
+// rebuilt ONCE from a fresh read and sent again — the same intent, applied to
+// the binding as it now stands.
+async function act($: EngineInterface, action: Action) {
   if (await read($, busy)) {
     return
   }
-  await update($, busy, () => label)
+  await update($, busy, () => action.doing)
   await update($, failure, () => null)
   try {
-    await call($, tool, typeof args === 'function' ? await args() : args)
-    $.ui.toast(label)
+    let text: string
+    let isRetried = false
+    try {
+      text = await call($, action.tool, await action.args(false))
+    } catch (err) {
+      if (!STALE.test(message(err))) {
+        throw err
+      }
+      text = await call($, action.tool, await action.args(true))
+      // Rebuilt from a fresh read: what it did is for the read-back to draw,
+      // not for a guess made against the entry it was first computed from.
+      isRetried = true
+    }
+    noteWrite(text)
+    // A read started before this write must not undo it: not the entry just
+    // noted, nor the change drawn below.
+    lastRefresh += 1
+    if (action.shows && !isRetried) {
+      const shows = action.shows
+      await update($, snapshot, snap => (snap ? shows(snap) : snap))
+    }
+    $.ui.toast(action.done)
   } catch (err) {
-    await update($, failure, () => (STALE.test(message(err)) ? STALE_TEXT : message(err)))
+    lastOnFile = null
+    await update($, failure, () => plainly(message(err)))
   }
-  await refresh($)
   await update($, busy, () => null)
+  background($)
 }
 
-// The binding entry a click works from, as the config FILE holds it now, with
-// the digest that makes the write conditional on it: confirm_workspace_binding
-// checks `ifBindingDigest` inside its write lock, so a click lands only on the
-// entry it was computed from — never over a change another session made
-// between this read and the write. Only a router older than the field — the
-// field ABSENT — gets the old, unconditioned write computed from its live
-// binding. A router that has the field but could not read its file (null)
-// gets nothing: falling back there would silently drop the protection. Nor
-// does a config holding this workspace under several spellings: the write
-// would collapse them all, and the digest covers one.
-async function bindingNow($: EngineInterface) {
+// A binding write answers with the entry it left (router v0.102.2+): the next
+// click starts from it without a list_vaults round trip. An older router says
+// nothing, and the next click reads afresh.
+function noteWrite(text: string) {
+  try {
+    const onFile = (JSON.parse(text) as { workspaceBindingOnFile?: OnFile | null }).workspaceBindingOnFile
+    lastOnFile = onFile && typeof onFile.digest === 'string' ? onFile : null
+  } catch {
+    lastOnFile = null
+  }
+}
+
+// The binding entry a click works from, with the digest that makes the write
+// conditional on it: confirm_workspace_binding checks `ifBindingDigest` inside
+// its write lock, so a click lands only on the entry it was computed from —
+// never over a change another session made in between. The entry is the one
+// the router last reported (a read or a write), unless `fresh` asks for a new
+// read. Only a router older than the field — the field ABSENT — gets the old,
+// unconditioned write computed from its live binding. A router that has the
+// field but could not read its file (null) gets nothing: falling back there
+// would silently drop the protection. Nor does a config holding this workspace
+// under several spellings: the write would collapse them all, and the digest
+// covers one.
+async function bindingNow($: EngineInterface, fresh: boolean) {
+  if (!fresh && lastOnFile && canKeepEntry) {
+    return fromOnFile(lastOnFile)
+  }
   const data = JSON.parse(await withTimeout($, call($, 'list_vaults'))) as ListVaults
   if ('workspaceBindingOnFile' in data) {
-    const onFile = data.workspaceBindingOnFile
-    if (!onFile || typeof onFile.digest !== 'string') {
+    lastOnFile = data.workspaceBindingOnFile ?? null
+    if (!lastOnFile || typeof lastOnFile.digest !== 'string') {
       throw new Error("Le router n'a pas pu relire sa config : rien n'a été envoyé. Réessaie dans un instant.")
     }
-    if ((onFile.aliases ?? 0) > 0) {
-      throw new Error(
-        "La config du router contient ce workspace sous plusieurs écritures (une édition à la main) : rien n'a été envoyé. Répare la liaison d'abord.",
-      )
-    }
 
-    return { vault: onFile.vault, also: onFile.also ?? [], precondition: { ifBindingDigest: onFile.digest } }
+    return fromOnFile(lastOnFile)
   }
   const live = data.workspaceBinding
+  const precondition: Precondition = {}
 
-  return { vault: live?.vault ?? null, also: live?.also ?? [], precondition: {} }
+  return { vault: live?.vault ?? null, also: live?.also ?? [], precondition }
+}
+
+function fromOnFile(onFile: OnFile) {
+  if ((onFile.aliases ?? 0) > 0) {
+    throw new Error(SPELLINGS_TEXT)
+  }
+  const precondition: Precondition = { ifBindingDigest: onFile.digest, ifNoOtherSpellings: true }
+
+  return { vault: onFile.vault, also: onFile.also ?? [], precondition }
 }
 
 // Re-confirms the binding with a new list of secondaries, computed from the
-// binding as the file holds it NOW, not from the snapshot on screen. The click
-// names the primary it was drawn for: if the primary is no longer that one,
-// nothing is sent. `locked` is left out on purpose: the router keeps the
-// binding's own lock when the field is absent, so a click never unlocks (or
-// locks) a workspace. Tiers of the secondaries that stay are kept by the
-// router. And the router OPENS every bound vault that does not answer unless
-// told `open: false` — so removing or adding one vault would launch Obsidian on
-// all the closed ones (a closed vault Obsidian does not know by that name pops
-// an error up). Only the open-all asks for that (`isOpening`).
+// binding entry as the router last reported it, not from the snapshot on
+// screen. The click names the primary it was drawn for: if the primary is no
+// longer that one, nothing is sent. `locked` is left out on purpose: the
+// router keeps the binding's own lock when the field is absent, so a click
+// never unlocks (or locks) a workspace. Tiers of the secondaries that stay are
+// kept by the router. And the router OPENS every bound vault that does not
+// answer unless told `open: false` — so removing or adding one vault would
+// launch Obsidian on all the closed ones (a closed vault Obsidian does not
+// know by that name pops an error up). Only the open-all asks for that
+// (`isOpening`).
 async function rebind(
   $: EngineInterface,
-  label: string,
+  words: { doing: string; done: string },
   shown: string,
   change: (also: string[]) => string[],
-  isOpening = false,
+  options: { isOpening?: boolean; shows?: (snap: Snapshot) => Snapshot } = {},
 ) {
-  await act($, label, 'confirm_workspace_binding', async () => {
-    const now = await bindingNow($)
-    if (now.vault !== shown) {
-      throw new Error(
-        `La liaison a changé entre-temps (principal : ${now.vault ?? 'aucun'}) : rien n'a été envoyé, le panneau est rafraîchi.`,
-      )
-    }
+  await act($, {
+    ...words,
+    tool: 'confirm_workspace_binding',
+    shows: options.shows,
+    args: async fresh => {
+      const now = await bindingNow($, fresh)
+      if (now.vault !== shown) {
+        throw new Error(
+          `La liaison a changé entre-temps (principal : ${now.vault ?? 'aucun'}) : rien n'a été envoyé, le panneau est rafraîchi.`,
+        )
+      }
 
-    return { vault: now.vault, also: change(now.also), ...now.precondition, ...(isOpening ? {} : { open: false }) }
+      return { vault: now.vault, also: change(now.also), ...now.precondition, ...(options.isOpening ? {} : { open: false }) }
+    },
   })
 }
 
 // Picks the primary of an unbound workspace, only if it is still unbound: the
 // digest of the absent entry is a precondition like any other.
 async function choosePrimary($: EngineInterface, name: string) {
-  await act($, `${name} principal`, 'confirm_workspace_binding', async () => {
-    const now = await bindingNow($)
-    if (now.vault) {
-      throw new Error(
-        `Un principal a été choisi entre-temps (${now.vault}) : rien n'a été envoyé, le panneau est rafraîchi.`,
-      )
-    }
+  await act($, {
+    doing: `Choix de ${name} comme principal`,
+    done: `${name} principal`,
+    tool: 'confirm_workspace_binding',
+    args: async fresh => {
+      const now = await bindingNow($, fresh)
+      if (now.vault) {
+        throw new Error(
+          `Un principal a été choisi entre-temps (${now.vault}) : rien n'a été envoyé, le panneau est rafraîchi.`,
+        )
+      }
 
-    return { vault: name, ...now.precondition }
+      return { vault: name, ...now.precondition }
+    },
   })
 }
 
@@ -459,6 +571,8 @@ export const register: Register = on => {
     lastRefresh += 1
     server = null
     connectTries = 0
+    lastOnFile = null
+    canKeepEntry = false
     // Shipped on by default with the plugin, so it carries an opt-out like
     // the plugin's other hooks: no command, no pane, no router call.
     const optOut = await $.env.get('OBSIDIAN_ROUTER_NO_VAULT_PANEL')
@@ -658,7 +772,10 @@ export const register: Register = on => {
     // Re-confirming the binding as it stands opens EVERY bound vault whose
     // Obsidian does not answer — the router's own way to open one. So it is
     // one button for all of them, not one per row that would open them all.
-    const openAll = () => void rebind($, 'Ouverture des vaults fermés', shown, current => current, true)
+    const openAll = () =>
+      void rebind($, { doing: 'Ouverture des vaults fermés', done: 'Vaults fermés ouverts' }, shown, current => current, {
+        isOpening: true,
+      })
 
     // A remote vault's web UI, in the app's browser.
     const uiLink = (row: VaultRow) =>
@@ -720,7 +837,9 @@ export const register: Register = on => {
               key="confirm-binding"
               label="Confirmer"
               plain
-              onPress={() => void rebind($, 'Liaison confirmée', shown, current => current)}
+              onPress={() =>
+                void rebind($, { doing: 'Confirmation de la liaison', done: 'Liaison confirmée' }, shown, current => current)
+              }
             />
           </Box>
         )}
@@ -742,9 +861,15 @@ export const register: Register = on => {
     const setMode = (s: Secondary, value: string) => {
       const next = MODES.find(m => m.mode === value)
       if (next && next.mode !== s.mode) {
-        void act($, `${s.name} : ${next.label.toLowerCase()}`, 'set_secondary_vault_mode', {
-          vault: s.name,
-          mode: next.mode,
+        void act($, {
+          doing: `${s.name} : passage en ${next.label.toLowerCase()}`,
+          done: `${s.name} : ${next.label.toLowerCase()}`,
+          tool: 'set_secondary_vault_mode',
+          args: () => ({ vault: s.name, mode: next.mode }),
+          shows: snap => ({
+            ...snap,
+            secondaries: snap.secondaries.map(r => (r.name === s.name ? { ...r, mode: next.mode } : r)),
+          }),
         })
       }
     }
@@ -785,7 +910,15 @@ export const register: Register = on => {
             label="✕"
             plain
             dimColor
-            onPress={() => void rebind($, `${s.name} retiré`, shown, current => current.filter(n => n !== s.name))}
+            onPress={() =>
+              void rebind(
+                $,
+                { doing: `Retrait de ${s.name}`, done: `${s.name} retiré` },
+                shown,
+                current => current.filter(n => n !== s.name),
+                { shows: snap => ({ ...snap, secondaries: snap.secondaries.filter(r => r.name !== s.name) }) },
+              )
+            }
           />
         </Box>
       </Box>
@@ -917,8 +1050,22 @@ export const register: Register = on => {
                         label="Ajouter"
                         plain
                         onPress={() =>
-                          void rebind($, `${v.name} ajouté (écriture sur accord)`, shown, current =>
-                            current.includes(v.name) ? current : [...current, v.name],
+                          void rebind(
+                            $,
+                            { doing: `Ajout de ${v.name}`, done: `${v.name} ajouté (écriture sur accord)` },
+                            shown,
+                            current => (current.includes(v.name) ? current : [...current, v.name]),
+                            {
+                              shows: snap => ({
+                                ...snap,
+                                // Already a secondary (another session added it, the retry
+                                // kept it): the row on screen, tier and all, stays as is.
+                                secondaries: snap.secondaries.some(r => r.name === v.name)
+                                  ? snap.secondaries
+                                  : [...snap.secondaries, { ...v, mode: 'soft' }],
+                                available: snap.available.filter(r => r.name !== v.name),
+                              }),
+                            },
                           )
                         }
                       />
