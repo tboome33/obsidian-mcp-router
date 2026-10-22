@@ -65,15 +65,17 @@ test('the panel lists the binding and changes it through the router', async ($, 
     const ui = await $.ui.mount({ ...PANE, surface })
 
     // Both sections are always drawn; the closed local secondary offers to open.
-    expect(await ui.find({ type: 'Text', text: /^VAULT PRINCIPAL$/ })).toBeTruthy()
-    expect(await ui.find({ type: 'Text', text: /^VAULTS SECONDAIRES \(2\)$/ })).toBeTruthy()
-    expect(await ui.find({ type: 'Button', key: 'open-notes' })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /^Principal$/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /^Secondaires · 2$/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Button', key: 'open-closed' })).toBeTruthy()
     // The add list holds the unbound vaults only, by tab; the
     // operator-disabled vault is left out.
+    await openAdd(ui)
     await ui.press({ key: 'tab-locaux' })
     expect((await ui.find({ type: 'Text', text: /^closed$/ }))?.text).toBe('closed')
     expect(await ui.find({ type: 'Text', text: /^off$/ })).toBeFalsy()
     expect(await ui.find({ type: 'Button', key: 'add-extra' })).toBeFalsy()
+    await openAdd(ui)
     await ui.press({ key: 'tab-distants' })
     expect(await ui.find({ type: 'Button', key: 'add-extra' })).toBeTruthy()
     expect(await ui.find({ type: 'Button', key: 'add-closed' })).toBeFalsy()
@@ -82,9 +84,11 @@ test('the panel lists the binding and changes it through the router', async ($, 
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
 
-  await ui.press({ key: 'mode-notes-writable' })
+  await openClosed(ui)
+  await ui.select({ key: 'mode-notes', value: 'writable' })
   expect(calls.find(c => c.tool === 'set_secondary_vault_mode')?.args).toEqual({ vault: 'notes', mode: 'writable' })
 
+  await openAdd(ui)
   await ui.press({ key: 'tab-distants' })
   // A remote vault opens its web UI in the app's browser; one with no UI in
   // its description (docs) has no button.
@@ -101,7 +105,7 @@ test('the panel lists the binding and changes it through the router', async ($, 
     also: ['docs', 'notes', 'extra'],
   })
 
-  await ui.press({ key: 'open-notes' })
+  await ui.press({ key: 'open-closed' })
   expect(calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args).toEqual({
     vault: 'main',
     also: ['docs', 'notes'],
@@ -196,6 +200,26 @@ async function eventually<T>(probe: () => Promise<T | undefined>): Promise<T | u
   return undefined
 }
 
+// What the two helpers below need of a mounted pane, on any surface.
+type Mounted = {
+  find(query: { type?: 'Button'; key: string }): Promise<unknown>
+  press(target: { key: string }): Promise<unknown>
+}
+
+// The add list and the closed secondaries are folded by default, and the
+// fold is session state: open each one only if it is not open already.
+async function openAdd(ui: Mounted) {
+  if (!(await ui.find({ type: 'Button', key: 'tab-locaux' }))) {
+    await ui.press({ key: 'toggle-add' })
+  }
+}
+
+async function openClosed(ui: Mounted) {
+  if (!(await ui.find({ key: 'mode-notes' }))) {
+    await ui.press({ key: 'toggle-closed' })
+  }
+}
+
 const START = { cwd: '/', surface: 'desktop', isInteractive: true } as const
 
 // Starts the session, then /vaults: unlike the start's own detached read, the
@@ -215,6 +239,7 @@ test('a click works from the binding as the router has it now, and never sends t
   const calls = wire(on, state)
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdd(ui)
   await ui.press({ key: 'tab-distants' })
 
   // Another session locks the workspace and drops `docs` after this pane drew.
@@ -238,6 +263,7 @@ test('a click is computed from the entry on file and sent with its digest', asyn
   const calls = wire(on, state)
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdd(ui)
   await ui.press({ key: 'tab-distants' })
   await ui.press({ key: 'add-extra' })
   expect(calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args).toEqual({
@@ -275,6 +301,7 @@ test('a Principal pick is sent with the digest of the unbound entry', async ($, 
   const calls = wire(on, { list: unbound })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdd(ui)
   await ui.press({ key: 'tab-locaux' })
   await ui.press({ key: 'primary-notes' })
   expect(calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args).toEqual({
@@ -294,6 +321,7 @@ test('a write the router refuses as stale says so plainly', async ($, on) => {
   wire(on, state)
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdd(ui)
   await ui.press({ key: 'tab-distants' })
   await ui.press({ key: 'add-extra' })
   expect(await ui.find({ type: 'Text', text: /La liaison a été modifiée pendant l'envoi/ })).toBeTruthy()
@@ -304,7 +332,8 @@ test('a refused change keeps its error on screen after the read-back', async ($,
   wire(on, { list: LIST, refuse: 'set_secondary_vault_mode' })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await ui.press({ key: 'mode-notes-writable' })
+  await openClosed(ui)
+  await ui.select({ key: 'mode-notes', value: 'writable' })
   expect(await ui.find({ type: 'Text', text: /binding changed meanwhile/ })).toBeTruthy()
   // A later read of the router, the timer's or the button's, keeps it too.
   await ui.press({ key: 'refresh' })
@@ -358,19 +387,19 @@ test('an open pane redraws after the model binding calls, and after no other too
   const lists = () => calls.filter(c => c.tool === 'list_vaults').length
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /^VAULTS SECONDAIRES \(2\)$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Secondaires · 2$/ })).toBeTruthy()
   // The model drops a secondary: the pane shows it once the call is back.
   state.list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['notes'] } }
   const before = lists()
   await $.tool.call({ tool: 'mcp__plugin_obsidian-router_router__lock_vault', vault: 'main' })
   // The redraw runs detached from the tool's result: wait for it, boundedly,
   // then count — the read is done once the pane shows its answer.
-  expect(await eventually(() => ui.find({ type: 'Text', text: /^VAULTS SECONDAIRES \(1\)$/ }))).toBeTruthy()
+  expect(await eventually(() => ui.find({ type: 'Text', text: /^Secondaires · 1$/ }))).toBeTruthy()
   expect(lists()).toBe(before + 1)
   await $.tool.call({ tool: 'mcp__plugin_obsidian-router_router__get_file', path: 'a.md' })
   // A read it started would also run detached: give it the same round trips.
   for (let i = 0; i < 50; i += 1) {
-    await ui.find({ type: 'Text', text: /^VAULT PRINCIPAL$/ })
+    await ui.find({ type: 'Text', text: /^Principal$/ })
   }
   expect(lists()).toBe(before + 1)
   await ui.unmount()
@@ -406,17 +435,17 @@ test('an older read of the router landing last never overwrites a newer one', as
   // A must have read the OLD list before it changes: wait for its call.
   expect(
     await eventually(async () => {
-      await ui.find({ type: 'Text', text: /^VAULT PRINCIPAL$/ })
+      await ui.find({ type: 'Text', text: /^Principal$/ })
 
       return calls.length > sent || undefined
     }),
   ).toBe(true)
   state.list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['notes'] } }
   await ui.press({ key: 'refresh' })
-  expect(await ui.find({ type: 'Text', text: /^VAULTS SECONDAIRES \(1\)$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Secondaires · 1$/ })).toBeTruthy()
   release()
   await older
-  expect(await ui.find({ type: 'Text', text: /^VAULTS SECONDAIRES \(1\)$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Secondaires · 1$/ })).toBeTruthy()
   await ui.unmount()
 })
 
@@ -461,6 +490,7 @@ test('a stale Principal button never replaces a binding made meanwhile', async (
   const calls = wire(on, state)
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdd(ui)
   await ui.press({ key: 'tab-locaux' })
   expect(await ui.find({ type: 'Button', key: 'primary-notes' })).toBeTruthy()
 
@@ -478,7 +508,8 @@ test('a binding answer without `also` draws, and a click still sends a list', as
   const calls = wire(on, state)
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /^VAULTS SECONDAIRES \(0\)$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Secondaires · 0$/ })).toBeTruthy()
+  await openAdd(ui)
   await ui.press({ key: 'tab-distants' })
   await ui.press({ key: 'add-extra' })
   expect(calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args).toEqual({ vault: 'main', also: ['extra'] })
@@ -512,8 +543,8 @@ test("a read the previous session left running writes nothing into the next one"
 
   // The opted-out session never read the router: its pane state is empty.
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /^VAULT PRINCIPAL$/ })).toBeFalsy()
-  expect(await ui.find({ type: 'Text', text: /Lecture du router/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Principal$/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /lecture du router/i })).toBeTruthy()
   await ui.unmount()
 })
 
@@ -641,7 +672,7 @@ test('a router call that never answers at start is given up, and the next try fi
   expect(calls).toBe(2)
   expect(opens).toBe(1)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /^VAULT PRINCIPAL$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Principal$/ })).toBeTruthy()
   // Drawn with data: the pane starts no read of its own.
   expect(calls).toBe(2)
   await ui.unmount()
@@ -657,12 +688,63 @@ test('a pane the app drew on its own gets the redraws after the model binding ca
   await $.session.start(START)
   // The app draws the pane anyway (restored layout): it shows the failed read.
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /^VAULT PRINCIPAL$/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /^Principal$/ })).toBeFalsy()
   // The router is up now, and the model changes the binding.
   state.list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['notes'] } }
   const before = calls.filter(c => c.tool === 'list_vaults').length
   await $.tool.call({ tool: 'mcp__plugin_obsidian-router_router__lock_vault', vault: 'main' })
-  expect(await eventually(() => ui.find({ type: 'Text', text: /^VAULTS SECONDAIRES \(1\)$/ }))).toBeTruthy()
+  expect(await eventually(() => ui.find({ type: 'Text', text: /^Secondaires · 1$/ }))).toBeTruthy()
   expect(calls.filter(c => c.tool === 'list_vaults').length).toBe(before + 1)
   await ui.unmount()
+})
+
+test('the layout: a summary, closed vaults and adding folded away, one open-all, a filter over secondaries', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    // main and docs answer, notes does not: 3 bound, 2 open.
+    expect(await ui.find({ type: 'Text', text: /^3 liés · 2 ouverts · màj / })).toBeTruthy()
+    // The closed secondary is folded away, behind its group and one open-all.
+    expect(await ui.find({ type: 'Button', key: 'toggle-closed' })).toBeTruthy()
+    expect(await ui.find({ key: 'mode-notes' })).toBeFalsy()
+    expect(await ui.find({ type: 'Button', key: 'open-closed' })).toBeTruthy()
+    expect(await ui.find({ key: 'mode-docs' })).toBeTruthy()
+    // Adding is folded too, while there is a primary.
+    expect(await ui.find({ type: 'Button', key: 'toggle-add' })).toBeTruthy()
+    expect(await ui.find({ type: 'Button', key: 'tab-locaux' })).toBeFalsy()
+    await ui.unmount()
+  }
+
+  // The filter narrows the secondaries as well as the add list.
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.input({ key: 'filter', text: 'nothing-matches', kind: 'change' })
+  expect(await ui.find({ key: 'mode-docs' })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /^Aucun secondaire ne correspond au filtre\.$/ })).toBeTruthy()
+  await ui.input({ key: 'filter', text: '', kind: 'change' })
+  expect(await ui.find({ key: 'mode-docs' })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('with no primary yet, the add list is open without asking', async ($, on) => {
+  wire(on, { list: { ...LIST, workspaceBinding: null } })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Button', key: 'tab-locaux' })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('on the phone (no menu, no field): the tier keeps its three buttons, and a filter typed elsewhere hides nothing', async ($, on) => {
+  const calls = wire(on, { list: LIST })
+  await begin($)
+  // A filter typed on the desktop…
+  const desk = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await desk.input({ key: 'filter', text: 'nothing-matches', kind: 'change' })
+  await desk.unmount()
+  // …does not hide the phone's rows, and the tier is still changeable there.
+  const phone = await $.ui.mount({ ...PANE, surface: 'mobile' })
+  expect(await phone.find({ type: 'Button', key: 'mode-docs-writable' })).toBeTruthy()
+  await phone.press({ key: 'mode-docs-writable' })
+  expect(calls.find(c => c.tool === 'set_secondary_vault_mode')?.args).toEqual({ vault: 'docs', mode: 'writable' })
+  await phone.unmount()
 })

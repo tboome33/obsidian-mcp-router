@@ -40,6 +40,10 @@ declare module 'claude-code' {
       failure: string | null
       filter: string
       tab: Tab
+      /** The closed secondaries are listed (folded by default). */
+      showClosed: boolean
+      /** The add list is shown (folded by default, unless there is no primary). */
+      showAdd: boolean
     }
   }
 }

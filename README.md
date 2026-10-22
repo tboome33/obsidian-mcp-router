@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.19.0-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.101.2-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.102.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -264,7 +264,7 @@ Plus one Obsidian-specific reference skill (no slash command — knowledge surfa
 
 The hooks ship in [`hooks/`](./hooks/); `setup-vault.mjs` wires them automatically at bootstrap.
 
-**Vault panel** (since v0.101.0) — besides those command hooks, the plugin ships one function-hooks module, [`hooks/vault-panel/register.tsx`](./hooks/vault-panel/register.tsx), declared under `modules` in `hooks/hooks.json`. It adds a **Vaults** pane beside the chat and a `/vaults` command: the workspace's primary vault, its secondary vaults with their write tier (read-only / write on request / read-write), and the registered vaults that can be added, split into local and remote tabs. Each button calls the router's own tools (`confirm_workspace_binding`, `set_secondary_vault_mode`); nothing changes until you click. See [Which hooks the plugin turns on by itself](#which-hooks-the-plugin-turns-on-by-itself).
+**Vault panel** (since v0.101.0) — besides those command hooks, the plugin ships one function-hooks module, [`hooks/vault-panel/register.tsx`](./hooks/vault-panel/register.tsx), declared under `modules` in `hooks/hooks.json`. It adds a **Vaults** pane beside the chat and a `/vaults` command: a one-line summary, the workspace's primary vault, then one line per secondary vault with its write tier as a menu (read-only / write on request / read-write) — open ones first, closed ones folded away behind a single open-all — and, folded until asked for, the registered vaults that can be added, in local and remote tabs. Each button calls the router's own tools (`confirm_workspace_binding`, `set_secondary_vault_mode`); nothing changes until you click. See [Which hooks the plugin turns on by itself](#which-hooks-the-plugin-turns-on-by-itself).
 
 **Auto-enrichment** — Claude proactively suggests wiki saves at three natural moments: **validation** (you say "OK" / "valide" → inline pin), **result obtained** (commit pushed, tests green → digest of candidates), and **topic switch** (mandatory checkpoint before Claude responds to the new topic). Domain-agnostic: works for development, personal life, research, family planning, anything.
 
@@ -1392,7 +1392,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.19.0-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.101.2-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.102.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -1624,7 +1624,7 @@ Plus un skill de référence Obsidian (sans slash command — surfacé quand d'a
 
 Les hooks vivent dans [`hooks/`](./hooks/) ; `setup-vault.mjs` les câble automatiquement au bootstrap.
 
-**Panneau des vaults** (depuis la v0.101.0) — en plus de ces hooks de commande, le plugin livre un module de hooks-fonctions, [`hooks/vault-panel/register.tsx`](./hooks/vault-panel/register.tsx), déclaré sous `modules` dans `hooks/hooks.json`. Il ajoute un panneau **Vaults** à côté du chat et une commande `/vaults` : le vault principal du workspace, ses vaults secondaires avec leur niveau d'écriture (lecture seule / écriture sur accord / lecture-écriture), et les vaults enregistrés qu'on peut ajouter, en deux onglets, locaux et distants. Chaque bouton appelle les outils du router lui-même (`confirm_workspace_binding`, `set_secondary_vault_mode`) ; rien ne change tant qu'on ne clique pas. Voir [Les hooks que le plugin active tout seul](#les-hooks-que-le-plugin-active-tout-seul).
+**Panneau des vaults** (depuis la v0.101.0) — en plus de ces hooks de commande, le plugin livre un module de hooks-fonctions, [`hooks/vault-panel/register.tsx`](./hooks/vault-panel/register.tsx), déclaré sous `modules` dans `hooks/hooks.json`. Il ajoute un panneau **Vaults** à côté du chat et une commande `/vaults` : un résumé d'une ligne, le vault principal du workspace, puis une ligne par vault secondaire avec son niveau d'écriture dans un menu (lecture seule / écriture sur accord / lecture-écriture) — les ouverts d'abord, les fermés repliés derrière un seul bouton qui les ouvre tous — et, replié jusqu'à ce qu'on le demande, les vaults enregistrés qu'on peut ajouter, en deux onglets, locaux et distants. Chaque bouton appelle les outils du router lui-même (`confirm_workspace_binding`, `set_secondary_vault_mode`) ; rien ne change tant qu'on ne clique pas. Voir [Les hooks que le plugin active tout seul](#les-hooks-que-le-plugin-active-tout-seul).
 
 **Auto-enrichissement** — Claude propose proactivement de saver dans le wiki à trois moments naturels : **validation** (tu dis "OK" / "valide" → pin inline), **résultat obtenu** (commit pushé, tests verts → digest de candidats), et **changement de sujet** (checkpoint obligatoire avant que Claude réponde au nouveau sujet). Agnostique du domaine : marche pour le dev, la vie perso, la recherche, la planification familiale, n'importe quoi.
 
