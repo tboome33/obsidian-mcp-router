@@ -443,9 +443,12 @@ export async function fetchViewLink({
       /* keep raw text */
     }
     // The router lower-cases names the agent may keep cased ("la méthode licares" here,
-    // "La méthode LICARES" in the agent's config). An unknown vault the agent lists under
-    // exactly one other casing is asked again, once, under that name.
-    if (res.status >= 400 && res.status < 500 && !casedRetry && served && /^unknown vault/.test(detail)) {
+    // "La méthode LICARES" in the agent's config). A name the agent does not list, refused
+    // while it lists exactly one other casing of it, is asked again, once, under that name.
+    // Whatever the refusal says: an agent that detects vaults tries the unlisted name as a
+    // container of its own first, and refuses with what the detection found instead
+    // ("container obsidian-commun publishes its GUI port 3001 several times").
+    if (res.status >= 400 && res.status < 500 && !casedRetry && served && !served.includes(vaultName)) {
       const same = served.filter(
         (n) => typeof n === 'string' && n !== vaultName && n.toLowerCase() === vaultName.toLowerCase(),
       );

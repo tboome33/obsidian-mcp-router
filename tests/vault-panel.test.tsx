@@ -854,6 +854,27 @@ function obsidianKnows(on: On, folders: string[]) {
 
 const drawnText = async (ui: { drawn(): Promise<unknown> }) => JSON.stringify(await ui.drawn())
 
+test('an open local vault keeps its 💎: the same address brings its window to the front', async ($, on) => {
+  const open = {
+    ...LOCAL_LIST,
+    vaults: LOCAL_LIST.vaults.map(v => (v.name === 'notes' ? { ...v, online: true } : v)),
+  }
+  wire(on, { list: open, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  obsidianKnows(on, ['C:\\VAULTS\\Notes'])
+  const launched: (readonly string[])[] = []
+  on('process.run', (_, e) => {
+    launched.push(e.argv)
+
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openClosed(ui)
+  await ui.press({ key: 'obsidian-notes' })
+  expect(launched).toEqual([['cmd', '/c', 'start', '', 'obsidian://open?vault=id0']])
+  await ui.unmount()
+})
+
 test('a closed local vault Obsidian knows gets its own 💎, which launches it; one it does not know says so instead', async ($, on) => {
   wire(on, { list: LOCAL_LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
   obsidianKnows(on, ['C:\\VAULTS\\Notes'])

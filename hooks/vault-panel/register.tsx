@@ -1002,12 +1002,13 @@ export const register: Register = on => {
         </Box>
       ) : null
 
-    // A closed local vault, opened alone in Obsidian (💎). One Obsidian does
+    // A local vault in Obsidian (💎): a closed one opens, an open one comes to
+    // the front on that vault — the same address does both. One Obsidian does
     // not list yet cannot be opened that way — its protocol only finds vaults
     // it knows — so the row says what to do instead. A button, not a link: on
     // the desktop a link may only be https.
     const obsidianLink = (row: VaultRow) =>
-      isRemote(row) || row.online !== false || !row.path ? null : row.isKnownToObsidian === false ? (
+      isRemote(row) || !row.path ? null : row.isKnownToObsidian === false ? (
         <Text size="caption" color="warning">
           à ouvrir une fois dans Obsidian
         </Text>
