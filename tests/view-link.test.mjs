@@ -56,6 +56,8 @@ beforeEach(() => {
   __resetViewLinkCircuit();
   delete process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL;
   delete process.env.OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN;
+  // A machine that runs an agent sets this one too, and it wins over the token.
+  delete process.env.OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN_FILE;
   delete process.env.OBSIDIAN_ROUTER_SMART_LINK_URL;
   delete process.env.OBSIDIAN_ROUTER_SMART_LINK_SECRET;
 });
@@ -95,6 +97,45 @@ describe('fetchViewLink — pure transport', () => {
       res.end(JSON.stringify({ error: 'unknown vault' }));
     };
     assert.equal(await fetchViewLink({ vaultName: 'zzz', throwOnError: false }), null);
+  });
+
+  // The agent answers an unknown vault with the names it serves, as it does live.
+  const servesCased = (served) => (req, res) => {
+    const asked = new URL(req.url, 'http://x').searchParams.get('vault');
+    if (served.includes(asked)) return okRespond(req, res);
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'unknown vault', vault: asked, vaults: served }));
+  };
+  const askedNames = () =>
+    received.filter((x) => x.url.startsWith('/view')).map((x) => new URL(x.url, 'http://x').searchParams.get('vault'));
+
+  test('an unknown vault the agent lists under another casing is asked again, once, under it', async () => {
+    process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = baseUrl;
+    respond = servesCased(['3amtalks', 'La méthode LICARES']);
+    const d = await fetchViewLink({ vaultName: 'la méthode licares', note: 'a.md' });
+    assert.equal(d.url, 'https://obsidian:pw@abc.trycloudflare.com/');
+    assert.deepEqual(askedNames(), ['la méthode licares', 'La méthode LICARES']);
+  });
+
+  test('an agent that refuses each casing while listing the other is asked twice, not forever', async () => {
+    process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = baseUrl;
+    respond = (req, res) => {
+      const asked = new URL(req.url, 'http://x').searchParams.get('vault');
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unknown vault', vaults: [asked === 'notes' ? 'Notes' : 'notes'] }));
+    };
+    await assert.rejects(() => fetchViewLink({ vaultName: 'notes' }), /unknown vault/);
+    assert.deepEqual(askedNames(), ['notes', 'Notes']);
+  });
+
+  test('no casing of it served, or two: the unknown vault stands, asked once', async () => {
+    process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = baseUrl;
+    for (const served of [['3amtalks'], ['Notes', 'NOTES']]) {
+      received.length = 0;
+      respond = servesCased(served);
+      await assert.rejects(() => fetchViewLink({ vaultName: 'notes' }), /unknown vault/);
+      assert.deepEqual(askedNames(), ['notes']);
+    }
   });
 });
 

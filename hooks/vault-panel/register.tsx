@@ -186,16 +186,79 @@ const BROWSERS = ['Claude_Browser', 'Claude Browser']
 // The app's own panes beside the conversation, the browser's among them.
 const VIEW = 'ccd_view'
 
-// Shows a remote vault's web UI in the app's own browser pane. Its other way,
-// the default browser (Chrome), is a plain link: no call to make.
+// A note the vault holds: the first one at its root, else in wiki/. The view
+// agent only brings a vault's window to the front on its way to a note.
+async function someNote($: EngineInterface, vault: string) {
+  for (const directory of ['', 'wiki']) {
+    const listed = JSON.parse(await call($, 'list_files', { vault, directory })) as { files?: string[] }
+    const note = listed.files?.find(f => f.toLowerCase().endsWith('.md'))
+    if (note) {
+      return directory ? `${directory}/${note}` : note
+    }
+  }
+
+  return null
+}
+
+// Several remote vaults can share one streamed desktop: the address of their
+// UI then shows whichever window is in front. The router's view agent, run
+// beside them, brings this vault's window to the front first, through a link
+// of its own. Where it cannot (no agent on this router, a vault it does not
+// serve, no note), the UI's own address, as before.
+async function uiTarget($: EngineInterface, row: VaultRow & { uiUrl: string }) {
+  try {
+    const note = await someNote($, row.name)
+    if (note) {
+      const link = JSON.parse(await call($, 'get_view_link', { vault: row.name, note })) as { url?: string }
+      if (link.url && /^https?:\/\//.test(link.url)) {
+        return link.url
+      }
+    }
+  } catch {
+    // The UI's own address below.
+  }
+
+  return row.uiUrl
+}
+
+// Hands an address to the default browser (Chrome): no shell parses it, so
+// the `&` of its query is only text. A desktop Link would do it alone, but
+// opens https addresses only, and the view agent's links are http.
+async function openInBrowser($: EngineInterface, row: VaultRow) {
+  if (!row.uiUrl) {
+    return
+  }
+  const url = await uiTarget($, { ...row, uiUrl: row.uiUrl })
+  const launchers = (await $.env.get('APPDATA'))
+    ? [['rundll32', 'url.dll,FileProtocolHandler', url]]
+    : [['open', url], ['xdg-open', url]]
+  let lastError = 'aucun lanceur disponible'
+  for (const argv of launchers) {
+    try {
+      const ran = await $.process.run(argv, { timeoutMs: 10_000 })
+      if (ran.exitCode !== 0) {
+        throw new Error(ran.stderr.trim() || `${argv[0]} a répondu ${ran.exitCode}`)
+      }
+      await update($, failure, () => null)
+
+      return
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err)
+    }
+  }
+  await update($, failure, () => `Navigateur : ${lastError}. Le bouton 🪟 ouvre la même interface ici.`)
+}
+
+// Shows a remote vault's web UI in the app's own browser pane.
 async function openUi($: EngineInterface, row: VaultRow) {
   if (!row.uiUrl) {
     return
   }
+  const url = await uiTarget($, { ...row, uiUrl: row.uiUrl })
   let lastError = 'navigateur interne introuvable'
   for (const name of BROWSERS) {
     try {
-      const result = await $.mcp.call(name, 'preview_start', { url: row.uiUrl })
+      const result = await $.mcp.call(name, 'preview_start', { url })
       if (result.isError) {
         throw new Error(result.content.map(block => block.text ?? '').join(' '))
       }
@@ -212,7 +275,7 @@ async function openUi($: EngineInterface, row: VaultRow) {
   await update(
     $,
     failure,
-    () => `Navigateur interne : ${lastError}. Le lien 🌐 ouvre la même interface dans ton navigateur.`,
+    () => `Navigateur interne : ${lastError}. Le bouton 🌐 ouvre la même interface dans ton navigateur.`,
   )
 }
 
@@ -807,7 +870,6 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
-    const Link = 'Link' in els ? els.Link : null
     // The phone draws no field and no menu (its table may still name them):
     // the list is drawn unfiltered there, and the tier as buttons.
     const isPhone = e.surface === 'mobile'
@@ -929,14 +991,13 @@ export const register: Register = on => {
         isOpening: true,
       })
 
-    // A remote vault's web UI, in the app's browser.
-    // A remote vault's web UI, two ways: 🌐 a link the app hands to the
-    // default browser (Chrome), 🪟 the app's own browser pane.
+    // A remote vault's web UI, two ways: 🌐 the default browser (Chrome), 🪟
+    // the app's own browser pane. Buttons both: each asks the view agent for
+    // its link at the click.
     const uiLink = (row: VaultRow) =>
       row.uiUrl ? (
         <Box flexDirection="row" gap={1} alignItems="center">
-          {/* The desktop opens https links only: an http UI has 🪟 alone. */}
-          {Link && row.uiUrl.startsWith('https://') && <Link href={row.uiUrl} label="🌐" />}
+          <Button key={`web-${row.name}`} label="🌐" plain onPress={() => void openInBrowser($, row)} />
           <Button key={`ui-${row.name}`} label="🪟" plain onPress={() => void openUi($, row)} />
         </Box>
       ) : null

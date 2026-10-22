@@ -10,6 +10,37 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.104.1] — 2026-10-22 — 🌐 and 🪟 show the vault clicked, not whichever is in front
+
+Reported on v0.103.1: 🌐 showed the `obsidian-mcp-router` vault whatever vault was clicked. The
+seven vaults of the `obsidian-commun` container share one streamed desktop, so every UI port
+shows the window in front. Bringing a vault's window to the front is the bridge's `/open` route,
+and that route answers `403 loopback only` to a call from the PC (measured on `Stacks
+techniques`): only something running beside the container can call it. The view agent does.
+
+- **🌐 and 🪟 go through the view agent's link.** At the click, the panel finds a note of the vault
+  (the first at its root, else in `wiki/`, through `list_files`), asks the router's
+  `get_view_link` for that note, and opens the signed `/go` link it returns: the agent brings the
+  vault's window to the front, opens the note, then redirects to the UI. Without an agent on the
+  router (`get_view_link` hidden), for a vault the agent does not serve, or with no note found,
+  both open the UI's own address, as before.
+- **🌐 is a button, not a link.** A desktop `Link` opens https addresses only, and the agent's
+  links are http. The button hands the address to the default browser through
+  `rundll32 url.dll,FileProtocolHandler` on Windows (no shell, so the `&` of the query is only
+  text), `open` on a Mac, `xdg-open` elsewhere; a non-zero exit is reported.
+- **`get_view_link` asks again under the agent's casing of a name.** The router names a vault
+  `la méthode licares`; the agent serves it as `La méthode LICARES` and answered `unknown vault`.
+  When the agent's refusal lists exactly one other casing of the name, the router asks once more
+  under it (one retry at most, never on two candidates). Measured on the live agent: six of the
+  seven shared vaults answered at once, this one only after the fix.
+- **Three view-link suites no longer depend on the machine.** They cleared
+  `OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN` but not `..._TOKEN_FILE`, which wins over it: on a machine whose
+  Claude Code settings point at an agent, 3 tests failed. They clear both now.
+- The router needs `OBSIDIAN_ROUTER_VIEW_AGENT_URL` and `OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN_FILE` in
+  its environment for the agent's links; nothing changes on the agent's side. Verified by hand:
+  the `/go` link of `Stacks techniques` switched the shared desktop from `obsidian-mcp-router` to
+  `Stacks techniques`.
+
 ## [0.104.0] — 2026-10-22 — the view-link provider moves into this repository
 
 The view agent — the reference provider of the router's `/view` contract, which mints the read
