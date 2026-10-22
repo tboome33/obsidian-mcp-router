@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { SecondaryMode, Snapshot, Tab, VaultRow } from '../../types'
+import type { Secondary, SecondaryMode, Snapshot, Tab, VaultRow } from '../../types'
 
 const PANE = 'vault-panel'
 const TITLE = 'Vaults'
@@ -26,6 +26,9 @@ const error = atom({ plugin: 'obsidian-router', key: 'error' } as const, null)
 const failure = atom({ plugin: 'obsidian-router', key: 'failure' } as const, null)
 const filter = atom({ plugin: 'obsidian-router', key: 'filter' } as const, '')
 const tab = atom({ plugin: 'obsidian-router', key: 'tab' } as const, 'locaux')
+// The two folded parts of the pane: the closed secondaries, and adding one.
+const showClosed = atom({ plugin: 'obsidian-router', key: 'showClosed' } as const, false)
+const showAdd = atom({ plugin: 'obsidian-router', key: 'showAdd' } as const, false)
 
 // The status marks, all on one 12×12 box.
 const MARK = {
@@ -530,8 +533,10 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
-    // The phone has no field: the list is drawn unfiltered there.
-    const Input = 'Input' in els ? els.Input : null
+    // The phone draws no field and no menu (its table may still name them):
+    // the list is drawn unfiltered there, and the tier as buttons.
+    const isPhone = e.surface === 'mobile'
+    const Input = !isPhone && 'Input' in els ? els.Input : null
     const snap = await read($, snapshot)
     const working = await read($, busy)
     const err = await read($, error)
@@ -551,45 +556,42 @@ export const register: Register = on => {
     // A tab kept from an earlier version of the panel reads as the first one.
     const current: Tab = (await read($, tab)) === 'distants' ? 'distants' : 'locaux'
     const typed = await read($, filter)
-    const query = typed.trim().toLowerCase()
+    // A surface with no field to type in (the phone) ignores the filter: one
+    // typed elsewhere would otherwise hide rows it cannot bring back.
+    const query = Input ? typed.trim().toLowerCase() : ''
+    const isClosedShown = await read($, showClosed)
+    const isAddShown = await read($, showAdd)
+    const Select = !isPhone && 'Select' in els ? els.Select : null
+    const Svg = 'Svg' in els ? els.Svg : null
 
     // A glyph per state, the colour on top: a closed local vault is no fault
-    // (adding it opens it), an unreachable remote one is.
+    // (opening it is one click), an unreachable remote one is. A surface that
+    // draws SVG gets the marks at one size; the terminal keeps the characters.
     // Drawn in a fixed-width cell, so the names line up whatever the glyph.
     const dot = (online: boolean | null, isRemote: boolean) => (
       <Box width={2} justifyContent="center" flexShrink={0}>
-        {glyph(online, isRemote)}
+        {Svg && online !== null ? (
+          <Svg
+            source={online ? MARK.open : isRemote ? MARK.unreachable : MARK.closed}
+            alt={online ? 'ouvert' : isRemote ? 'injoignable' : 'fermé'}
+            width={10}
+            height={10}
+          />
+        ) : online === null ? (
+          <Text dimColor>?</Text>
+        ) : online ? (
+          <Text color="success">●</Text>
+        ) : isRemote ? (
+          <Text color="error">✕</Text>
+        ) : (
+          <Text dimColor>○</Text>
+        )}
       </Box>
     )
-    // A surface that draws SVG gets the three marks at one size: the font's
-    // own ● and ○ differ. The terminal keeps the characters.
-    const Svg = 'Svg' in els ? els.Svg : null
-    const glyph = (online: boolean | null, isRemote: boolean) =>
-      Svg && online !== null ? (
-        <Svg
-          source={online ? MARK.open : isRemote ? MARK.unreachable : MARK.closed}
-          alt={online ? 'ouvert' : isRemote ? 'injoignable' : 'fermé'}
-          width={12}
-          height={12}
-        />
-      ) : online === null ? (
-        <Text dimColor>?</Text>
-      ) : online ? (
-        <Text color="success">●</Text>
-      ) : isRemote ? (
-        <Text color="error">✕</Text>
-      ) : (
-        <Text color="text">○</Text>
-      )
-    const legendItem = (glyph: ReturnType<typeof dot>, label: string) => (
-      <Box flexDirection="row" gap={1}>
-        {glyph}
-        <Text dimColor>{label}</Text>
-      </Box>
-    )
-    const section = (title: string) => (
-      <Text bold color="claude">
-        {title}
+    // A small grey label above a group: what it is, and how many.
+    const label = (text: string) => (
+      <Text size="caption" dimColor>
+        {text}
       </Text>
     )
     const time = (ms: number) => {
@@ -597,13 +599,37 @@ export const register: Register = on => {
       return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
     }
 
+    const isRemote = (r: VaultRow) => r.type === 'remote'
+    const bound = snap ? [snap.primary, ...snap.secondaries].filter((r): r is VaultRow => r !== null) : []
+    const openCount = bound.filter(r => r.online === true).length
+    const summary = snap
+      ? `${bound.length} lié${bound.length > 1 ? 's' : ''} · ${openCount} ouvert${openCount > 1 ? 's' : ''} · màj ${time(snap.fetchedAt)}`
+      : err
+        ? 'router injoignable'
+        : 'lecture du router…'
+
     const header = (
       <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-        <Text bold>Vaults enregistrés dans le router</Text>
-        <Box flexDirection="row" gap={1} alignItems="center">
-          {working ? <Text color="warning">{working}…</Text> : snap && <Text dimColor>màj {time(snap.fetchedAt)}</Text>}
-          <Button key="refresh" label="Rafraîchir" dimColor onPress={() => background($)} />
+        <Box flexDirection="column">
+          <Text weight="semibold">Vaults</Text>
+          {working ? (
+            <Text size="caption" color="warning">
+              {working}…
+            </Text>
+          ) : (
+            <Text size="caption" dimColor>
+              {summary}
+            </Text>
+          )}
         </Box>
+        <Button key="refresh" label="↻ Rafraîchir" plain dimColor onPress={() => background($)} />
+      </Box>
+    )
+
+    const problems = (
+      <Box flexDirection="column">
+        {!!err && <Text color="error">{snap ? err : `Router injoignable : ${err}`}</Text>}
+        {!!failed && failed !== err && <Text color="error">{failed}</Text>}
       </Box>
     )
 
@@ -611,225 +637,303 @@ export const register: Register = on => {
       return (
         <Box flexDirection="column" gap={1}>
           {header}
-          <Text dimColor>{err ? `Router injoignable : ${err}` : 'Lecture du router…'}</Text>
+          {problems}
         </Box>
       )
     }
 
     // The primary every binding button was drawn for: rebind refuses another.
     const shown = snap.primary?.name ?? ''
-    const isRemote = (r: VaultRow) => r.type === 'remote'
-    const remotes = snap.available.filter(isRemote)
-    const locals = snap.available.filter(v => !isRemote(v))
-    const bound = [snap.primary, ...snap.secondaries].filter((r): r is VaultRow => r !== null)
-    const isTunnelDown =
-      [...bound, ...remotes].some(isRemote) && [...bound, ...remotes].filter(isRemote).every(r => r.online === false)
+    const matches = (r: VaultRow) => !query || r.name.toLowerCase().includes(query)
 
-    // Re-confirming the binding as it stands opens every bound vault whose
-    // Obsidian does not answer: the router's own way to open one.
-    const reopen = (name: string) => void rebind($, `Ouverture de ${name}`, shown, current => current)
+    // Re-confirming the binding as it stands opens EVERY bound vault whose
+    // Obsidian does not answer — the router's own way to open one. So it is
+    // one button for all of them, not one per row that would open them all.
+    const openAll = () => void rebind($, 'Ouverture des vaults fermés', shown, current => current)
 
-    // What a bound vault that does not answer needs: opening, or the tunnel.
-    const down = (row: VaultRow) =>
-      row.online !== false ? null : isRemote(row) ? (
-        <Text color="error">Injoignable : WireGuard actif ? conteneur démarré sur la dedibox ?</Text>
-      ) : (
-        <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
-          <Text color="warning">Fermé dans Obsidian.</Text>
-          <Button
-            key={`open-${row.name}`}
-            label="Ouvrir dans Obsidian"
-            variant="primary"
-            onPress={() => reopen(row.name)}
-          />
-        </Box>
-      )
-
-    // Where a bound vault lives is said in brackets; the add list's tabs say it already.
-    const uiButton = (row: VaultRow) =>
+    // A remote vault's web UI, in the app's browser.
+    const uiLink = (row: VaultRow) =>
       row.uiUrl ? (
-        <Button key={`ui-${row.name}`} label="Ouvrir" onPress={() => void openUi($, row)} />
-      ) : isRemote(row) ? (
-        <Text dimColor>interface inconnue</Text>
+        <Button key={`ui-${row.name}`} label="Interface ↗" plain dimColor onPress={() => void openUi($, row)} />
       ) : null
 
-    const name = (row: VaultRow, isBold = false, isPlaceShown = true) => (
-      <Box flexDirection="row" gap={1} flexShrink={1}>
+    const name = (row: VaultRow, isStrong = false) => (
+      <Box flexDirection="row" gap={1} flexShrink={1} alignItems="center">
         {dot(row.online, isRemote(row))}
-        <Text bold={isBold} wrap="truncate-end">
+        <Text weight={isStrong ? 'semibold' : 'regular'} dimColor={row.online === false} wrap="truncate-end">
           {row.name}
         </Text>
-        {isPlaceShown && <Text dimColor>({isRemote(row) ? 'distant' : 'local'})</Text>}
+        <Text size="caption" dimColor>
+          {isRemote(row) ? 'distant' : 'local'}
+        </Text>
       </Box>
     )
 
     const primary = (
       <Box flexDirection="column" gap={1}>
-        {section('VAULT PRINCIPAL')}
+        {label('Principal')}
         {snap.primary ? (
-          <Box flexDirection="column">
-            <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-              {name(snap.primary, true)}
-              <Box flexDirection="row" gap={1} alignItems="center">
-                <Text dimColor>lecture/écriture{snap.isLocked ? ' · verrouillé seul' : ''}</Text>
-                {uiButton(snap.primary)}
-              </Box>
+          <Box
+            flexDirection="row"
+            justifyContent="space-between"
+            alignItems="center"
+            borderStyle="round"
+            borderDimColor
+            paddingX={1}
+          >
+            {name(snap.primary, true)}
+            <Box flexDirection="row" gap={1} alignItems="center">
+              {snap.isLocked && (
+                <Text size="caption" color="warning">
+                  verrouillé
+                </Text>
+              )}
+              {snap.primary.online === false && !isRemote(snap.primary) && (
+                <Button key="open-primary" label="Ouvrir" plain onPress={openAll} />
+              )}
+              {uiLink(snap.primary)}
             </Box>
-            {down(snap.primary)}
           </Box>
         ) : (
-          <Text color="warning">Aucun : choisis un principal dans la liste ci-dessous.</Text>
+          <Text color="warning">Aucun vault principal : choisis-en un ci-dessous.</Text>
+        )}
+        {snap.primary?.online === false && isRemote(snap.primary) && (
+          <Text size="caption" color="error">
+            Injoignable : WireGuard actif ? conteneur démarré sur la dedibox ?
+          </Text>
         )}
         {snap.isImported && snap.primary && (
-          <Box flexDirection="column" gap={1}>
-            <Text color="warning">Liaison importée d'un .env, jamais confirmée.</Text>
-            <Box flexDirection="row" gap={1}>
-              <Button
-                key="confirm-binding"
-                label={`Confirmer ${snap.primary.name} comme principal`}
-                variant="primary"
-                onPress={() => void rebind($, 'Liaison confirmée', shown, current => current)}
-              />
-            </Box>
+          <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+            <Text size="caption" color="warning">
+              Liaison importée d'un .env, jamais confirmée.
+            </Text>
+            <Button
+              key="confirm-binding"
+              label="Confirmer"
+              plain
+              onPress={() => void rebind($, 'Liaison confirmée', shown, current => current)}
+            />
           </Box>
         )}
         {snap.isLocked && (
-          <Text color="warning">Session verrouillée sur le principal : les secondaires ne répondent pas.</Text>
+          <Text size="caption" color="warning">
+            Session verrouillée sur le principal : les secondaires ne répondent pas.
+          </Text>
         )}
         {snap.lockedTo && (
-          <Text color="warning">
+          <Text size="caption" color="warning">
             Router verrouillé sur {snap.lockedTo} pour cette session (lock_vault) : les autres vaults ne répondent pas.
           </Text>
         )}
       </Box>
     )
 
-    const secondaries = (
-      <Box flexDirection="column" gap={1}>
-        {section(`VAULTS SECONDAIRES (${snap.secondaries.length})`)}
-        {snap.secondaries.length === 0 && <Text dimColor>Aucun.</Text>}
-        {snap.secondaries.map(s => (
-          <Box key={`sec-${s.name}`} flexDirection="column">
-            <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-              {name(s)}
-              <Box flexDirection="row" gap={1} alignItems="center">
-                {uiButton(s)}
-                <Button
-                  key={`remove-${s.name}`}
-                  label="Retirer"
-                  dimColor
-                  onPress={() =>
-                    void rebind(
-                      $,
-                      `${s.name} retiré`,
-                      shown,
-                      current => current.filter(n => n !== s.name),
-                    )
-                  }
-                />
-              </Box>
-            </Box>
-            <Box flexDirection="row" gap={1} flexWrap="wrap">
+    // One secondary, one line: where it stands, its write tier as one menu,
+    // and the two links it may need. Nothing heavier.
+    const setMode = (s: Secondary, value: string) => {
+      const next = MODES.find(m => m.mode === value)
+      if (next && next.mode !== s.mode) {
+        void act($, `${s.name} : ${next.label.toLowerCase()}`, 'set_secondary_vault_mode', {
+          vault: s.name,
+          mode: next.mode,
+        })
+      }
+    }
+    const secondaryRow = (s: Secondary) => (
+      <Box key={`sec-${s.name}`} flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+        {name(s)}
+        <Box flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
+          {s.online === false && isRemote(s) && (
+            <Text size="caption" color="error">
+              injoignable
+            </Text>
+          )}
+          {uiLink(s)}
+          {Select ? (
+            <Select
+              key={`mode-${s.name}`}
+              options={MODES.map(m => ({ value: m.mode, label: m.label }))}
+              value={s.mode}
+              onSelect={(value: string) => setMode(s, value)}
+            />
+          ) : (
+            // A surface with no menu (the phone) keeps the three choices, as
+            // quiet buttons, the current one lit.
+            <Box flexDirection="row" gap={1}>
               {MODES.map(m => (
                 <Button
                   key={`mode-${s.name}-${m.mode}`}
                   label={m.label}
-                  variant={s.mode === m.mode ? 'primary' : 'secondary'}
+                  plain
                   dimColor={s.mode !== m.mode}
-                  onPress={() =>
-                    s.mode === m.mode
-                      ? undefined
-                      : void act($, `${s.name} : ${m.label.toLowerCase()}`, 'set_secondary_vault_mode', {
-                          vault: s.name,
-                          mode: m.mode,
-                        })
-                  }
+                  onPress={() => setMode(s, m.mode)}
                 />
               ))}
             </Box>
-            {down(s)}
-          </Box>
-        ))}
+          )}
+          <Button
+            key={`remove-${s.name}`}
+            label="✕"
+            plain
+            dimColor
+            onPress={() => void rebind($, `${s.name} retiré`, shown, current => current.filter(n => n !== s.name))}
+          />
+        </Box>
       </Box>
     )
 
-    const list = (current === 'locaux' ? locals : remotes).filter(v => !query || v.name.toLowerCase().includes(query))
-    const tabs: { id: Tab; label: string }[] = [
-      { id: 'locaux', label: `Locaux (${locals.length})` },
-      { id: 'distants', label: `Distants (${remotes.length})` },
-    ]
-    const adding = (
+    const shownSecondaries = snap.secondaries.filter(matches)
+    const up = shownSecondaries.filter(s => s.online !== false)
+    const closed = shownSecondaries.filter(s => s.online === false)
+    // What the open-all opens: every bound LOCAL vault that does not answer,
+    // the primary included and whatever the filter shows — so it is counted
+    // over all of them, not over the rows on screen.
+    const closedLocal = bound.filter(r => r.online === false && !isRemote(r)).length
+    const openN = up.filter(s => s.online === true).length
+    const unknownN = up.length - openN
+
+    const secondaries = (
       <Box flexDirection="column" gap={1}>
-        {section(snap.primary ? 'AJOUTER UN VAULT SECONDAIRE' : 'CHOISIR LE VAULT PRINCIPAL')}
-        <Box flexDirection="row" gap={1} flexWrap="wrap">
-          {tabs.map(t => (
-            <Button
-              key={`tab-${t.id}`}
-              label={t.label}
-              variant={current === t.id ? 'primary' : 'secondary'}
-              dimColor={current !== t.id}
-              onPress={() => void update($, tab, () => t.id)}
+        <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+          {label(`Secondaires · ${snap.secondaries.length}`)}
+          {Input && (
+            <Input
+              key="filter"
+              placeholder="Filtrer"
+              value={typed}
+              submitLabel="filtrer"
+              onInput={(value: string) => void update($, filter, () => value)}
+              onSubmit={(value: string) => void update($, filter, () => value)}
             />
-          ))}
+          )}
         </Box>
-        {current === 'distants' && isTunnelDown && (
-          <Text color="warning">Aucun vault distant ne répond : WireGuard est-il actif ?</Text>
+        {snap.secondaries.length === 0 && (
+          <Text size="caption" dimColor>
+            Aucun secondaire : ajoute-en un ci-dessous.
+          </Text>
         )}
-        {Input && (
-          <Input
-            key="filter"
-            placeholder="Filtrer…"
-            value={typed}
-            submitLabel="filtrer"
-            onInput={(value: string) => void update($, filter, () => value)}
-            onSubmit={(value: string) => void update($, filter, () => value)}
-          />
+        {snap.secondaries.length > 0 && shownSecondaries.length === 0 && (
+          <Text size="caption" dimColor>
+            Aucun secondaire ne correspond au filtre.
+          </Text>
         )}
-        {list.length === 0 && <Text dimColor>Aucun vault ne correspond.</Text>}
-        {list.map(v => (
-          <Box key={`av-${v.name}`} flexDirection="row" justifyContent="space-between" alignItems="center">
-            {name(v, false, false)}
-            <Box flexDirection="row" gap={1} alignItems="center">
-              {uiButton(v)}
-              {snap.primary ? (
+        {up.length > 0 && (
+          <Box flexDirection="column">
+            {(closed.length > 0 || unknownN > 0) &&
+              label(unknownN > 0 ? `Ouverts · ${openN} · état inconnu · ${unknownN}` : `Ouverts · ${openN}`)}
+            {up.map(secondaryRow)}
+          </Box>
+        )}
+        {closed.length > 0 && (
+          <Box flexDirection="column">
+            <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+              <Button
+                key="toggle-closed"
+                label={`${isClosedShown ? '▾' : '▸'} Fermés · ${closed.length}`}
+                plain
+                dimColor
+                onPress={() => void update($, showClosed, shownNow => !shownNow)}
+              />
+              {closedLocal > 0 && (
                 <Button
-                  key={`add-${v.name}`}
-                  label="Ajouter"
-                  onPress={() =>
-                    void rebind($, `${v.name} ajouté (écriture sur accord)`, shown, current =>
-                      current.includes(v.name) ? current : [...current, v.name],
-                    )
-                  }
-                />
-              ) : (
-                <Button
-                  key={`primary-${v.name}`}
-                  label="Principal"
-                  onPress={() => void choosePrimary($, v.name)}
+                  key="open-closed"
+                  label={closedLocal > 1 ? `Ouvrir les ${closedLocal} vaults locaux fermés` : 'Ouvrir le vault local fermé'}
+                  plain
+                  onPress={openAll}
                 />
               )}
             </Box>
+            {isClosedShown && closed.map(secondaryRow)}
           </Box>
-        ))}
+        )}
       </Box>
     )
 
-    const hasUnknown = [...bound, ...snap.available].some(r => r.online === null)
-    const legend = (
-      <Box flexDirection="row" columnGap={2} flexWrap="wrap">
-        {legendItem(dot(true, false), 'ouvert / en ligne')}
-        {legendItem(dot(false, false), "local fermé (s'ouvre à l'ajout)")}
-        {legendItem(dot(false, true), 'distant injoignable (WireGuard ?)')}
-        {hasUnknown && legendItem(dot(null, false), 'état inconnu')}
+    // Adding: folded away until asked for — unless there is no primary yet,
+    // which is the one thing the pane cannot do without.
+    const remotes = snap.available.filter(isRemote)
+    const locals = snap.available.filter(v => !isRemote(v))
+    const isTunnelDown =
+      [...bound, ...remotes].some(isRemote) && [...bound, ...remotes].filter(isRemote).every(r => r.online === false)
+    const isAddOpen = isAddShown || !snap.primary
+    const list = (current === 'locaux' ? locals : remotes).filter(matches)
+    const tabs: { id: Tab; label: string }[] = [
+      { id: 'locaux', label: `Locaux · ${locals.length}` },
+      { id: 'distants', label: `Distants · ${remotes.length}` },
+    ]
+    const adding = (
+      <Box flexDirection="column" gap={1}>
+        <Button
+          key="toggle-add"
+          label={`${isAddOpen ? '▾' : '▸'} ${snap.primary ? 'Ajouter un vault' : 'Choisir le vault principal'} · ${snap.available.length} disponible${snap.available.length > 1 ? 's' : ''}`}
+          plain
+          dimColor={!isAddOpen}
+          onPress={() => void update($, showAdd, shownNow => !shownNow)}
+        />
+        {isAddOpen && (
+          <Box flexDirection="column" gap={1}>
+            <Box flexDirection="row" gap={2}>
+              {tabs.map(t => (
+                <Button
+                  key={`tab-${t.id}`}
+                  label={t.label}
+                  plain
+                  dimColor={current !== t.id}
+                  onPress={() => void update($, tab, () => t.id)}
+                />
+              ))}
+            </Box>
+            {current === 'distants' && isTunnelDown && (
+              <Text size="caption" color="warning">
+                Aucun vault distant ne répond : WireGuard est-il actif ?
+              </Text>
+            )}
+            {list.length === 0 && (
+              <Text size="caption" dimColor>
+                Aucun vault ne correspond.
+              </Text>
+            )}
+            <Box flexDirection="column">
+              {list.map(v => (
+                <Box key={`av-${v.name}`} flexDirection="row" justifyContent="space-between" alignItems="center">
+                  <Box flexDirection="row" gap={1} flexShrink={1} alignItems="center">
+                    {dot(v.online, isRemote(v))}
+                    <Text wrap="truncate-end">{v.name}</Text>
+                  </Box>
+                  <Box flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
+                    {uiLink(v)}
+                    {snap.primary ? (
+                      <Button
+                        key={`add-${v.name}`}
+                        label="Ajouter"
+                        plain
+                        onPress={() =>
+                          void rebind($, `${v.name} ajouté (écriture sur accord)`, shown, current =>
+                            current.includes(v.name) ? current : [...current, v.name],
+                          )
+                        }
+                      />
+                    ) : (
+                      <Button
+                        key={`primary-${v.name}`}
+                        label="Principal"
+                        plain
+                        onPress={() => void choosePrimary($, v.name)}
+                      />
+                    )}
+                  </Box>
+                </Box>
+              ))}
+            </Box>
+          </Box>
+        )}
       </Box>
     )
 
     return (
       <Box flexDirection="column" gap={1}>
         {header}
-        {legend}
-        {err && <Text color="error">{err}</Text>}
-        {failed && failed !== err && <Text color="error">{failed}</Text>}
+        {problems}
         {primary}
         {secondaries}
         {adding}

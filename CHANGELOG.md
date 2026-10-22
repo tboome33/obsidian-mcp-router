@@ -10,6 +10,37 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.102.0] — 2026-10-22 — the vault panel, redrawn: one line per vault, closed ones folded away
+
+The panel of v0.101 drew every secondary as a block of four to five heavy buttons — three tier
+buttons, a remove, an "Ouvrir dans Obsidian" — so a workspace with 27 secondaries was a wall of
+black buttons. Redrawn from an agreed mockup, with the elements the engine draws (borders, caption
+and semibold text, plain buttons, menus):
+
+- **A one-line summary** in the header — bound, open, time of the last read — and a quiet
+  "↻ Rafraîchir". The colour legend is gone: the dots carry it.
+- **The primary in a frame**; its warnings (locked, imported, unreachable) as small lines under it.
+- **One line per secondary**: its dot, name, local or remote, its **write tier as one menu**
+  (`Select`) instead of three buttons, "Interface ↗" where a remote vault has a web UI, and a plain
+  ✕ to remove it. Open secondaries first; **closed ones folded** behind "▸ Fermés · N", with **one**
+  "Ouvrir les N vaults locaux fermés" — the router's re-confirm opens every bound local vault that
+  does not answer, so the old per-row button always opened them all anyway. The count is taken over
+  every bound local vault, the primary included, whatever the filter shows.
+- **The filter** now narrows the secondaries as well as the add list.
+- **Adding is folded away** until asked for, unless there is no primary yet.
+- On the phone (no menu, no field — its element table may still name them), the tier stays three
+  quiet buttons and the filter is ignored, so a filter typed on the desktop never hides a row there.
+- Vaults the router did not ping are counted apart ("état inconnu"), never as open.
+- New session state `showClosed` / `showAdd`, declared in `types/index.d.ts`. No behaviour of the
+  binding changed: the same router calls, the same preconditions.
+- Reviewed by Codex: no P1; its three P2 (the open-all count over the filtered rows, the phone
+  losing tier changes, a desktop filter stranding the phone) and its P3 (unknown shown as open) are
+  fixed.
+- Tests: `tests/vault-panel.test.tsx` 26 (was 23): the layout (summary, both folds, the one open-all,
+  the filter over secondaries), the add list open with no primary, and the phone. Each seen red
+  under a mutation of its rule. Not covered: the open-all count across a filter, the unknown-state
+  label. The look itself is checked in the app, not by the kit.
+
 ## [0.101.2] — 2026-10-22 — a vault pane the app restores, or whose first read hangs, fills itself
 
 Reported right after v0.101.1: after a restart the app showed the Vaults pane, but stuck on

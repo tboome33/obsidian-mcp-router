@@ -116,9 +116,10 @@ Depuis la v0.101.0, le plugin livre aussi un **module de hooks-fonctions** : [`h
 
 Ce qu'il montre, dans un panneau **Vaults** et via la commande `/vaults` :
 
-- le **vault principal** du workspace, avec son état (ouvert, fermé, injoignable) ;
-- les **vaults secondaires**, chacun avec son niveau d'écriture — lecture seule, écriture sur accord, lecture-écriture — et un bouton pour le changer ou retirer le vault ;
-- les **vaults enregistrés** qu'on peut ajouter, en deux onglets (locaux, distants), avec un filtre.
+- en tête, un résumé d'une ligne : combien de vaults sont liés, combien sont ouverts, l'heure de la dernière lecture ;
+- le **vault principal** du workspace, dans un cadre, avec son état (ouvert, fermé, injoignable) ;
+- les **vaults secondaires**, une ligne chacun : son état, son nom, local ou distant, un menu pour son niveau d'écriture — lecture seule, écriture sur accord, lecture-écriture — et un ✕ pour le retirer. Les vaults ouverts viennent d'abord ; les fermés sont repliés dans un groupe, avec **un seul** bouton qui les ouvre tous (c'est ce que fait le router : reconfirmer la liaison ouvre chaque vault lié qui ne répond pas) ;
+- l'**ajout** d'un vault, replié tant qu'il y a un principal : les vaults enregistrés qu'on peut ajouter, en deux onglets (locaux, distants). Un filtre, en face des secondaires, réduit les deux listes.
 
 D'où viennent les données : un appel à l'outil `list_vaults` du router au démarrage de la session, puis toutes les deux minutes tant que le panneau est ouvert (une réponse plus ancienne n'écrase jamais une plus récente), et après chaque appel du modèle qui change la liaison (`confirm_workspace_binding`, `set_secondary_vault_mode`, `lock_vault`, `unlock_vaults`). Pour un vault local que le router n'a pas pingué, le module interroge `127.0.0.1` sur son port REST : une réponse veut dire qu'Obsidian l'a ouvert.
 
