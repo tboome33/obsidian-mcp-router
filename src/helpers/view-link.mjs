@@ -349,6 +349,8 @@ function transportReason(err, token) {
  *                                               `rest` / `obsidian_name` hints (see vaultHints)
  * @param {boolean}[opts.throwOnError=true]      throw on any failure vs. return null
  * @param {number} [opts.timeoutMs]              fetch timeout override
+ * @param {boolean}[opts.casedRetry=false]       internal: this call already retries under the
+ *                                               agent's casing of the name, so it does not again
  * @returns {Promise<object|null>}               parsed view-agent JSON ({ url, idle_timeout_s, … }) or null
  */
 export async function fetchViewLink({
@@ -357,6 +359,7 @@ export async function fetchViewLink({
   vault,
   throwOnError = true,
   timeoutMs = DEFAULT_VIEW_TIMEOUT_MS,
+  casedRetry = false,
 } = {}) {
   // `transient` marks an AGENT-HEALTH failure (unreachable / timeout / 5xx) vs. a per-vault
   // 4xx (e.g. "unknown vault" — the agent doesn't serve THAT vault, a permanent per-vault
@@ -431,10 +434,24 @@ export async function fetchViewLink({
   const bodyText = await res.text().catch(() => '');
   if (!res.ok) {
     let detail = bodyText;
+    let served = null;
     try {
-      detail = JSON.parse(bodyText).error || bodyText;
+      const parsed = JSON.parse(bodyText);
+      detail = parsed.error || bodyText;
+      served = Array.isArray(parsed.vaults) ? parsed.vaults : null;
     } catch {
       /* keep raw text */
+    }
+    // The router lower-cases names the agent may keep cased ("la méthode licares" here,
+    // "La méthode LICARES" in the agent's config). An unknown vault the agent lists under
+    // exactly one other casing is asked again, once, under that name.
+    if (res.status >= 400 && res.status < 500 && !casedRetry && served && /^unknown vault/.test(detail)) {
+      const same = served.filter(
+        (n) => typeof n === 'string' && n !== vaultName && n.toLowerCase() === vaultName.toLowerCase(),
+      );
+      if (same.length === 1) {
+        return fetchViewLink({ vaultName: same[0], note, vault, throwOnError, timeoutMs, casedRetry: true });
+      }
     }
     // 4xx = per-vault (e.g. unknown/unsupported vault) → do NOT trip the global breaker;
     // 5xx = agent-side error → transient. (codex review+ pass 3.)

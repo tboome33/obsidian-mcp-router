@@ -48,6 +48,8 @@ beforeEach(() => {
   respond = defaultRespond;
   delete process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL;
   delete process.env.OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN;
+  // A machine that runs an agent sets this one too, and it wins over the token.
+  delete process.env.OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN_FILE;
 });
 
 function makeRegistry(name = 'roland') {

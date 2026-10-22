@@ -74,6 +74,8 @@ beforeEach(() => {
   __resetViewLinkCircuit();
   process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = agentUrl;
   delete process.env.OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN;
+  // A machine that runs an agent sets this one too, and it wins over the token.
+  delete process.env.OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN_FILE;
   delete process.env.OBSIDIAN_ROUTER_SMART_LINK_URL;
   delete process.env.OBSIDIAN_ROUTER_SMART_LINK_SECRET;
 });

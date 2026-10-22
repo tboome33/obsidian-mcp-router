@@ -150,7 +150,7 @@ test('OBSIDIAN_ROUTER_NO_VAULT_PANEL turns the panel off: no command, no pane, n
 // Answers every engine call the panel makes; `list` is read at each list_vaults.
 // `hold`, when set, holds the next list_vaults answer until the test calls
 // the function it returns: the way to make two reads overlap.
-function wire(on: On, state: { list: unknown; refuse?: string; refuseOnce?: string; unreachable?: string; refuseText?: string; writeAnswer?: unknown; held?: Promise<void>; env?: Record<string, string>; opens?: number; closes?: number; openHeld?: Promise<void> }) {
+function wire(on: On, state: { list: unknown; answers?: Record<string, unknown>; refuse?: string; refuseOnce?: string; unreachable?: string; refuseText?: string; writeAnswer?: unknown; held?: Promise<void>; env?: Record<string, string>; opens?: number; closes?: number; openHeld?: Promise<void> }) {
   const calls: { server: string; tool: string; args: Record<string, unknown> }[] = []
   on('env.get', (_, e) => ({ value: state.env?.[e.name] }))
   on('mcp.call', async (_, e) => {
@@ -172,7 +172,9 @@ function wire(on: On, state: { list: unknown; refuse?: string; refuseOnce?: stri
 
       return { value: { content: [{ type: 'text', text }], isError: true } }
     }
-    const text = e.tool === 'list_vaults' ? list : JSON.stringify(state.writeAnswer ?? { ok: true })
+    const answer = state.answers?.[e.tool]
+    const answered = typeof answer === 'function' ? answer(e.args) : answer
+    const text = e.tool === 'list_vaults' ? list : JSON.stringify(answered ?? state.writeAnswer ?? { ok: true })
 
     return { value: { content: [{ type: 'text', text }], isError: false } }
   })
@@ -889,13 +891,83 @@ test('a 💎 launch that exits non-zero says so', async ($, on) => {
   await ui.unmount()
 })
 
-test('a remote vault with a web UI: 🌐 links to it, 🪟 opens it in the app browser', async ($, on) => {
+const GO = 'http://10.8.0.1:27200/go?v=extra&n=Welcome.md&s=sig'
+const launches = (on: On) => {
+  const launched: (readonly string[])[] = []
+  on('process.run', (_, e) => {
+    launched.push(e.argv)
+
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+
+  return launched
+}
+
+test('a remote vault with a web UI, no view agent: 🌐 and 🪟 open its own address', async ($, on) => {
+  // get_view_link is not served: a router without a view agent hides it.
+  const calls = wire(on, {
+    list: LIST,
+    answers: { list_files: { files: ['Welcome.md'] } },
+    refuse: 'get_view_link',
+    refuseText: 'Unknown tool: get_view_link',
+    env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' },
+  })
+  const launched = launches(on)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdd(ui)
+  await ui.press({ key: 'tab-distants' })
+  await ui.press({ key: 'web-extra' })
+  expect(launched).toEqual([['rundll32', 'url.dll,FileProtocolHandler', 'https://10.8.0.1:3002/']])
+  await ui.press({ key: 'ui-extra' })
+  expect(calls.find(c => c.tool === 'preview_start')?.args).toEqual({ url: 'https://10.8.0.1:3002/' })
+  await ui.unmount()
+})
+
+test('with a view agent, 🌐 and 🪟 go through its link to a note of the vault, which brings it to the front', async ($, on) => {
+  const calls = wire(on, {
+    list: LIST,
+    answers: {
+      // No note at the root: the first one in wiki/.
+      list_files: (args: { directory: string }) =>
+        args.directory === '' ? { files: ['wiki/', 'Untitled.base'] } : { files: ['index.md', 'log.md'] },
+      get_view_link: { url: GO },
+    },
+    env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' },
+  })
+  const launched = launches(on)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdd(ui)
+  await ui.press({ key: 'tab-distants' })
+  await ui.press({ key: 'web-extra' })
+  expect(calls.find(c => c.tool === 'get_view_link')?.args).toEqual({ vault: 'extra', note: 'wiki/index.md' })
+  expect(launched).toEqual([['rundll32', 'url.dll,FileProtocolHandler', GO]])
+  await ui.press({ key: 'ui-extra' })
+  expect(calls.find(c => c.tool === 'preview_start')?.args).toEqual({ url: GO })
+  await ui.unmount()
+})
+
+test('a 🌐 launch that exits non-zero says so', async ($, on) => {
+  wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  on('process.run', () => ({
+    value: { exitCode: 1, stdout: '', stderr: 'no browser', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdd(ui)
+  await ui.press({ key: 'tab-distants' })
+  await ui.press({ key: 'web-extra' })
+  expect(await ui.find({ type: 'Text', text: /Navigateur : no browser/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('🪟 opens the vault in the app browser, and brings the browser pane into view', async ($, on) => {
   const calls = wire(on, { list: LIST })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await openAdd(ui)
   await ui.press({ key: 'tab-distants' })
-  expect(await drawnText(ui)).toContain('"href":"https://10.8.0.1:3002/"')
   await ui.press({ key: 'ui-extra' })
   expect(calls.some(c => c.tool === 'preview_start')).toBe(true)
   // The tab alone opens in a hidden pane: the pane is brought into view after it.
@@ -929,7 +1001,7 @@ test('when the app browser cannot be reached, the panel points to the 🌐 link'
   await ui.press({ key: 'tab-distants' })
   await ui.press({ key: 'ui-extra' })
   expect(calls.filter(c => c.tool === 'preview_start').length).toBeGreaterThan(0)
-  expect(await ui.find({ type: 'Text', text: /Le lien 🌐 ouvre la même interface/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Le bouton 🌐 ouvre la même interface/ })).toBeTruthy()
   await ui.unmount()
 })
 
