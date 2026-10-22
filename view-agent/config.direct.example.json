@@ -1,0 +1,60 @@
+{
+  "_comment": "view-agent-direct config. Copy to config.json and adapt. Secrets stay in files, never in this JSON.",
+
+  "bind": "192.0.2.10",
+  "_bind": "A PRIVATE interface (loopback or VPN/WireGuard IP) — never a public one. Firewall the port to that network.",
+
+  "port": 27200,
+
+  "self_url": "http://192.0.2.10:27200",
+  "_self_url": "Base URL under which the READER'S BROWSER reaches this agent (composes the /go links).",
+
+  "token_file": "view-agent.token",
+  "_token_file": "Shared with the router: same value as OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN. openssl rand -hex 24 > view-agent.token",
+
+  "link_secret_file": "link.secret",
+  "_link_secret_file": "HMAC secret for /go links. Absent: links are signed with the token. openssl rand -hex 24 > link.secret",
+
+  "link_ttl_s": 0,
+  "_link_ttl_s": "0 = links in the chat history stay valid indefinitely. > 0 = /go answers 410 after that many seconds.",
+
+  "navigate_on_view": false,
+  "_navigate_on_view": "true would make Obsidian jump to every note the router writes; false = navigate on click only.",
+
+  "detect": {
+    "_comment": "Vaults ABSENT from \"vaults\" are classified from the router's /view hints (rest=<scheme://host:port>, obsidian_name=<label>). A \"vaults\" entry always wins. Needs token_file AND a signing secret. Anything unclassifiable is a 400 with the reason, never a guessed link.",
+    "enabled": true,
+    "desktop_hosts": ["192.0.2.20"],
+    "_desktop_hosts": "IPs, CIDRs or names of machines whose vaults are opened in the reader's DESKTOP Obsidian → obsidian-uri (the router must send obsidian_name). Empty = never.",
+    "local_hosts": [],
+    "_local_hosts": "Extra names/IPs of THIS host as the router spells it. Loopback, bind and the self_url host are implied. A rest hint on this host → the ONE running container publishing that port → docker-exec.",
+    "gui_container_ports": [3001],
+    "_gui_container_ports": "Container-side GUI port(s) (linuxserver/obsidian: 3001 = HTTPS). The host port publishing it becomes the redirect target.",
+    "gui_url": "https://{host}:{port}/",
+    "_gui_url": "{host} = host of the rest hint (the self_url host when that is loopback), {port} = published GUI port. Must be http(s)://{host}:{port} plus an optional path: no fixed host, no proxy.",
+    "cache_s": 10
+  },
+
+  "vaults": {
+    "alice": {
+      "public_url": "https://192.0.2.10:3001/",
+      "_public_url": "The GUI as the reader's browser sees it (e.g. Selkies). Redirect target after navigation.",
+
+      "open_mode": "docker-exec",
+      "container": "obsidian-alice",
+      "_container": "Real container name: deploy/preflight-direct.sh prints it.",
+      "open_port": 27180,
+      "open_scheme": "http",
+      "_open_scheme": "https when open_port is the Local REST API's TLS port (curl -k on the container's loopback).",
+      "_open_port": "Local REST API insecurePort INSIDE the container (the preflight confirms it).",
+
+      "_alt_http": "If the container runs with network_mode host, use open_mode http + open_url http://127.0.0.1:27180 instead (the bridge then sees 127.0.0.1)."
+    },
+
+    "bob-desktop": {
+      "open_mode": "obsidian-uri",
+      "obsidian_vault": "Bob's notes",
+      "_obsidian_vault": "A vault served by the READER'S OWN desktop Obsidian (no web GUI): /go redirects to obsidian://open?vault=...&file=.... No public_url. Works only from the machine running that Obsidian."
+    }
+  }
+}
