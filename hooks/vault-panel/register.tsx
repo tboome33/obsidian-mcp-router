@@ -1446,7 +1446,9 @@ function compareVersions(x: string, y: string) {
   return 0
 }
 // ■ and ▶: a muted red to pause, a green to resume, readable on a light and a
-// dark background alike.
+// dark background alike. The glyph is the Button's only child, a coloured
+// Text, and no `label`: with one, the desktop drew the plain label (seen on
+// screen in v0.108.3) and the colour was lost.
 const PAUSE_COLOR = '#c0605a'
 const RESUME_COLOR = '#3f9b5a'
 // A vault's tile, in cells, at the least: a name of about 18 fits. The pane
@@ -2644,7 +2646,7 @@ export const register: Register = on => {
           ),
           obsidianLink(s),
           uiLink(s),
-          <Button key={`pause-${s.name}`} label="■" plain onPress={() => void setPaused($, s, true)}>
+          <Button key={`pause-${s.name}`} plain onPress={() => void setPaused($, s, true)}>
             <Text color={PAUSE_COLOR}>■</Text>
           </Button>,
           <Button
@@ -2743,7 +2745,7 @@ export const register: Register = on => {
                   `paused-${p.name}`,
                   p,
                   [
-                    <Button key={`resume-${p.name}`} label="▶" plain onPress={() => void setPaused($, p, false)}>
+                    <Button key={`resume-${p.name}`} plain onPress={() => void setPaused($, p, false)}>
                       <Text color={RESUME_COLOR}>▶</Text>
                     </Button>,
                     // A paused vault gone from the router is let go of here.
@@ -2998,11 +3000,11 @@ export const register: Register = on => {
     // A secondary's control: ■ pauses an active one, ▶ resumes a paused one.
     const control = (row: Secondary, isPaused: boolean) =>
       isPaused ? (
-        <Button key={`band-resume-${row.name}`} label="▶" plain onPress={() => void setPaused($, row, false)}>
+        <Button key={`band-resume-${row.name}`} plain onPress={() => void setPaused($, row, false)}>
           <Text color={RESUME_COLOR}>▶</Text>
         </Button>
       ) : (
-        <Button key={`band-pause-${row.name}`} label="■" plain onPress={() => void setPaused($, row, true)}>
+        <Button key={`band-pause-${row.name}`} plain onPress={() => void setPaused($, row, true)}>
           <Text color={PAUSE_COLOR}>■</Text>
         </Button>
       )

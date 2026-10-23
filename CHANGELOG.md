@@ -10,14 +10,18 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
-## [0.108.4] — 2026-10-24 — a rule under the pane's title
+## [0.108.4] — 2026-10-24 — a rule under the pane's title; ■ and ▶ in colour
 
 Asked: a horizontal separator under "obsidian-mcp-router v0.108.x". The pane's title row is now
 followed by a rule — a line of box-drawing dashes, dimmed and cut at the pane's edge (the
 engine has no rule element, and a Box border cannot be drawn on one side only), so it reads as a
 separator on the terminal and the desktop alike.
 
-- Tests: `tests/vault-panel.test.tsx` 95 — the rule, dimmed, right under the title row.
+- **■ and ▶ in colour, for real**: v0.108.3 gave each a coloured `Text` but also kept a plain
+  `label`, and the desktop drew the label — no colour on screen. The glyph is now the Button's
+  only child: ■ a muted red, ▶ a green, on the band and in the pane.
+- Tests: `tests/vault-panel.test.tsx` 95 — the rule, dimmed, right under the title row; ■ and
+  ▶ carry no label beside their coloured glyph.
 
 ## [0.108.3] — 2026-10-24 — a paused vault stays in its place; ■ red, ▶ green
 
