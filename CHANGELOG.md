@@ -10,6 +10,35 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.104.3] — 2026-10-23 — the vault panel says when auto mode blocks it, instead of "router injoignable"
+
+Reported on v0.104.1 ([#27](https://github.com/tboome33/obsidian-mcp-router/issues/27)): in a
+Claude Code session in auto mode, the panel never opened at start, and `/vaults` showed "Router
+injoignable : … refused: The server-side auto mode classifier gave no verdict …". The router was
+fine. Auto mode judges each tool call against the request that produced it; the panel's own calls
+have none, so Claude Code refused them before they reached the router.
+
+- **A refusal is named as one.** When Claude Code refuses a panel call
+  (`$.mcp.call(<server>, <tool>) refused: …`), the panel says "Claude Code a bloqué (mode auto)
+  l'appel du panneau à …" — in the pane, its summary ("bloqué par les permissions de Claude Code")
+  and the `/vaults` answer — and lists the `permissions.allow` rules to add, under the server it
+  called: `list_vaults` to show, `list_files` and `get_view_link` for 🌐 and 🪟, and the two
+  binding writers for its clicks, with a warning that these two also let the model change the
+  binding without an auto-mode check. A refused click says nothing was changed and names only the
+  two write rules.
+- **No pointless retries.** A startup read refused this way is not tried again for 30 s (the answer
+  will not change): the pane stays closed and one toast points to `/vaults`.
+- **A router not connected is still "injoignable".** Only the refusal wording counts. The engine's
+  other error, `$.mcp.call: no connected MCP tool …`, keeps its old handling: the router's other
+  name is tried (a router declared by hand), and the startup tries go on while the plugin's router
+  connects. An adversarial review caught a first version that read this error as a refusal too.
+- Docs: `docs/features/12-hooks-et-automatisations.md`, a paragraph on auto mode.
+- Tests: `tests/vault-panel.test.tsx` 47 (was 41) — a read refused (pane, summary, `/vaults`), a
+  click refused, a refused startup read (one read, no pane, one toast), and three not-connected
+  cases (fallback to the second name, never connected, connecting at start). A mutation bench on a
+  private copy killed 8 of 8 mutations as declared, including the permissive regex of the first
+  version.
+
 ## [0.104.2] — 2026-10-23 — `la méthode licares` opens itself, and 💎 brings an open vault to the front
 
 Reported on v0.104.1: 🌐 on `la méthode licares` showed `KIVES-MCP-ROUTER`, and an open local vault
