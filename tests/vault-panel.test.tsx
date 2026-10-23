@@ -2210,29 +2210,6 @@ test("a name in the band opens its vault: a remote one's web UI in the browser",
   await band.unmount()
 })
 
-test('the band chip unfolds, above the line, the secondaries it could not show; a name there opens it', async ($, on) => {
-  const names = ['alpha-vault', 'beta-vault', 'gamma-vault', 'delta-vault', 'epsilon-vault']
-  const toasts: string[] = []
-  wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: names } }, toasts })
-  engineBand(on)
-  await begin($)
-  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 100 }, surface: 'desktop' })
-  expect(await band.find({ key: 'vault-band-list' })).toBeFalsy()
-  await band.press({ key: 'band-more' })
-  const nodes = nodesOf(await band.drawn())
-  const listAt = nodes.findIndex(n => keyOf(n) === 'vault-band-list')
-  const lineAt = nodes.findIndex(n => keyOf(n) === 'vault-band')
-  expect(listAt).toBeGreaterThan(-1)
-  // Drawn before the line: the list opens upward.
-  expect(listAt).toBeLessThan(lineAt)
-  expect(await band.find({ type: 'Button', key: 'band-list-open-epsilon-vault' })).toBeTruthy()
-  await band.press({ key: 'band-list-open-epsilon-vault' })
-  expect(toasts.some(text => /epsilon-vault/.test(text))).toBe(true)
-  await band.press({ key: 'band-more' })
-  expect(await band.find({ key: 'vault-band-list' })).toBeFalsy()
-  await band.unmount()
-})
-
 test('■ pauses a secondary through the router, which keeps it bound with its tier; ▶ resumes it', async ($, on) => {
   const ROUTER = { routerBuild: { version: '0.107.0' } }
   const state = { list: { ...LIST, ...ROUTER } as unknown }
@@ -2322,6 +2299,36 @@ test("a router older than the pause is said, and sent nothing it would refuse", 
   await ui.unmount()
 })
 
+test('"… +N" unfolds the rest on the band\'s line, wrapping to a second line; pressed again it folds them', async ($, on) => {
+  const names = ['alpha-vault', 'beta-vault', 'gamma-vault', 'delta-vault', 'epsilon-vault']
+  const toasts: string[] = []
+  wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: names } }, toasts })
+  engineBand(on)
+  await begin($)
+  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 100 }, surface: 'desktop' })
+  const line = async () => nodesOf(await band.drawn()).find(n => keyOf(n) === 'vault-band-names')
+  // Folded: the line holds what fits, no wrapping, and nothing above it.
+  expect((await line())?.props?.flexWrap).toBe('nowrap')
+  expect(await band.find({ type: 'Button', key: 'band-open-epsilon-vault' })).toBeFalsy()
+  await band.press({ key: 'band-more' })
+  // Unfolded: every secondary on the line, which wraps; the chip folds them back.
+  expect((await line())?.props?.flexWrap).toBe('wrap')
+  for (const name of names) {
+    expect(await band.find({ type: 'Button', key: `band-open-${name}` })).toBeTruthy()
+    expect(await band.find({ type: 'Button', key: `band-pause-${name}` })).toBeTruthy()
+  }
+  expect(await bandTexts(band)).toContain('‹ réduire')
+  // Nothing is drawn above the line any more.
+  const nodes = nodesOf(await band.drawn())
+  expect(nodes.findIndex(n => keyOf(n) === 'vault-band')).toBeLessThan(nodes.findIndex(n => keyOf(n) === 'band-open-epsilon-vault'))
+  await band.press({ key: 'band-open-epsilon-vault' })
+  expect(toasts.some(text => /epsilon-vault/.test(text))).toBe(true)
+  await band.press({ key: 'band-more' })
+  expect((await line())?.props?.flexWrap).toBe('nowrap')
+  expect(await band.find({ type: 'Button', key: 'band-open-epsilon-vault' })).toBeFalsy()
+  await band.unmount()
+})
+
 test('■ and ▶ stand on the band\'s line, by each secondary: a press pauses or resumes it there', async ($, on) => {
   const state = {
     list: { ...LIST, routerBuild: { version: '0.108.0' }, workspaceBinding: { ...LIST.workspaceBinding, alsoPaused: ['notes'] } } as unknown,
@@ -2339,15 +2346,3 @@ test('■ and ▶ stand on the band\'s line, by each secondary: a press pauses o
   await band.unmount()
 })
 
-test('the band list shows a few rows, and sends to the pane for the rest', async ($, on) => {
-  const names = Array.from({ length: 12 }, (_, i) => `vault-number-${i + 1}`)
-  wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: names } } })
-  engineBand(on)
-  await begin($)
-  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 80 }, surface: 'desktop' })
-  await band.press({ key: 'band-more' })
-  const rows = nodesOf(await band.drawn()).filter(n => /^band-list-open-/.test(keyOf(n) ?? ''))
-  expect(rows.length).toBe(6)
-  expect(await band.find({ type: 'Button', key: 'band-list-more' })).toBeTruthy()
-  await band.unmount()
-})

@@ -10,6 +10,16 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.108.2] — 2026-10-24 — "… +N" unfolds on the band's line
+
+Asked after v0.108.1: pressing "… +4" should show those vaults on the band itself, to the right,
+then on a second line if needed — not in a list above it. The chip now unfolds every secondary
+the line could not show onto the line, which wraps when the band is too narrow; each keeps its
+■ or ▶, and its name opens it. The chip then reads "‹ réduire" and folds them back. The list
+drawn above the band is gone.
+
+- Tests: `tests/vault-panel.test.tsx` 93 — the line wraps unfolded and folds back.
+
 ## [0.108.1] — 2026-10-24 — ■ and ▶ on the band's line
 
 Asked after v0.108.0: pausing and resuming from the band above the conversation, not only from

@@ -1444,7 +1444,6 @@ function compareVersions(x: string, y: string) {
 
   return 0
 }
-const BAND_LIST_ROWS = 6
 // A vault's tile, in cells, at the least: a name of about 18 fits. The pane
 // widens it to the tier menu's width, the same for every tile.
 const TILE_WIDTH = 24
@@ -2968,9 +2967,11 @@ export const register: Register = on => {
         </Text>
       </Button>
     )
-    // What the chip unfolds, above the line: the secondaries the line could
-    // not show, each with its ■ or ▶ as on the line.
-    const unfolded = entries.slice(fit.shown)
+    // The chip unfolds the rest on the line itself, after the others, wrapping
+    // to a second line (and more) when the band is too narrow; pressed again,
+    // it folds them back.
+    const isUnfolded = isListOpen && fit.hidden > 0
+    const onLine = isUnfolded ? entries : entries.slice(0, fit.shown)
     // A secondary's control: ■ pauses an active one, ▶ resumes a paused one.
     const control = (row: Secondary, isPaused: boolean) =>
       isPaused ? (
@@ -2978,9 +2979,6 @@ export const register: Register = on => {
       ) : (
         <Button key={`band-pause-${row.name}`} label="■" plain dimColor onPress={() => void setPaused($, row, true)} />
       )
-    // A few rows at most above the prompt: the others are in the pane.
-    const listed = unfolded.slice(0, BAND_LIST_ROWS)
-    const beyond = unfolded.length - listed.length
     const caption = (text: string) => (
       <Text size="caption" dimColor wrap="truncate-end">
         {text}
@@ -2995,33 +2993,22 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
-        {isListOpen && listed.length > 0 && (
-          <Box key="vault-band-list" flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
-            {listed.map(({ row, isPaused }) => (
-              <Box key={`band-list-${row.name}`} flexDirection="row" alignItems="center" columnGap={1}>
-                {opener(row, `band-list-open-${row.name}`, isPaused)}
-                <Text wrap="truncate-end">{iconOf(row.mode)}</Text>
-                {isPaused && caption(t('secondaries.pausedTag'))}
-                {control(row, isPaused)}
-              </Box>
-            ))}
-            {beyond > 0 && (
-              <Button key="band-list-more" plain dimColor onPress={() => void openPane($)}>
-                <Text dimColor wrap="truncate-end">
-                  {t('band.listMore', { count: beyond })}
-                </Text>
-              </Button>
-            )}
-          </Box>
-        )}
         <Box key="vault-band" flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={2}>
-          <Box key="vault-band-names" flexDirection="row" alignItems="center" columnGap={1} flexShrink={1} overflow="hidden">
+          <Box
+            key="vault-band-names"
+            flexDirection="row"
+            flexWrap={isUnfolded ? 'wrap' : 'nowrap'}
+            alignItems="center"
+            columnGap={1}
+            flexShrink={1}
+            overflow={isUnfolded ? 'visible' : 'hidden'}
+          >
             {heading(t('band.primary'))}
             {snap.primary ? opener(snap.primary, 'band-open-primary') : <Text wrap="truncate-end">{t('band.none')}</Text>}
             <Box width={1} />
             {heading(t('band.secondaries'))}
             {names.length === 0 && paused.length === 0 && caption(t('band.none'))}
-            {entries.slice(0, fit.shown).map(({ row, isPaused }, i) => (
+            {onLine.map(({ row, isPaused }, i) => (
               <Box key={`band-${row.name}`} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
                 {i > 0 && caption('|')}
                 {opener(row, `band-open-${row.name}`, isPaused)}
@@ -3031,7 +3018,7 @@ export const register: Register = on => {
             ))}
             {chip && (
               <Button key="band-more" plain dimColor onPress={() => void update($, bandListOpen, open => !open)}>
-                <Text dimColor>{chip}</Text>
+                <Text dimColor>{isUnfolded ? t('band.fold') : chip}</Text>
               </Button>
             )}
           </Box>
