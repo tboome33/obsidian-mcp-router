@@ -10,6 +10,28 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### The vault panel fits its pane
+
+Reported on v0.104.3: in the desktop dock (about 420 px wide) the panel ran past its right edge,
+cutting the tier menus ("Lecture/écritur"), ✕ and 🪟; the section titles were as faint as the
+captions under them; and the filter field was squeezed to "Fil" beside a legend folded over four
+lines.
+
+- **Rows wrap instead of overflowing.** The primary's card and each secondary's row wrap their
+  controls (💎/🌐/🪟, tier menu, ✕) onto a second line, indented under the name, when the pane is too
+  narrow for both; wide enough, they stay on one line, controls on the right. The closed-vaults
+  head wraps the same way.
+- **Section titles stand out.** "Principal" and "Secondaires · N" are bold, in the body colour;
+  the group labels inside a section ("Ouverts", "Fermés") stay grey.
+- **The filter has its own line.** Title, a one-line legend ("💎 Obsidian · 🌐 ton navigateur · 🪟
+  navigateur interne") and the field stack one under the other.
+- **"Vaults" is not repeated.** The pane's bar already names it; the header keeps the summary and
+  ↻ Rafraîchir.
+- Tests: `tests/vault-panel.test.tsx` 50 (was 47) — rows wrap on both surfaces, section titles bold
+  and not dimmed with no repeated title, no row holding the filter field. A mutation bench on a
+  private copy killed 4 of 4 mutations, each turning only its own test red. The tree is checked,
+  not the pixels: the rendered pane is not tested.
+
 ## [0.104.3] — 2026-10-23 — the vault panel says when auto mode blocks it, instead of "router injoignable"
 
 Reported on v0.104.1 ([#27](https://github.com/tboome33/obsidian-mcp-router/issues/27)): in a

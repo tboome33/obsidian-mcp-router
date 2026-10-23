@@ -1236,3 +1236,71 @@ test('a startup read refused by auto mode is not retried: no pane, one toast poi
   expect(toasts.length).toBe(1)
   expect(toasts[0]).toMatch(/\/vaults/)
 })
+
+// A drawn node, as ui.drawn() hands it back: what the layout tests walk.
+type Drawn = { type?: string; key?: string; props?: Record<string, unknown>; children?: unknown }
+const nodesOf = (tree: unknown): Drawn[] => {
+  const out: Drawn[] = []
+  const walk = (n: unknown) => {
+    if (Array.isArray(n)) {
+      n.forEach(walk)
+    } else if (n && typeof n === 'object') {
+      out.push(n as Drawn)
+      walk((n as Drawn).children)
+    }
+  }
+  walk(tree)
+  return out
+}
+const keyOf = (n: Drawn) => n.key ?? (n.props?.key as string | undefined)
+const textOf = (n: Drawn): string =>
+  typeof n.children === 'string' ? n.children : Array.isArray(n.children) ? n.children.map(c => (typeof c === 'string' ? c : textOf(c as Drawn))).join('') : ''
+
+test('a row too narrow for its name and controls wraps the controls, never past the edge', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await openClosed(ui)
+    const nodes = nodesOf(await ui.drawn())
+    // The primary's card and every secondary's row: three rows in LIST.
+    const rows = nodes.filter(n => keyOf(n) === 'primary-row' || /^sec-/.test(keyOf(n) ?? ''))
+    expect(rows.length).toBe(3)
+    for (const row of rows) {
+      expect(row.props?.flexWrap).toBe('wrap')
+      // The name side grows into the room, so the controls go right when they fit.
+      const [nameSide] = (row.children as Drawn[]).filter(c => c && typeof c === 'object')
+      expect(nameSide?.props?.flexGrow).toBe(1)
+    }
+    await ui.unmount()
+  }
+})
+
+test('section titles are bold and in the body colour; the pane title is not repeated', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    const texts = nodesOf(await ui.drawn()).filter(n => n.type === 'Text')
+    for (const title of [/^Principal$/, /^Secondaires · 2$/]) {
+      const t = texts.find(n => title.test(textOf(n)))
+      expect(t).toBeTruthy()
+      expect(t?.props?.weight).toBe('semibold')
+      expect(t?.props?.dimColor).toBeFalsy()
+    }
+    expect(texts.some(n => textOf(n) === 'Vaults')).toBe(false)
+    await ui.unmount()
+  }
+})
+
+test('the filter field has a line of its own, not beside the legend', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const nodes = nodesOf(await ui.drawn())
+  expect(nodes.some(n => n.type === 'Input')).toBe(true)
+  // No row holds the field: beside anything, it is squeezed to a few letters.
+  const rows = nodes.filter(n => n.type === 'Box' && n.props?.flexDirection === 'row')
+  expect(rows.some(r => nodesOf(r.children).some(n => n.type === 'Input'))).toBe(false)
+  await ui.unmount()
+})
