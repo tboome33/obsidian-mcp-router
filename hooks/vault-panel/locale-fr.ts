@@ -70,7 +70,7 @@ export const FR: Record<string, string> = {
   "legend.available": "disponible",
   "legend.closed": "local fermé",
   "legend.unreachable": "distant injoignable",
-  "legend.links": "💎 Obsidian · 🌐 ton navigateur · 🪟 navigateur interne",
+  "legend.links": "Obsidian · 🌐 ton navigateur · 🪟 navigateur interne",
   "alt.open": "ouvert",
   "alt.closed": "fermé",
   "alt.unreachable": "injoignable",

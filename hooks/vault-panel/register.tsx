@@ -1394,6 +1394,11 @@ async function openVault($: EngineInterface, row: VaultRow) {
 const REPO_URL = 'https://github.com/tboome33/obsidian-mcp-router'
 const LATEST_MANIFEST = 'https://raw.githubusercontent.com/tboome33/obsidian-mcp-router/main/.claude-plugin/plugin.json'
 // The octicon "mark-github" (MIT), grey so it reads on a light and a dark pane.
+// Obsidian's mark, in its purple, before the button that opens a local vault in
+// Obsidian (a surface with no SVG element keeps 💎). From LobeHub's icons
+// (@lobehub/icons-static-svg 1.98.0, obsidian-color.svg, MIT).
+const OBSIDIAN_MARK =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.643 14.012c.615-.183 1.605-.465 2.745-.534-.684-1.725-.849-3.235-.716-4.579.153-1.552.7-2.847 1.234-3.95.114-.235.223-.454.328-.664.149-.297.289-.577.42-.86.217-.47.378-.885.46-1.27.08-.38.08-.719-.014-1.044-.095-.325-.297-.675-.681-1.06a1.6 1.6 0 00-1.475.36l-4.95 4.453a1.602 1.602 0 00-.512.952l-.427 2.83c.67.592 2.327 2.317 3.335 4.71.09.213.174.432.253.656zM5.855 9.937c-.024.1-.057.197-.099.29L3.14 16.058a1.602 1.602 0 00.313 1.772l4.117 4.24c2.102-3.102 1.795-6.02.835-8.3-.728-1.73-1.832-3.083-2.55-3.833z" fill="#A88BFA"/><path d="M8.52 22.57c.073.01.146.018.22.02.781.023 2.095.091 3.16.288.87.16 2.593.642 4.011 1.056 1.082.316 2.197-.548 2.354-1.664.115-.814.33-1.735.725-2.58l-.009.004c-.67-1.87-1.523-3.077-2.417-3.847a5.294 5.294 0 00-2.777-1.258c-1.541-.216-2.952.189-3.841.45.532 2.218.368 4.828-1.425 7.53z" fill="#A88BFA"/><path d="M19.676 18.538a69.072 69.072 0 001.858-2.952.811.811 0 00-.061-.901c-.516-.684-1.504-2.075-2.042-3.362-.554-1.323-.636-3.378-.64-4.378a1.708 1.708 0 00-.359-1.051L15.235 1.83a3.757 3.757 0 01-.076.545c-.107.503-.307 1.004-.536 1.498-.135.29-.29.601-.446.915-.105.21-.21.42-.31.626-.517 1.068-.998 2.227-1.132 3.59-.125 1.262.046 2.73.814 4.484.128.01.257.025.386.043a6.364 6.364 0 013.327 1.506c.916.79 1.743 1.921 2.414 3.5z" fill="#A88BFA"/></svg>'
 const GITHUB_MARK =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#6e7681" d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>'
 
@@ -2481,7 +2486,15 @@ export const register: Register = on => {
           {t('obsidian.openOnce')}
         </Text>
       ) : (
-        <Button key={`obsidian-${row.name}`} label="💎" plain onPress={() => void openInObsidian($, row)} />
+        Svg ? (
+          // A Button holds text only: the mark sits before it, as GitHub's does.
+          <Box key={`obsidian-box-${row.name}`} flexDirection="row" gap={1} alignItems="center">
+            <Svg source={OBSIDIAN_MARK} alt="" width={14} height={14} />
+            <Button key={`obsidian-${row.name}`} label="Obsidian" plain onPress={() => void openInObsidian($, row)} />
+          </Box>
+        ) : (
+          <Button key={`obsidian-${row.name}`} label="💎" plain onPress={() => void openInObsidian($, row)} />
+        )
       )
 
     // A bound vault's tile: its state and name on top, local or remote (and a
@@ -2680,9 +2693,13 @@ export const register: Register = on => {
           <Text size="caption" dimColor>
             {t('secondaries.definition')}
           </Text>
-          <Text size="caption" dimColor>
-            {t('legend.links')}
-          </Text>
+          {/* The marks the tiles use, said once: Obsidian's own where it can be drawn. */}
+          <Box key="legend-links" flexDirection="row" flexWrap="wrap" columnGap={1} alignItems="center">
+            {Svg ? <Svg source={OBSIDIAN_MARK} alt="" width={12} height={12} /> : <Text size="caption">💎</Text>}
+            <Text size="caption" dimColor>
+              {t('legend.links')}
+            </Text>
+          </Box>
         </Box>
         {Input && (
           <Input

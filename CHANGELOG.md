@@ -15,9 +15,13 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 - **Every vault in the pane is a tile, the same tile**: the primary, the secondaries (open,
   closed, paused) and the vaults that can be added. One card each, of one width (wide enough for
   the tier menu), in grids that wrap: the vault's state and name on top, local or remote (and,
-  for a paused one, its tier and "en pause") under it, its controls at the bottom — 💎 🌐 🪟,
+  for a paused one, its tier and "en pause") under it, its controls at the bottom — Obsidian 🌐 🪟,
   ■ / ▶, ✕ and the tier menu for a secondary, "Ajouter" or "Choisir comme principal" for a vault
   to add. Only the primary's border is lit.
+- **Obsidian's own purple mark** replaces 💎 on the button that opens a local vault in Obsidian
+  (the mark, then "Obsidian"), and in the pane's legend; a surface that draws no SVG keeps 💎.
+  The mark comes from LobeHub's icons (`@lobehub/icons-static-svg` 1.98.0, MIT), credited in
+  NOTICE.
 
 Seen on screen after the v0.107.1 update: ■ answered "set_secondary_vault_mode: `mode` must be one
 of …(got undefined)". The panel was v0.107.1, but the session's router was an older one

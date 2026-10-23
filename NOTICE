@@ -168,3 +168,15 @@ A prior independent implementation of the same pattern exists at
 https://github.com/AgriciDaniel/claude-obsidian (MIT-licensed).
 Conventions and slash command names overlap by necessity (both target
 the Karpathy pattern), but no source code was reused.
+
+---
+
+Icons in the vault panel (hooks/vault-panel/register.tsx):
+
+  Obsidian mark (obsidian-color.svg) — from LobeHub Icons,
+    @lobehub/icons-static-svg 1.98.0, MIT License
+    (https://github.com/lobehub/lobe-icons). Obsidian and its logo are
+    trademarks of Dynalist Inc.; the mark only labels the button that opens
+    a vault in Obsidian.
+  GitHub mark (octicon "mark-github") — from GitHub Primer Octicons,
+    MIT License (https://github.com/primer/octicons).

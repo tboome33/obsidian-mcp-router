@@ -907,6 +907,26 @@ test('an open local vault keeps its 💎: the same address brings its window to 
   await ui.unmount()
 })
 
+test("a local vault opens with Obsidian's purple mark and an Obsidian button, the 💎 gone", async ($, on) => {
+  wire(on, { list: LOCAL_LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  obsidianKnows(on, ['C:\\VAULTS\\Notes'])
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  await begin($)
+  const desktop = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openClosed(desktop)
+  // The folder is matched to Obsidian's list after the read: waited for.
+  await eventually(() => desktop.find({ type: 'Button', key: 'obsidian-notes' }))
+  const box = nodesOf(await desktop.drawn()).find(n => keyOf(n) === 'obsidian-box-notes')
+  const mark = nodesOf(box as never).find(n => n.type === 'Svg')
+  expect(String(mark?.props?.source)).toContain('#A88BFA')
+  expect(await desktop.find({ type: 'Button', key: 'obsidian-notes' })).toMatchObject({ props: { label: 'Obsidian' } })
+  await desktop.unmount()
+  const terminal = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await openClosed(terminal)
+  expect(await eventually(() => terminal.find({ type: 'Button', key: 'obsidian-notes' }))).toMatchObject({ props: { label: 'Obsidian' } })
+  await terminal.unmount()
+})
+
 test('a closed local vault Obsidian knows gets its own 💎, which launches it; one it does not know says so instead', async ($, on) => {
   wire(on, { list: LOCAL_LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
   obsidianKnows(on, ['C:\\VAULTS\\Notes'])
