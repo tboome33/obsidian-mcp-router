@@ -10,6 +10,51 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.105.0] — 2026-10-23 — a vault band above the prompt, and a clearer vault panel
+
+Asked on v0.104.4: the panel's green dots had no legend, the "Locaux" / "Distants" tabs did not
+read as tabs, nothing said what a primary or a secondary vault is — and the bound vaults should be
+visible without opening the pane.
+
+- **A band above the prompt.** One line, under the conversation: the primary vault, then each
+  secondary with its write badge — 🔒 read-only, ✋ write on request, ✏️ read-write — and a
+  "◧ Afficher le panneau" / "◧ Masquer le panneau" button that opens or closes the **Vaults**
+  pane. Too narrow for every secondary, the band keeps the first ones in binding order and ends
+  with "… +N". It draws from what the pane already read (startup, refresh, clicks, the model's
+  binding calls) and never calls the router itself; another plugin's band, or the engine's own,
+  stays under it; it gives way to a survey. Turn it off alone with `OBSIDIAN_ROUTER_NO_VAULT_BAND=1`
+  (`OBSIDIAN_ROUTER_NO_VAULT_PANEL=1` still turns everything off).
+- **The model's binding calls refresh the band too.** Before, they redrew only an open pane; now
+  also while the band is drawn, so the band follows a change made in the conversation.
+- **A legend for the marks.** Under the pane's header: green dot "disponible" (a local vault open
+  in Obsidian, or a remote one that answers), grey ring "local fermé", red cross "distant
+  injoignable".
+- **What primary and secondary mean.** One line under each section title: the primary is the
+  project's default vault, which Claude reads and writes without asking; the secondaries can be
+  consulted on top of it, each with its own write right.
+- **Real tabs.** "Locaux · N" and "Distants · N" are buttons of their own, the open one drawn as
+  the primary button, instead of two grey words.
+- **The tier menu carries the band's badges** (🔒 Lecture seule, ✋ Écriture sur accord, ✏️
+  Lecture/écriture), so the band needs no legend of its own.
+- **The toggle says what is on screen.** A pane opened unasked in a narrow terminal waits undrawn
+  (`isPlaced: false`): the band then offers "Afficher", and the press places it. Hiding the pane
+  while the startup read is still under way keeps it hidden. A pane the app restores on its own
+  is told to the band. Nothing is written to the session state while a pane or the band draws.
+  The band measures CJK characters and emoji as two cells.
+- Tests: `tests/vault-panel.test.tsx` 63 (was 50) — the legend and both definitions on the terminal
+  and the desktop; the tabs' variants following the open tab; the band's names and badges in
+  order, with the engine's band kept under it; "… +N" in a narrow band, none in a wide one, and the
+  room kept for it at the exact widths where it changes; wide characters counted as two cells; the
+  toggle closing then reopening the pane, its label following; a pane waiting undrawn offered by
+  the band; a hide during the startup read that stays hidden; a pane the app draws on its own told
+  to the band; the band yielding to an unread router, to `OBSIDIAN_ROUTER_NO_VAULT_BAND` and to a
+  survey; the menu's badges. Two codex reviews found what these cover (a state write while
+  drawing, the startup read reopening a hidden pane, `isPlaced` ignored, the width undercounted,
+  then wide characters and a restored pane the band missed); seven mutations, one per rule, each
+  turn their own test red. Two guards have no test, the kit cannot suspend a drawing mid-read: a
+  drawing started before a close no longer adopts the pane, and a new session start voids an open
+  still pending from the previous one. The tree is checked, not the pixels.
+
 ## [0.104.4] — 2026-10-23 — the vault panel fits its pane
 
 Reported on v0.104.3: in the desktop dock (about 420 px wide) the panel ran past its right edge,
