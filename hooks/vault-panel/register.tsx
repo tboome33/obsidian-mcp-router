@@ -589,6 +589,7 @@ function toSnapshot(data: ListVaults, fetchedAt: number): Snapshot {
       mode: modeOf(name),
     })),
     routerVersion: data.routerBuild?.version ?? null,
+    order: (b?.also ?? []).filter(name => name !== b?.vault),
     fetchedAt,
   }
 }
@@ -1444,6 +1445,10 @@ function compareVersions(x: string, y: string) {
 
   return 0
 }
+// ■ and ▶: a muted red to pause, a green to resume, readable on a light and a
+// dark background alike.
+const PAUSE_COLOR = '#c0605a'
+const RESUME_COLOR = '#3f9b5a'
 // A vault's tile, in cells, at the least: a name of about 18 fits. The pane
 // widens it to the tier menu's width, the same for every tile.
 const TILE_WIDTH = 24
@@ -2631,7 +2636,9 @@ export const register: Register = on => {
           ),
           obsidianLink(s),
           uiLink(s),
-          <Button key={`pause-${s.name}`} label="■" plain dimColor onPress={() => void setPaused($, s, true)} />,
+          <Button key={`pause-${s.name}`} label="■" plain onPress={() => void setPaused($, s, true)}>
+            <Text color={PAUSE_COLOR}>■</Text>
+          </Button>,
           <Button
             key={`remove-${s.name}`}
             label="✕"
@@ -2728,7 +2735,9 @@ export const register: Register = on => {
                   `paused-${p.name}`,
                   p,
                   [
-                    <Button key={`resume-${p.name}`} label="▶" plain onPress={() => void setPaused($, p, false)} />,
+                    <Button key={`resume-${p.name}`} label="▶" plain onPress={() => void setPaused($, p, false)}>
+                      <Text color={RESUME_COLOR}>▶</Text>
+                    </Button>,
                     // A paused vault gone from the router is let go of here.
                     <Button
                       key={`remove-${p.name}`}
@@ -2945,12 +2954,18 @@ export const register: Register = on => {
     const isListOpen = await read($, bandListOpen)
     const names = snap.secondaries.map(s => s.name)
     const paused = snap.paused ?? []
-    // Every secondary on the line, the paused ones after the active ones: each
-    // with its own ■ (pause) or ▶ (resume), right where it is named.
+    // Every secondary on the line, in the binding's order, paused or not: each
+    // with its own ■ (pause) or ▶ (resume), right where it is named. A pause
+    // changes the control, never the place.
+    const rank = (name: string) => {
+      const at = (snap.order ?? []).indexOf(name)
+
+      return at === -1 ? Number.MAX_SAFE_INTEGER : at
+    }
     const entries: { row: Secondary; isPaused: boolean }[] = [
       ...snap.secondaries.map(row => ({ row, isPaused: false })),
       ...paused.map(row => ({ row, isPaused: true })),
-    ]
+    ].sort((x, y) => rank(x.row.name) - rank(y.row.name))
     const fit = bandFit(
       snap.primary?.name ?? null,
       entries.map(entry => entry.row.name),
@@ -2975,9 +2990,13 @@ export const register: Register = on => {
     // A secondary's control: ■ pauses an active one, ▶ resumes a paused one.
     const control = (row: Secondary, isPaused: boolean) =>
       isPaused ? (
-        <Button key={`band-resume-${row.name}`} label="▶" plain onPress={() => void setPaused($, row, false)} />
+        <Button key={`band-resume-${row.name}`} label="▶" plain onPress={() => void setPaused($, row, false)}>
+          <Text color={RESUME_COLOR}>▶</Text>
+        </Button>
       ) : (
-        <Button key={`band-pause-${row.name}`} label="■" plain dimColor onPress={() => void setPaused($, row, true)} />
+        <Button key={`band-pause-${row.name}`} label="■" plain onPress={() => void setPaused($, row, true)}>
+          <Text color={PAUSE_COLOR}>■</Text>
+        </Button>
       )
     const caption = (text: string) => (
       <Text size="caption" dimColor wrap="truncate-end">

@@ -10,6 +10,16 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.108.3] — 2026-10-24 — a paused vault stays in its place; ■ red, ▶ green
+
+Seen on screen after v0.108.2: pausing "Stacks techniques" swapped it with "nasqnap" on the band,
+because the paused ones were drawn after the active ones. The band now draws the secondaries in
+the binding's own order (`Snapshot.order`, from `workspaceBinding.also`): a pause changes the
+control, never the place. And, as asked, ■ is a muted red (`#c0605a`) and ▶ a green (`#3f9b5a`),
+on the band and in the pane — a coloured `Text` inside the Button, which holds text only.
+
+- Tests: `tests/vault-panel.test.tsx` 94 — a paused secondary keeps its place; the two colours.
+
 ## [0.108.2] — 2026-10-24 — "… +N" unfolds on the band's line
 
 Asked after v0.108.1: pressing "… +4" should show those vaults on the band itself, to the right,
