@@ -18,7 +18,7 @@
   "band.primary": "Principal :",
   "band.secondaries": "Secondaires :",
   "band.none": "aucun",
-  "band.listMore": "… et {count} autres : voir le panneau",
+  "band.fold": "‹ réduire",
   "band.show": "◧ Afficher le panneau",
   "band.hide": "◧ Masquer le panneau",
 

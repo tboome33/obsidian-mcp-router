@@ -18,7 +18,7 @@
   "band.primary": "Primary:",
   "band.secondaries": "Secondaries:",
   "band.none": "none",
-  "band.listMore": "… and {count} more: see the pane",
+  "band.fold": "‹ fold",
   "band.show": "◧ Show the pane",
   "band.hide": "◧ Hide the pane",
 
