@@ -1435,7 +1435,7 @@ test('the band shows the primary, each secondary with its write badge, and keeps
     const texts = await bandTexts(ui)
     expect(texts).toContain('main')
     // docs is read-only, notes writes on request: one badge each, in order.
-    expect(texts.slice(texts.indexOf('docs'), texts.indexOf('notes') + 2)).toEqual(['docs', '🔒', '|', 'notes', '✋'])
+    expect(texts.slice(texts.indexOf('docs'), texts.indexOf('notes') + 3)).toEqual(['docs', '🔒', '■', '|', 'notes', '✋', '■'])
     expect(texts.some(t => t.startsWith('…'))).toBe(false)
     expect(texts).toContain('engine band')
     await ui.unmount()
@@ -2326,6 +2326,24 @@ test('"… +N" unfolds the rest on the band\'s line, wrapping to a second line; 
   await band.press({ key: 'band-more' })
   expect((await line())?.props?.flexWrap).toBe('nowrap')
   expect(await band.find({ type: 'Button', key: 'band-open-epsilon-vault' })).toBeFalsy()
+  await band.unmount()
+})
+
+test('a paused secondary keeps its place on the band; ■ is a muted red, ▶ a green', async ($, on) => {
+  // docs comes first in the binding: paused, it stays first.
+  wire(on, {
+    list: { ...LIST, routerBuild: { version: '0.108.0' }, workspaceBinding: { ...LIST.workspaceBinding, alsoPaused: ['docs'] } },
+  })
+  engineBand(on)
+  await begin($)
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const nodes = nodesOf(await band.drawn())
+  const at = (key: string) => nodes.findIndex(n => keyOf(n) === key)
+  expect(at('band-open-docs')).toBeGreaterThan(-1)
+  expect(at('band-open-docs')).toBeLessThan(at('band-open-notes'))
+  const glyph = (key: string) => nodesOf(nodes.find(n => keyOf(n) === key) as never).find(n => n.type === 'Text')
+  expect(glyph('band-resume-docs')?.props?.color).toBe('#3f9b5a')
+  expect(glyph('band-pause-notes')?.props?.color).toBe('#c0605a')
   await band.unmount()
 })
 

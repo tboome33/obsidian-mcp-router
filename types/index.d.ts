@@ -90,6 +90,8 @@ export type Snapshot = {
   defaultRoot?: string | null
   /** The version the router of this session reports (list_vaults.routerBuild). */
   routerVersion?: string | null
+  /** The secondaries in the binding's own order, paused ones included. */
+  order?: string[]
   fetchedAt: number
 }
 
