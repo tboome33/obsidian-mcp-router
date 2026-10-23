@@ -10,12 +10,14 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
-## [0.108.0] — 2026-10-24 — the vaults to add as tiles; pausing with a router older than the panel
+## [0.108.0] — 2026-10-24 — every vault as a tile; pausing with a router older than the panel
 
-- **The vaults that can be added are tiles** ("Ajouter un vault"): one card each, of one width,
-  in a grid that wraps — the vault's state and name on top, local or remote under it, its
-  actions at the bottom (🌐 🪟 for a remote one, then "Ajouter", or "Choisir comme principal"
-  when the project has no primary).
+- **Every vault in the pane is a tile, the same tile**: the primary, the secondaries (open,
+  closed, paused) and the vaults that can be added. One card each, of one width (wide enough for
+  the tier menu), in grids that wrap: the vault's state and name on top, local or remote (and,
+  for a paused one, its tier and "en pause") under it, its controls at the bottom — 💎 🌐 🪟,
+  ■ / ▶, ✕ and the tier menu for a secondary, "Ajouter" or "Choisir comme principal" for a vault
+  to add. Only the primary's border is lit.
 
 Seen on screen after the v0.107.1 update: ■ answered "set_secondary_vault_mode: `mode` must be one
 of …(got undefined)". The panel was v0.107.1, but the session's router was an older one
@@ -27,7 +29,7 @@ resume: it says which router answers and that the app has to be restarted for th
   now says ▶ resumes the vault as it was set: 🔒 read-only, ✋ write if you agree, or ✏️ read
   and write.
 - Tests: `tests/vault-panel.test.tsx` 92 — a v0.105.0 router is sent nothing and is named; the
-  tiles' grid wraps and every tile has one width.
+  primary, the secondaries and the vaults to add are one tile, of one width, in grids that wrap.
 
 ## [0.107.1] — 2026-10-23 — the update reads back this project's install, not another's
 

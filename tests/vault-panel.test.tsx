@@ -1271,7 +1271,7 @@ const keyOf = (n: Drawn) => n.key ?? (n.props?.key as string | undefined)
 const textOf = (n: Drawn): string =>
   typeof n.children === 'string' ? n.children : Array.isArray(n.children) ? n.children.map(c => (typeof c === 'string' ? c : textOf(c as Drawn))).join('') : ''
 
-test('a row too narrow for its name and controls wraps the controls, never past the edge', async ($, on) => {
+test('the primary, the secondaries and the vaults to add are the same tile, in grids that wrap', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
   for (const surface of ['terminal', 'desktop', 'mobile'] as const) {
@@ -1282,29 +1282,25 @@ test('a row too narrow for its name and controls wraps the controls, never past 
     }
     await openAdd(ui)
     const nodes = nodesOf(await ui.drawn())
-    // The primary's card and every secondary's row: in LIST, one primary
-    // and two secondaries.
-    const rows = nodes.filter(n => /^(primary-row|sec-)/.test(keyOf(n) ?? ''))
-    expect(rows.length).toBe(3)
-    // The vaults that can be added are tiles of one width, in a grid that wraps.
-    expect(nodes.find(n => keyOf(n) === 'av-tiles')?.props?.flexWrap).toBe('wrap')
-    const tiles = nodes.filter(n => /^av-(?!controls|tiles)/.test(keyOf(n) ?? ''))
-    expect(tiles.length).toBe(1)
+    // In LIST: one primary, two secondaries (one open, one closed), one vault to add.
+    const tiles = nodes.filter(n => /^(primary-row|sec-|av-)/.test(keyOf(n) ?? '') && !/(-controls|^sec-tiles|^av-tiles)/.test(keyOf(n) ?? ''))
+    expect(tiles.map(n => keyOf(n))).toEqual(['primary-row', 'sec-docs', 'sec-notes', 'av-closed'])
+    const width = tiles[0]!.props?.width
     for (const tile of tiles) {
-      expect(tile.props?.width).toBe(24)
+      // One tile for all three: same width, same border, same three parts.
+      expect(tile.props?.width).toBe(width)
       expect(tile.props?.borderStyle).toBe('round')
-      expect(nodes.find(n => keyOf(n) === `av-controls-${keyOf(tile)!.slice(3)}`)?.props?.flexWrap).toBe('wrap')
+      expect(tile.props?.flexDirection).toBe('column')
+      const nameText = nodesOf(tile as never).find(n => n.type === 'Text' && n.props?.weight === 'semibold')
+      expect(nameText).toBeTruthy()
+      // Its controls wrap inside the tile rather than run past its edge.
+      expect(nodes.find(n => keyOf(n) === `${keyOf(tile)}-controls`)?.props?.flexWrap).toBe('wrap')
     }
-    for (const row of rows) {
-      expect(row.props?.flexWrap).toBe('wrap')
-      const [nameSide, controls] = (row.children as Drawn[]).filter(c => c && typeof c === 'object')
-      // The name side grows into the room, so the controls go right when they fit.
-      expect(nameSide?.props?.flexGrow).toBe(1)
-      // The controls, on a line of their own, indent under the name and wrap
-      // among themselves rather than run past the edge.
-      expect(controls?.props?.flexWrap).toBe('wrap')
-      expect(controls?.props?.flexShrink).toBe(1)
-      expect(controls?.props?.paddingLeft).toBe(3)
+    // Only the primary's border is lit.
+    expect(tiles.map(n => n.props?.borderDimColor)).toEqual([false, true, true, true])
+    // The grids wrap.
+    for (const key of ['sec-tiles-open', 'sec-tiles-closed', 'av-tiles']) {
+      expect(nodes.find(n => keyOf(n) === key)?.props?.flexWrap).toBe('wrap')
     }
     // The phone has no menu: its three tier buttons wrap too.
     const modes = nodes.filter(n => /^modes-/.test(keyOf(n) ?? ''))

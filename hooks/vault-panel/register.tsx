@@ -1437,7 +1437,8 @@ function compareVersions(x: string, y: string) {
   return 0
 }
 const BAND_LIST_ROWS = 6
-// A tile of the "add a vault" grid, in cells: a name of about 18 fits.
+// A vault's tile, in cells, at the least: a name of about 18 fits. The pane
+// widens it to the tier menu's width, the same for every tile.
 const TILE_WIDTH = 24
 const isNewer = (latest: string, installed: string) => compareVersions(latest, installed) > 0
 
@@ -2483,36 +2484,43 @@ export const register: Register = on => {
         <Button key={`obsidian-${row.name}`} label="💎" plain onPress={() => void openInObsidian($, row)} />
       )
 
-    // A vault's row: the name on the left, its controls on the right. Too
-    // narrow for both, the controls drop to a second line, indented under the
-    // name (the dot's cell and its gap); too narrow for the controls alone,
-    // they wrap among themselves. Only a tier menu wider than the pane itself
-    // still runs past the edge: it keeps one width so the menus line up.
-    const rowLayout = {
-      flexDirection: 'row',
-      flexWrap: 'wrap',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      columnGap: 1,
-    } as const
-    const controlsLayout = {
-      flexDirection: 'row',
-      flexWrap: 'wrap',
-      gap: 1,
-      alignItems: 'center',
-      flexShrink: 1,
-      paddingLeft: 3,
-    } as const
-    // The name grows into the room its row leaves, so the controls sit right.
-    const name = (row: VaultRow, isStrong = false) => (
-      <Box flexDirection="row" gap={1} flexGrow={1} flexShrink={1} alignItems="center">
-        {dot(row.online, isRemote(row))}
-        <Text weight={isStrong ? 'semibold' : 'regular'} dimColor={row.online === false} wrap="truncate-end">
-          {row.name}
+    // A bound vault's tile: its state and name on top, local or remote (and a
+    // tag) under it, its controls below, wrapping inside the tile. One width
+    // for a whole grid, wide enough for the tier menu, so the tiles line up.
+    const boundWidth = Math.max(TILE_WIDTH, modeWidth + 4)
+    const tile = (
+      key: string,
+      row: VaultRow,
+      controls: unknown,
+      opts: { isDim?: boolean; tag?: string; isHighlighted?: boolean } = {},
+    ) => (
+      <Box
+        key={key}
+        flexDirection="column"
+        width={boundWidth}
+        minWidth={boundWidth}
+        borderStyle="round"
+        borderDimColor={!opts.isHighlighted}
+        paddingX={1}
+      >
+        <Box flexDirection="row" gap={1} alignItems="center">
+          {dot(row.online, isRemote(row))}
+          <Text weight="semibold" dimColor={opts.isDim || row.online === false} wrap="truncate-end">
+            {row.name}
+          </Text>
+        </Box>
+        <Text size="caption" dimColor wrap="truncate-end">
+          {[isRemote(row) ? t('place.remote') : t('place.local'), opts.tag].filter(Boolean).join(' · ')}
         </Text>
-        <Text size="caption" dimColor>
-          {isRemote(row) ? t('place.remote') : t('place.local')}
-        </Text>
+        <Box key={`${key}-controls`} flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+          {controls as never}
+        </Box>
+      </Box>
+    )
+    // Tiles side by side, wrapping to the next line when the pane is narrow.
+    const grid = (key: string, tiles: unknown[]) => (
+      <Box key={key} flexDirection="row" flexWrap="wrap" gap={1}>
+        {tiles as never}
       </Box>
     )
 
@@ -2525,24 +2533,20 @@ export const register: Register = on => {
           </Text>
         </Box>
         {snap.primary ? (
-          <Box
-            key="primary-row"
-            {...rowLayout}
-            borderStyle="round"
-            borderDimColor
-            paddingX={1}
-          >
-            {name(snap.primary, true)}
-            <Box key="primary-controls" {...controlsLayout}>
-              {snap.isLocked && (
-                <Text size="caption" color="warning">
+          tile(
+            'primary-row',
+            snap.primary,
+            [
+              snap.isLocked && (
+                <Text key="primary-locked" size="caption" color="warning">
                   {t('primary.locked')}
                 </Text>
-              )}
-              {obsidianLink(snap.primary)}
-              {uiLink(snap.primary)}
-            </Box>
-          </Box>
+              ),
+              obsidianLink(snap.primary),
+              uiLink(snap.primary),
+            ],
+            { isHighlighted: true },
+          )
         ) : (
           <Box key="primary-none" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
             <Text color="warning">{t('primary.none')}</Text>
@@ -2600,22 +2604,38 @@ export const register: Register = on => {
         })
       }
     }
-    const secondaryRow = (s: Secondary) => (
-      <Box key={`sec-${s.name}`} {...rowLayout}>
-        {name(s)}
-        <Box key={`controls-${s.name}`} {...controlsLayout}>
-          {s.online === false && isRemote(s) && (
-            <Text size="caption" color="error">
+    const secondaryRow = (s: Secondary) =>
+      tile(
+        `sec-${s.name}`,
+        s,
+        [
+          s.online === false && isRemote(s) && (
+            <Text key={`unreachable-${s.name}`} size="caption" color="error">
               {t('secondaries.unreachable')}
             </Text>
-          )}
-          {obsidianLink(s)}
-          {uiLink(s)}
-          <Button key={`pause-${s.name}`} label="■" plain dimColor onPress={() => void setPaused($, s, true)} />
-          {Select ? (
+          ),
+          obsidianLink(s),
+          uiLink(s),
+          <Button key={`pause-${s.name}`} label="■" plain dimColor onPress={() => void setPaused($, s, true)} />,
+          <Button
+            key={`remove-${s.name}`}
+            label="✕"
+            plain
+            dimColor
+            onPress={() =>
+              void rebind(
+                $,
+                { doing: t('action.remove.doing', { name: s.name }), done: t('action.remove.done', { name: s.name }) },
+                shown,
+                current => current.filter(n => n !== s.name),
+                { shows: snap => ({ ...snap, secondaries: snap.secondaries.filter(r => r.name !== s.name) }) },
+              )
+            }
+          />,
+          Select ? (
             // One width for every menu, whatever tier it shows: sized on the
-            // longest label, so the column lines up from row to row.
-            <Box width={modeWidth} minWidth={modeWidth} flexShrink={0}>
+            // longest label, so the tiles line up.
+            <Box key={`mode-box-${s.name}`} width={modeWidth} minWidth={modeWidth} flexShrink={0}>
               <Select
                 key={`mode-${s.name}`}
                 options={MODES.map(m => ({ value: m.mode, label: `${m.icon} ${modeLabel(m.mode)}` }))}
@@ -2637,25 +2657,9 @@ export const register: Register = on => {
                 />
               ))}
             </Box>
-          )}
-          <Button
-            key={`remove-${s.name}`}
-            label="✕"
-            plain
-            dimColor
-            onPress={() =>
-              void rebind(
-                $,
-                { doing: t('action.remove.doing', { name: s.name }), done: t('action.remove.done', { name: s.name }) },
-                shown,
-                current => current.filter(n => n !== s.name),
-                { shows: snap => ({ ...snap, secondaries: snap.secondaries.filter(r => r.name !== s.name) }) },
-              )
-            }
-          />
-        </Box>
-      </Box>
-    )
+          ),
+        ],
+      )
 
     const shownSecondaries = snap.secondaries.filter(matches)
     const up = shownSecondaries.filter(s => s.online !== false)
@@ -2698,38 +2702,35 @@ export const register: Register = on => {
         {(snap.paused ?? []).length > 0 && (
           <Box key="paused" flexDirection="column">
             {label(t('secondaries.paused', { count: (snap.paused ?? []).length }))}
-            {(snap.paused ?? []).map(p => (
-              <Box key={`paused-${p.name}`} {...rowLayout}>
-                <Box flexDirection="row" gap={1} flexGrow={1} flexShrink={1} alignItems="center">
-                  {dot(p.online, isRemote(p))}
-                  <Text dimColor wrap="truncate-end">
-                    {p.name}
-                  </Text>
-                  <Text size="caption" dimColor>
-                    {iconOf(p.mode)} {t('secondaries.pausedTag')}
-                  </Text>
-                </Box>
-                <Box key={`paused-controls-${p.name}`} {...controlsLayout}>
-                  <Button key={`resume-${p.name}`} label="▶" plain onPress={() => void setPaused($, p, false)} />
-                  {/* A paused vault gone from the router is let go of here. */}
-                  <Button
-                    key={`remove-${p.name}`}
-                    label="✕"
-                    plain
-                    dimColor
-                    onPress={() =>
-                      void rebind(
-                        $,
-                        { doing: t('action.remove.doing', { name: p.name }), done: t('action.remove.done', { name: p.name }) },
-                        shown,
-                        current => current.filter(n => n !== p.name),
-                        { shows: snap => ({ ...snap, paused: (snap.paused ?? []).filter(r => r.name !== p.name) }) },
-                      )
-                    }
-                  />
-                </Box>
-              </Box>
-            ))}
+            {grid(
+              'paused-tiles',
+              (snap.paused ?? []).map(p =>
+                tile(
+                  `paused-${p.name}`,
+                  p,
+                  [
+                    <Button key={`resume-${p.name}`} label="▶" plain onPress={() => void setPaused($, p, false)} />,
+                    // A paused vault gone from the router is let go of here.
+                    <Button
+                      key={`remove-${p.name}`}
+                      label="✕"
+                      plain
+                      dimColor
+                      onPress={() =>
+                        void rebind(
+                          $,
+                          { doing: t('action.remove.doing', { name: p.name }), done: t('action.remove.done', { name: p.name }) },
+                          shown,
+                          current => current.filter(n => n !== p.name),
+                          { shows: snap => ({ ...snap, paused: (snap.paused ?? []).filter(r => r.name !== p.name) }) },
+                        )
+                      }
+                    />,
+                  ],
+                  { isDim: true, tag: `${iconOf(p.mode)} ${t('secondaries.pausedTag')}` },
+                ),
+              ),
+            )}
           </Box>
         )}
         {(snap.secondaries.length > 0 || (snap.paused ?? []).length > 0) && (
@@ -2746,7 +2747,7 @@ export const register: Register = on => {
           <Box flexDirection="column">
             {(closed.length > 0 || unknownN > 0) &&
               label(unknownN > 0 ? t('secondaries.openUnknown', { count: openN, unknown: unknownN }) : t('secondaries.open', { count: openN }))}
-            {up.map(secondaryRow)}
+            {grid('sec-tiles-open', up.map(secondaryRow))}
           </Box>
         )}
         {closed.length > 0 && (
@@ -2768,7 +2769,7 @@ export const register: Register = on => {
                 />
               )}
             </Box>
-            {isClosedShown && closed.map(secondaryRow)}
+            {isClosedShown && grid('sec-tiles-closed', closed.map(secondaryRow))}
           </Box>
         )}
       </Box>
@@ -2814,68 +2815,49 @@ export const register: Register = on => {
                 {t('add.noMatch')}
               </Text>
             )}
-            {/* The vaults that can be added, as tiles that wrap: name and
-                state on top, local or remote under it, the actions at the
-                bottom. One width for all, so the grid lines up. */}
-            <Box key="av-tiles" flexDirection="row" flexWrap="wrap" gap={1}>
-              {list.map(v => (
-                <Box
-                  key={`av-${v.name}`}
-                  flexDirection="column"
-                  width={TILE_WIDTH}
-                  minWidth={TILE_WIDTH}
-                  borderStyle="round"
-                  borderDimColor
-                  paddingX={1}
-                >
-                  <Box flexDirection="row" gap={1} alignItems="center">
-                    {dot(v.online, isRemote(v))}
-                    <Text weight="semibold" wrap="truncate-end">
-                      {v.name}
-                    </Text>
-                  </Box>
-                  <Text size="caption" dimColor wrap="truncate-end">
-                    {isRemote(v) ? t('place.remote') : t('place.local')}
-                  </Text>
-                  <Box key={`av-controls-${v.name}`} flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
-                    {uiLink(v)}
-                    {snap.primary ? (
-                      <Button
-                        key={`add-${v.name}`}
-                        label={t('add.button')}
-                        plain
-                        onPress={() =>
-                          void rebind(
-                            $,
-                            { doing: t('action.add.doing', { name: v.name }), done: t('action.add.done', { name: v.name }) },
-                            shown,
-                            current => (current.includes(v.name) ? current : [...current, v.name]),
-                            {
-                              shows: snap => ({
-                                ...snap,
-                                // Already a secondary (another session added it, the retry
-                                // kept it): the row on screen, tier and all, stays as is.
-                                secondaries: snap.secondaries.some(r => r.name === v.name)
-                                  ? snap.secondaries
-                                  : [...snap.secondaries, { ...v, mode: 'soft' }],
-                                available: snap.available.filter(r => r.name !== v.name),
-                              }),
-                            },
-                          )
-                        }
-                      />
-                    ) : (
-                      <Button
-                        key={`primary-${v.name}`}
-                        label={t('add.primaryButton')}
-                        plain
-                        onPress={() => void choosePrimary($, v.name)}
-                      />
-                    )}
-                  </Box>
-                </Box>
-              ))}
-            </Box>
+            {/* The vaults that can be added: the same tile as the primary's
+                and the secondaries', in a grid that wraps. */}
+            {grid(
+              'av-tiles',
+              list.map(v =>
+                tile(`av-${v.name}`, v, [
+                  uiLink(v),
+                  snap.primary ? (
+                    <Button
+                      key={`add-${v.name}`}
+                      label={t('add.button')}
+                      plain
+                      onPress={() =>
+                        void rebind(
+                          $,
+                          { doing: t('action.add.doing', { name: v.name }), done: t('action.add.done', { name: v.name }) },
+                          shown,
+                          current => (current.includes(v.name) ? current : [...current, v.name]),
+                          {
+                            shows: snap => ({
+                              ...snap,
+                              // Already a secondary (another session added it, the retry
+                              // kept it): the tile on screen, tier and all, stays as is.
+                              secondaries: snap.secondaries.some(r => r.name === v.name)
+                                ? snap.secondaries
+                                : [...snap.secondaries, { ...v, mode: 'soft' }],
+                              available: snap.available.filter(r => r.name !== v.name),
+                            }),
+                          },
+                        )
+                      }
+                    />
+                  ) : (
+                    <Button
+                      key={`primary-${v.name}`}
+                      label={t('add.primaryButton')}
+                      plain
+                      onPress={() => void choosePrimary($, v.name)}
+                    />
+                  ),
+                ]),
+              ),
+            )}
           </Box>
         )}
       </Box>
