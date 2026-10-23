@@ -2007,7 +2007,9 @@ function claudeCli(on: On, runs: (readonly string[])[], landed: string, project 
     const stdout = e.argv.includes('list')
       ? JSON.stringify([
           { id, version: landed, scope: 'user' },
-          { id, version: project, scope: 'project' },
+          { id, version: project, scope: 'project', projectPath: START.cwd },
+          // Another project's older install: not this update's business.
+          { id, version: '0.91.1', scope: 'project', projectPath: 'C:\elsewhere' },
         ])
       : 'ok'
     const isFailing = !!failing && e.argv.includes('update') && e.argv.includes(failing) && e.argv.includes('--scope')

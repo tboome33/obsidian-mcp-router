@@ -10,6 +10,16 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.107.1] — 2026-10-23 — the update reads back this project's install, not another's
+
+Seen while updating the installed plugin to v0.107.0: `claude plugin list --json` lists the
+plugin's install of EVERY project (here 0.91.1, 0.95.0, 0.100.0… beside this project's 0.107.0),
+and the console's read-back took the lowest of them — "nothing changed" after an update that
+worked. Now only the user scope and the project-scope install whose `projectPath` is this
+session's folder count.
+
+- Tests: `tests/vault-panel.test.tsx` — another project's older install in the listing.
+
 ## [0.107.0] — 2026-10-23 — the vault panel: its name, updates, vault setup, a clickable band, paused secondaries
 
 Asked after v0.106.0, with the console seen on screen: the pane titled after the plugin with a
