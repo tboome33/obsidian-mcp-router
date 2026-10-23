@@ -638,6 +638,7 @@ describe('GUARD: every write tool runs caller paths through the containment guar
       pptx_extract_assets: 'caller-supplied outdir, sandboxed by MD_ALLOWED_PATHS on the write side as well as the read side (tests/pptx-assets.test.mjs drives both) — same NOTE as download_page_assets: assertPathAllowed is a no-op when that env var is unset. Output FILE names never come from the archive: they are constructed slide<pos>-<i>.<ext>, and each write removes a pre-existing entry before creating exclusively, so a symlink planted in outdir cannot redirect it',
       provision_vault: 'caller-supplied absolute path, gated by allowOutsideRoots (fail-closed)',
       register_remote_vault: 'writes only the fixed config.json path, never a caller-supplied filesystem path; the caller-supplied fields (baseUrl/apiKey/name) become JSON values inside it, not a write TARGET',
+      unregister_vault: 'writes only the fixed config.json path, never a caller-supplied filesystem path; the caller-supplied `name` only selects an entry to remove (or a name to add to disabledVaults), never a write TARGET',
     };
     // NAME NOTE: `WRITE_TOOL_NAMES` is the VAULT-CONTENT writer set, not every
     // tool that touches a file. `lock_vault`, `unlock_vaults` and
@@ -717,6 +718,10 @@ describe('GUARD: every write tool runs caller paths through the containment guar
       // file, never a write target, and `name` is refused when it collides with
       // an already-registered vault (checked inside the config lock).
       'register-remote-vault.mjs',
+      // v0.106.0 — unregister-vault.mjs. The same shape: writes ONLY
+      // `registry.configPath` through `updateConfigBindings`; the caller's
+      // `name` selects an entry to remove, refused when unknown or still bound.
+      'unregister-vault.mjs',
       // Phase 3 (portee-ergonomie-refus-roadmap) — set-secondary-vault-mode.mjs.
       // Same shape as workspace-binding.mjs: writes ONLY `registry.configPath`,
       // through `updateConfigBindings` (the one writer of that section, locked

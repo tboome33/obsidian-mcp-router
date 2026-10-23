@@ -83,7 +83,7 @@ describe('WRITE_TOOL_NAMES', () => {
     }
   });
 
-  test('contains the 18 documented write tools', () => {
+  test('contains the 19 documented write tools', () => {
     const expected = [
       'write_file',
       'append_to_file',
@@ -125,6 +125,9 @@ describe('WRITE_TOOL_NAMES', () => {
       // config.json. Same reasoning as provision_vault: a read-only
       // deployment must hide it too, not just the OBSIDIAN_ROUTER_USER_ID gate.
       'register_remote_vault',
+      // v0.106.0 — removes a remoteVaults entry, or disables a local vault, in
+      // config.json. Hidden on a read-only deployment, as its counterpart.
+      'unregister_vault',
     ];
     assert.equal(WRITE_TOOL_NAMES.size, expected.length);
     for (const e of expected) {
