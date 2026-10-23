@@ -1476,14 +1476,19 @@ function marketplaceOf($: EngineInterface) {
 // The versions Claude Code now has installed, read back from it per scope:
 // what the update reports is what landed, not what GitHub announced.
 type Installs = { user: string | null; project: string | null }
+// This session's project folder, from session.start: the list holds every
+// project's installs, and only this one's is what its update changed.
+let projectDir: string | null = null
 async function installedNow($: EngineInterface, plugin: string): Promise<Installs | null> {
   try {
     const listed = await runClaude($, ['plugin', 'list', '--json'])
-    const entries = JSON.parse(listed.stdout) as { id?: string; version?: string; scope?: string }[]
+    const entries = JSON.parse(listed.stdout) as { id?: string; version?: string; scope?: string; projectPath?: string }[]
+    const isHere = (e: { scope?: string; projectPath?: string }) =>
+      e.scope === 'user' || (!!projectDir && !!e.projectPath && samePath(e.projectPath) === samePath(projectDir))
     // The lowest of a scope's installs: one left behind is not "updated".
     const of = (scopes: string[]) =>
       entries
-        .filter(e => e.id === plugin && isVersion(e.version) && scopes.includes(e.scope ?? ''))
+        .filter(e => e.id === plugin && isVersion(e.version) && scopes.includes(e.scope ?? '') && isHere(e))
         .map(e => e.version as string)
         .reduce<string | null>((x, y) => (x === null || compareVersions(y, x) < 0 ? y : x), null)
 
@@ -1753,6 +1758,7 @@ const isBandOn = () => isEnvKnown && !isOptedOut && !isBandOptedOut
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const start = ++generation
+    projectDir = e.cwd
     // An open still pending from before this start (a /vaults, the band's
     // toggle) finds the epoch moved and adopts nothing.
     paneEpoch += 1
