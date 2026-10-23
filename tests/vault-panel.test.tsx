@@ -1236,3 +1236,93 @@ test('a startup read refused by auto mode is not retried: no pane, one toast poi
   expect(toasts.length).toBe(1)
   expect(toasts[0]).toMatch(/\/vaults/)
 })
+
+// A drawn node, as ui.drawn() hands it back: what the layout tests walk.
+type Drawn = { type?: string; key?: string; props?: Record<string, unknown>; children?: unknown }
+const nodesOf = (tree: unknown): Drawn[] => {
+  const out: Drawn[] = []
+  const walk = (n: unknown) => {
+    if (Array.isArray(n)) {
+      n.forEach(walk)
+    } else if (n && typeof n === 'object') {
+      out.push(n as Drawn)
+      walk((n as Drawn).children)
+    }
+  }
+  walk(tree)
+  return out
+}
+const keyOf = (n: Drawn) => n.key ?? (n.props?.key as string | undefined)
+const textOf = (n: Drawn): string =>
+  typeof n.children === 'string' ? n.children : Array.isArray(n.children) ? n.children.map(c => (typeof c === 'string' ? c : textOf(c as Drawn))).join('') : ''
+
+test('a row too narrow for its name and controls wraps the controls, never past the edge', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  for (const surface of ['terminal', 'desktop', 'mobile'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    // The closed secondary and the add list are folded by default: unfold both.
+    if (!(await ui.find({ type: 'Button', key: 'remove-notes' }))) {
+      await ui.press({ key: 'toggle-closed' })
+    }
+    await openAdd(ui)
+    const nodes = nodesOf(await ui.drawn())
+    // The primary's card, every secondary's row and the add list's row: in
+    // LIST, one primary, two secondaries and one unbound local vault.
+    const rows = nodes.filter(n => /^(primary-row|sec-|av-(?!controls))/.test(keyOf(n) ?? ''))
+    expect(rows.length).toBe(4)
+    for (const row of rows) {
+      expect(row.props?.flexWrap).toBe('wrap')
+      const [nameSide, controls] = (row.children as Drawn[]).filter(c => c && typeof c === 'object')
+      // The name side grows into the room, so the controls go right when they fit.
+      expect(nameSide?.props?.flexGrow).toBe(1)
+      // The controls, on a line of their own, indent under the name and wrap
+      // among themselves rather than run past the edge.
+      expect(controls?.props?.flexWrap).toBe('wrap')
+      expect(controls?.props?.flexShrink).toBe(1)
+      expect(controls?.props?.paddingLeft).toBe(3)
+    }
+    // The phone has no menu: its three tier buttons wrap too.
+    const modes = nodes.filter(n => /^modes-/.test(keyOf(n) ?? ''))
+    expect(modes.length).toBe(surface === 'mobile' ? 2 : 0)
+    for (const m of modes) {
+      expect(m.props?.flexWrap).toBe('wrap')
+      // Without shrinking, a wrapping box keeps its one-line width: no wrap.
+      expect(m.props?.flexShrink).toBe(1)
+    }
+    // The closed-vaults head: its fold and its open-all button wrap.
+    const closedHead = nodes.find(n => keyOf(n) === 'closed-head')
+    expect(closedHead?.props?.flexWrap).toBe('wrap')
+    await ui.unmount()
+  }
+})
+
+test('section titles are bold and in the body colour; the pane title is not repeated', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    const texts = nodesOf(await ui.drawn()).filter(n => n.type === 'Text')
+    for (const title of [/^Principal$/, /^Secondaires · 2$/]) {
+      const t = texts.find(n => title.test(textOf(n)))
+      expect(t).toBeTruthy()
+      expect(t?.props?.weight).toBe('semibold')
+      expect(t?.props?.dimColor).toBeFalsy()
+    }
+    expect(texts.some(n => textOf(n) === 'Vaults')).toBe(false)
+    await ui.unmount()
+  }
+})
+
+test('the filter field has a line of its own, not beside the legend', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const nodes = nodesOf(await ui.drawn())
+  expect(nodes.some(n => n.type === 'Input')).toBe(true)
+  // No row holds the field: beside anything, it is squeezed to a few letters.
+  // A Box that names no direction lays out as a row, so it counts as one.
+  const rows = nodes.filter(n => n.type === 'Box' && !/^column/.test(String(n.props?.flexDirection ?? 'row')))
+  expect(rows.some(r => nodesOf(r.children).some(n => n.type === 'Input'))).toBe(false)
+  await ui.unmount()
+})

@@ -978,7 +978,14 @@ export const register: Register = on => {
         )}
       </Box>
     )
-    // A small grey label above a group: what it is, and how many.
+    // A section's title: in the body's colour and bold, so it stands apart
+    // from the grey captions under it.
+    const section = (text: string) => (
+      <Text size="footnote" weight="semibold">
+        {text}
+      </Text>
+    )
+    // A small grey label above a group inside a section: what it is, and how many.
     const label = (text: string) => (
       <Text size="caption" dimColor>
         {text}
@@ -1000,10 +1007,11 @@ export const register: Register = on => {
           ? 'router injoignable'
           : 'lecture du router…'
 
+    // The pane's own bar already says "Vaults": the header is the summary
+    // and the refresh, nothing repeated.
     const header = (
-      <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-        <Box flexDirection="column">
-          <Text weight="semibold">Vaults</Text>
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+        <Box flexShrink={1}>
           {working ? (
             <Text size="caption" color="warning">
               {working}…
@@ -1071,8 +1079,29 @@ export const register: Register = on => {
         <Button key={`obsidian-${row.name}`} label="💎" plain onPress={() => void openInObsidian($, row)} />
       )
 
+    // A vault's row: the name on the left, its controls on the right. Too
+    // narrow for both, the controls drop to a second line, indented under the
+    // name (the dot's cell and its gap); too narrow for the controls alone,
+    // they wrap among themselves. Only a tier menu wider than the pane itself
+    // still runs past the edge: it keeps one width so the menus line up.
+    const rowLayout = {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      columnGap: 1,
+    } as const
+    const controlsLayout = {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 1,
+      alignItems: 'center',
+      flexShrink: 1,
+      paddingLeft: 3,
+    } as const
+    // The name grows into the room its row leaves, so the controls sit right.
     const name = (row: VaultRow, isStrong = false) => (
-      <Box flexDirection="row" gap={1} flexShrink={1} alignItems="center">
+      <Box flexDirection="row" gap={1} flexGrow={1} flexShrink={1} alignItems="center">
         {dot(row.online, isRemote(row))}
         <Text weight={isStrong ? 'semibold' : 'regular'} dimColor={row.online === false} wrap="truncate-end">
           {row.name}
@@ -1085,18 +1114,17 @@ export const register: Register = on => {
 
     const primary = (
       <Box flexDirection="column" gap={1}>
-        {label('Principal')}
+        {section('Principal')}
         {snap.primary ? (
           <Box
-            flexDirection="row"
-            justifyContent="space-between"
-            alignItems="center"
+            key="primary-row"
+            {...rowLayout}
             borderStyle="round"
             borderDimColor
             paddingX={1}
           >
             {name(snap.primary, true)}
-            <Box flexDirection="row" gap={1} alignItems="center">
+            <Box key="primary-controls" {...controlsLayout}>
               {snap.isLocked && (
                 <Text size="caption" color="warning">
                   verrouillé
@@ -1142,8 +1170,9 @@ export const register: Register = on => {
       </Box>
     )
 
-    // One secondary, one line: where it stands, its write tier as one menu,
-    // and the two links it may need. Nothing heavier.
+    // One secondary, one line where the pane is wide enough: where it stands,
+    // its write tier as one menu, and the two links it may need. Narrower, the
+    // controls wrap to a second line, indented under the name.
     const setMode = (s: Secondary, value: string) => {
       const next = MODES.find(m => m.mode === value)
       if (next && next.mode !== s.mode) {
@@ -1160,9 +1189,9 @@ export const register: Register = on => {
       }
     }
     const secondaryRow = (s: Secondary) => (
-      <Box key={`sec-${s.name}`} flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+      <Box key={`sec-${s.name}`} {...rowLayout}>
         {name(s)}
-        <Box flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
+        <Box key={`controls-${s.name}`} {...controlsLayout}>
           {s.online === false && isRemote(s) && (
             <Text size="caption" color="error">
               injoignable
@@ -1184,7 +1213,7 @@ export const register: Register = on => {
           ) : (
             // A surface with no menu (the phone) keeps the three choices, as
             // quiet buttons, the current one lit.
-            <Box flexDirection="row" gap={1}>
+            <Box key={`modes-${s.name}`} flexDirection="row" flexWrap="wrap" flexShrink={1} gap={1}>
               {MODES.map(m => (
                 <Button
                   key={`mode-${s.name}-${m.mode}`}
@@ -1227,24 +1256,24 @@ export const register: Register = on => {
 
     const secondaries = (
       <Box flexDirection="column" gap={1}>
-        <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
-          <Box flexDirection="column">
-            {label(`Secondaires · ${snap.secondaries.length}`)}
-            <Text size="caption" dimColor>
-              💎 ouvrir dans Obsidian · 🌐 dans ton navigateur · 🪟 dans le navigateur interne
-            </Text>
-          </Box>
-          {Input && (
-            <Input
-              key="filter"
-              placeholder="Filtrer"
-              value={typed}
-              submitLabel="filtrer"
-              onInput={(value: string) => void update($, filter, () => value)}
-              onSubmit={(value: string) => void update($, filter, () => value)}
-            />
-          )}
+        {/* Title, legend and filter one under the other: side by side, the
+            legend folded over four lines and squeezed the field to nothing. */}
+        <Box key="secondaries-head" flexDirection="column">
+          {section(`Secondaires · ${snap.secondaries.length}`)}
+          <Text size="caption" dimColor>
+            💎 Obsidian · 🌐 ton navigateur · 🪟 navigateur interne
+          </Text>
         </Box>
+        {Input && (
+          <Input
+            key="filter"
+            placeholder="Filtrer"
+            value={typed}
+            submitLabel="filtrer"
+            onInput={(value: string) => void update($, filter, () => value)}
+            onSubmit={(value: string) => void update($, filter, () => value)}
+          />
+        )}
         {snap.secondaries.length === 0 && (
           <Text size="caption" dimColor>
             Aucun secondaire : ajoute-en un ci-dessous.
@@ -1264,7 +1293,7 @@ export const register: Register = on => {
         )}
         {closed.length > 0 && (
           <Box flexDirection="column">
-            <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+            <Box key="closed-head" flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={1}>
               <Button
                 key="toggle-closed"
                 label={`${isClosedShown ? '▾' : '▸'} Fermés · ${closed.length}`}
@@ -1328,12 +1357,12 @@ export const register: Register = on => {
             )}
             <Box flexDirection="column">
               {list.map(v => (
-                <Box key={`av-${v.name}`} flexDirection="row" justifyContent="space-between" alignItems="center">
-                  <Box flexDirection="row" gap={1} flexShrink={1} alignItems="center">
+                <Box key={`av-${v.name}`} {...rowLayout}>
+                  <Box flexDirection="row" gap={1} flexGrow={1} flexShrink={1} alignItems="center">
                     {dot(v.online, isRemote(v))}
                     <Text wrap="truncate-end">{v.name}</Text>
                   </Box>
-                  <Box flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
+                  <Box key={`av-controls-${v.name}`} {...controlsLayout}>
                     {uiLink(v)}
                     {snap.primary ? (
                       <Button
