@@ -1,10 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { Secondary, SecondaryMode, Snapshot, Tab, VaultRow } from '../../types'
+import type { AdminForm, Secondary, SecondaryMode, Snapshot, Tab, VaultRow, WireguardState } from '../../types'
+import { FR } from './locale-fr'
 
 const PANE = 'vault-panel'
-const TITLE = 'Vaults'
 const REFRESH_MS = 120_000
 // The startup read: tried every 3 s for 30 s while the router comes up.
 const STARTUP_TRIES = 10
@@ -32,6 +32,112 @@ const showAdd = atom({ plugin: 'obsidian-router', key: 'showAdd' } as const, fal
 // Bumped at every open and close of the pane: the band reads it so that it is
 // drawn again; what the toggle says comes from isPanePlaced.
 const paneVersion = atom({ plugin: 'obsidian-router', key: 'paneVersion' } as const, 0)
+// The language the texts are drawn in: written on a change, so every drawing
+// that reads it is drawn again in the new language.
+const language = atom({ plugin: 'obsidian-router', key: 'language' } as const, 'fr')
+// The administration console: folded by default; its form; the vault whose
+// removal waits for a second press; WireGuard as last detected.
+const showAdmin = atom({ plugin: 'obsidian-router', key: 'showAdmin' } as const, false)
+const EMPTY_FORM: AdminForm = { kind: 'local', name: '', host: '127.0.0.1', port: '', uiPort: '', apiKey: '', scheme: 'https' }
+const adminForm = atom({ plugin: 'obsidian-router', key: 'adminForm' } as const, EMPTY_FORM)
+const confirmRemove = atom({ plugin: 'obsidian-router', key: 'confirmRemove' } as const, null)
+const wireguard = atom({ plugin: 'obsidian-router', key: 'wireguard' } as const, null)
+
+// ---- Texts ----------------------------------------------------------------
+// Every text the pane and the band show comes from locales/<code>.json in the
+// plugin's folder (one file per language: copy fr.json, translate the values,
+// keep the keys and the {variables}). French is also compiled in (FR): what is
+// drawn before the files are read, and where a key a file lacks falls back.
+let strings: Record<string, string> = FR
+
+function t(key: string, vars: Record<string, string | number> = {}) {
+  const text = strings[key] ?? FR[key] ?? key
+
+  return text.replace(/\{(\w+)\}/g, (whole, name: string) => (name in vars ? String(vars[name]) : whole))
+}
+// The one/other forms of a counted text (`<key>.one`, `<key>.other`).
+const tn = (key: string, count: number, vars: Record<string, string | number> = {}) =>
+  t(`${key}.${count > 1 ? 'other' : 'one'}`, { count, ...vars })
+
+// The plugin's folder; null where the engine gives none (the test kit).
+function pluginRoot($: EngineInterface): string | null {
+  try {
+    return $.plugin.root || null
+  } catch {
+    return null
+  }
+}
+
+// One language file, or null where it cannot be read or is not an object of
+// strings (a hand-edited file with a typo falls back to French, key by key).
+async function readLocale($: EngineInterface, code: string): Promise<Record<string, string> | null> {
+  const root = pluginRoot($)
+  if (!root || !/^[a-z]{2,3}(-[A-Za-z]{2,4})?$/.test(code)) {
+    return null
+  }
+  try {
+    const parsed = JSON.parse(await $.fs.read(`${root}/locales/${code}.json`)) as unknown
+    if (!parsed || typeof parsed !== 'object') {
+      return null
+    }
+
+    return Object.fromEntries(Object.entries(parsed).filter((pair): pair is [string, string] => typeof pair[1] === 'string'))
+  } catch {
+    return null
+  }
+}
+
+async function loadLanguage($: EngineInterface, code: string) {
+  const fr = (await readLocale($, 'fr')) ?? {}
+  const chosen = code === 'fr' ? {} : ((await readLocale($, code)) ?? {})
+  strings = { ...FR, ...fr, ...chosen }
+}
+
+// The languages the plugin ships or the person added: every locales/*.json,
+// named by its own `_meta.name`.
+async function availableLanguages($: EngineInterface) {
+  const root = pluginRoot($)
+  const found: { code: string; name: string }[] = []
+  try {
+    const entries = root ? await $.fs.list(`${root}/locales`) : []
+    for (const entry of entries) {
+      const code = entry.kind === 'file' && entry.name.endsWith('.json') ? entry.name.slice(0, -5) : null
+      const file = code ? await readLocale($, code) : null
+      if (code && file) {
+        found.push({ code, name: file['_meta.name'] ?? code })
+      }
+    }
+  } catch {
+    // The two shipped ones below.
+  }
+
+  // French is compiled in: always offered, even with its file unread.
+  if (!found.some(l => l.code === 'fr')) {
+    found.push({ code: 'fr', name: FR['_meta.name'] ?? 'Français' })
+  }
+  if (found.length === 1) {
+    found.push({ code: 'en', name: 'English' })
+  }
+
+  return found.sort((a, b) => a.name.localeCompare(b.name))
+}
+
+// The language a session starts in: the one chosen in the console (kept in
+// the plugin's store), else OBSIDIAN_ROUTER_LANG, else French.
+async function startLanguage($: EngineInterface) {
+  const stored = await $.store.get('language').catch(() => undefined)
+  const fromEnv = await $.env.get('OBSIDIAN_ROUTER_LANG')
+  const code = typeof stored === 'string' && stored ? stored : (fromEnv ?? '').trim().toLowerCase() || 'fr'
+  await loadLanguage($, code)
+  await update($, language, () => code)
+}
+
+async function setLanguage($: EngineInterface, code: string) {
+  await $.store.set('language', code).catch(() => undefined)
+  await loadLanguage($, code)
+  await update($, language, () => code)
+  $.ui.toast(t('admin.languageSaved', { language: strings['_meta.name'] ?? code }))
+}
 
 // The status marks, all on one 12×12 box.
 const MARK = {
@@ -44,25 +150,23 @@ const MARK = {
 
 // Each tier's badge: the pane's menu and the band above the prompt show the
 // same one, so the band reads without a legend of its own.
-const MODES: { mode: SecondaryMode; label: string; icon: string }[] = [
-  { mode: 'locked', label: 'Lecture seule', icon: '🔒' },
-  { mode: 'soft', label: 'Écriture sur accord', icon: '✋' },
-  { mode: 'writable', label: 'Lecture/écriture', icon: '✏️' },
+const MODES: { mode: SecondaryMode; icon: string }[] = [
+  { mode: 'locked', icon: '🔒' },
+  { mode: 'soft', icon: '✋' },
+  { mode: 'writable', icon: '✏️' },
 ]
 const iconOf = (mode: SecondaryMode) => MODES.find(m => m.mode === mode)?.icon ?? '🔒'
-// The tier menu's width, in the surface's cells: the longest label, its badge
-// (two cells and a space) and room for the menu's own arrow and padding.
-const MODE_WIDTH = Math.max(...MODES.map(m => m.label.length)) + 9
+const modeLabel = (mode: SecondaryMode) => t(`mode.${mode}`)
 
 // What the band shows of the secondaries in `columns` cells: as many as fit
 // after the primary and the toggle, in binding order, the rest counted as
-// "… +N". The line as the band draws it, cell by cell: "Principal", a gap, the
-// primary, a gap, a one-cell spacer, a gap, "Secondaires", then per secondary a
-// gap, "·" and a gap after the first, its name, a gap and its badge (an emoji,
-// two cells); "… +N" after a gap; the toggle after a gap of two, with room for
-// its chrome. Measured in characters: the band also cuts any text that still
-// runs over, so a misjudged width costs a cut, never a second line.
-const BAND_TOGGLE = { show: '◧ Afficher le panneau', hide: '◧ Masquer le panneau' }
+// "… +N". The line as the band draws it, cell by cell: "Principal :", a gap,
+// the primary, a gap, a one-cell spacer, a gap, "Secondaires :", then per
+// secondary a gap, "|" and a gap after the first, its name, a gap and its badge
+// (an emoji, two cells); "… +N" after a gap; the toggle after a gap of two,
+// with room for its chrome. In the current language's words. Measured in
+// cells: the band also cuts any text that still runs over, so a misjudged
+// width costs a cut, never a second line.
 // A character's cells on a terminal line: two for the East Asian wide ranges
 // (CJK, Hangul, full-width forms) and the emoji planes, none for a joiner, a
 // variation selector or a combining mark, one otherwise.
@@ -82,8 +186,9 @@ const charCells = (code: number) =>
       : 1
 const cells = (text: string) => [...text].reduce((sum, char) => sum + charCells(char.codePointAt(0) ?? 0), 0)
 function bandFit(primary: string | null, secondaries: string[], columns: number) {
-  const toggle = 2 + Math.max(cells(BAND_TOGGLE.show), cells(BAND_TOGGLE.hide)) + 4
-  let used = cells('Principal') + 1 + cells(primary ?? 'aucun') + 1 + 1 + 1 + cells('Secondaires') + toggle
+  const toggle = 2 + Math.max(cells(t('band.show')), cells(t('band.hide'))) + 4
+  let used =
+    cells(t('band.primary')) + 1 + cells(primary ?? t('band.none')) + 1 + 1 + 1 + cells(t('band.secondaries')) + toggle
   const more = (left: number) => 1 + cells(`… +${left}`)
   let shown = 0
   for (const name of secondaries) {
@@ -106,6 +211,18 @@ type Binding = {
   confirmedVia?: string
   alsoLocked?: string[]
   alsoWritable?: string[]
+}
+
+// A `remoteVaults` entry on the loopback is a vault of this machine's own
+// Obsidian, registered by its REST address: shown as local.
+function isLoopbackUrl(url: string | undefined) {
+  try {
+    const host = new URL(url ?? '').hostname
+
+    return host === '127.0.0.1' || host === 'localhost' || host === '[::1]' || host === '::1'
+  } catch {
+    return false
+  }
 }
 
 type OnFile = { digest: string; vault: string | null; also: string[]; aliases?: number }
@@ -181,31 +298,30 @@ let reading = 0
 // `$.mcp.call: no connected MCP tool …`, is a server not (yet) connected, which
 // the next server name or the next startup try may well reach.
 const REFUSED = /\$\.mcp\.call\([^()]*\) refused: (.*)$/s
-const WRITE_TOOLS = ['confirm_workspace_binding', 'set_secondary_vault_mode']
-// Every refusal's text starts with this: how the pane tells it from a router
-// that does not answer.
-const REFUSED_LEAD = 'Claude Code a bloqué'
+const WRITE_TOOLS = ['confirm_workspace_binding', 'set_secondary_vault_mode', 'register_remote_vault', 'unregister_vault']
 
 class Refused extends Error {
   constructor(server: string, tool: string, reason: string) {
     const rule = (t: string) => `mcp__${server.replace(/:/g, '_')}__${t}`
-    const by = /auto mode/i.test(reason) ? 'Claude Code a bloqué (mode auto)' : 'Claude Code a bloqué (permissions)'
-    const writes =
-      `${WRITE_TOOLS.map(rule).join(', ')} — ces deux règles laissent aussi le modèle changer la liaison ` +
-      'sans contrôle du mode auto.'
+    const by = /auto mode/i.test(reason) ? t('refused.byAuto') : t('refused.byPermissions')
+    const writes = t('refused.writesWarning', { rules: WRITE_TOOLS.map(rule).join(', ') })
     super(
       WRITE_TOOLS.includes(tool)
-        ? `${by} l'appel du panneau à ${tool} : rien n'a été changé. ` +
-            `Pour que les clics du panneau marchent, ajoute à permissions.allow dans les réglages de Claude Code : ${writes}`
-        : `${by} l'appel du panneau à ${tool} : le router n'a pas été interrogé. ` +
-            `Pour que le panneau s'affiche, ajoute à permissions.allow dans les réglages de Claude Code : ${rule('list_vaults')}. ` +
-            `Pour ses liens 🌐 et 🪟 : ${rule('list_files')}, ${rule('get_view_link')}. ` +
-            `Pour que ses clics changent la liaison : ${writes}`,
+        ? t('refused.write', { by, tool, writes })
+        : t('refused.read', {
+            by,
+            tool,
+            writes,
+            list: rule('list_vaults'),
+            links: `${rule('list_files')}, ${rule('get_view_link')}`,
+          }),
     )
   }
 }
 
-const isRefusal = (text: string | null) => !!text && text.startsWith(REFUSED_LEAD)
+// Every refusal's text starts with the lead: how the pane tells it from a
+// router that does not answer.
+const isRefusal = (text: string | null) => !!text && text.startsWith(t('refused.lead'))
 
 // Calls a router tool, finding which name the router is connected under.
 async function call($: EngineInterface, tool: string, args: Record<string, unknown> = {}) {
@@ -224,14 +340,14 @@ async function call($: EngineInterface, tool: string, args: Record<string, unkno
     }
   }
   const names = server ? [server] : SERVERS
-  let lastError = 'router obsidian-mcp introuvable'
+  let lastError = t('error.routerMissing')
   for (const name of names) {
     try {
       const result = await $.mcp.call(name, tool, args)
       server = name
       const text = result.content.map(block => block.text ?? '').join('\n')
       if (result.isError) {
-        throw new Error(text || `${tool} a échoué`)
+        throw new Error(text || t('error.toolFailed', { tool }))
       }
 
       return text
@@ -326,12 +442,12 @@ async function openInBrowser($: EngineInterface, row: VaultRow) {
   const launchers = (await $.env.get('APPDATA'))
     ? [['rundll32', 'url.dll,FileProtocolHandler', url]]
     : [['open', url], ['xdg-open', url]]
-  let lastError = 'aucun lanceur disponible'
+  let lastError = t('error.noLauncher')
   for (const argv of launchers) {
     try {
       const ran = await $.process.run(argv, { timeoutMs: 10_000 })
       if (ran.exitCode !== 0) {
-        throw new Error(ran.stderr.trim() || `${argv[0]} a répondu ${ran.exitCode}`)
+        throw new Error(ran.stderr.trim() || t('error.launcherExit', { program: argv[0] ?? '', code: ran.exitCode }))
       }
       await update($, failure, () => null)
 
@@ -340,7 +456,7 @@ async function openInBrowser($: EngineInterface, row: VaultRow) {
       lastError = err instanceof Error ? err.message : String(err)
     }
   }
-  await update($, failure, () => `Navigateur : ${lastError}. Le bouton 🪟 ouvre la même interface ici.`)
+  await update($, failure, () => t('error.browser', { error: lastError }))
 }
 
 // Shows a remote vault's web UI in the app's own browser pane.
@@ -349,7 +465,7 @@ async function openUi($: EngineInterface, row: VaultRow) {
     return
   }
   const url = await uiTarget($, { ...row, uiUrl: row.uiUrl })
-  let lastError = 'navigateur interne introuvable'
+  let lastError = t('error.innerBrowserMissing')
   for (const name of BROWSERS) {
     try {
       const result = await $.mcp.call(name, 'preview_start', { url })
@@ -369,7 +485,7 @@ async function openUi($: EngineInterface, row: VaultRow) {
   await update(
     $,
     failure,
-    () => `Navigateur interne : ${lastError}. Le bouton 🌐 ouvre la même interface dans ton navigateur.`,
+    () => t('error.innerBrowser', { error: lastError }),
   )
 }
 
@@ -395,15 +511,15 @@ async function openInObsidian($: EngineInterface, row: VaultRow) {
   // `start` with its empty title argument, as the router launches a vault:
   // explorer.exe was handed the same address and opened nothing.
   const launchers = (await $.env.get('APPDATA')) ? [['cmd', '/c', 'start', '', uri]] : [['open', uri], ['xdg-open', uri]]
-  let lastError = 'aucun lanceur disponible'
+  let lastError = t('error.noLauncher')
   for (const argv of launchers) {
     try {
       const ran = await $.process.run(argv, { timeoutMs: 10_000 })
       // A non-zero exit is a failure, and the next launcher is tried.
       if (ran.exitCode !== 0) {
-        throw new Error(ran.stderr.trim() || `${argv[0]} a répondu ${ran.exitCode}`)
+        throw new Error(ran.stderr.trim() || t('error.launcherExit', { program: argv[0] ?? '', code: ran.exitCode }))
       }
-      $.ui.toast(`Ouverture de ${row.name} dans Obsidian`)
+      $.ui.toast(t('toast.openingObsidian', { name: row.name }))
       await update($, failure, () => null)
 
       return
@@ -411,19 +527,20 @@ async function openInObsidian($: EngineInterface, row: VaultRow) {
       lastError = err instanceof Error ? err.message : String(err)
     }
   }
-  await update($, failure, () => `Obsidian n'a pas pu être lancé pour ${row.name} : ${lastError}`)
+  await update($, failure, () => t('error.obsidian', { name: row.name, error: lastError }))
 }
 
 function toSnapshot(data: ListVaults, fetchedAt: number): Snapshot {
   const byName = new Map(data.vaults.map(v => [v.name, v]))
   const row = (name: string): VaultRow => {
     const v = byName.get(name)
+    const isLoopback = v?.type === 'remote' && isLoopbackUrl(v.baseUrl)
     return {
       name,
       online: v?.online ?? null,
-      type: v?.type ?? null,
+      type: isLoopback ? 'local' : (v?.type ?? null),
       description: v?.description ?? null,
-      uiUrl: v?.type === 'remote' ? uiUrlOf(v.baseUrl, v.description) : null,
+      uiUrl: v?.type === 'remote' && !isLoopback ? uiUrlOf(v.baseUrl, v.description) : null,
       path: v?.type === 'remote' ? null : (v?.path ?? null),
     }
   }
@@ -597,13 +714,9 @@ async function markObsidianKnown($: EngineInterface, snap: Snapshot, configPath:
 // The router's refusal of a stale precondition speaks of a repair diagnostic;
 // for a click, what happened is simpler.
 const STALE = /binding entry now differs/
-const STALE_TEXT =
-  "La liaison a été modifiée pendant l'envoi (par une autre session) : rien n'a été écrit, le panneau est rafraîchi."
 // And its refusal when a hand edit stored this workspace twice (ifNoOtherSpellings).
 const SPELLINGS = /several spellings/
-const SPELLINGS_TEXT =
-  "La config du router contient ce workspace sous plusieurs écritures (une édition à la main) : rien n'a été envoyé. Répare la liaison d'abord."
-const plainly = (text: string) => (STALE.test(text) ? STALE_TEXT : SPELLINGS.test(text) ? SPELLINGS_TEXT : text)
+const plainly = (text: string) => (STALE.test(text) ? t('error.stale') : SPELLINGS.test(text) ? t('error.spellings') : text)
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
@@ -615,7 +728,7 @@ const message = (err: unknown) => (err instanceof Error ? err.message : String(e
 // on "Lecture du router…" for good.
 function withTimeout<T>($: EngineInterface, work: Promise<T>): Promise<T> {
   const late = $.clock.sleep(READ_TIMEOUT_MS).then(() => {
-    throw new Error('le router ne répond pas (délai dépassé)')
+    throw new Error(t('error.timeout'))
   })
 
   return Promise.race([work, late])
@@ -684,10 +797,13 @@ type Action = {
 // as last reported; when the router says it moved meanwhile, the action is
 // rebuilt ONCE from a fresh read and sent again — the same intent, applied to
 // the binding as it now stands.
-async function act($: EngineInterface, action: Action) {
+// What happened: `busy` (another action held the pane, nothing was sent),
+// `done`, or `failed` (the reason is in `failure`).
+async function act($: EngineInterface, action: Action): Promise<'busy' | 'done' | 'failed'> {
   if (await read($, busy)) {
-    return
+    return 'busy'
   }
+  let outcome: 'done' | 'failed' = 'done'
   await update($, busy, () => action.doing)
   await update($, failure, () => null)
   try {
@@ -715,10 +831,13 @@ async function act($: EngineInterface, action: Action) {
     $.ui.toast(action.done)
   } catch (err) {
     lastOnFile = null
+    outcome = 'failed'
     await update($, failure, () => plainly(message(err)))
   }
   await update($, busy, () => null)
   background($)
+
+  return outcome
 }
 
 // A binding write answers with the entry it left (router v0.102.2+): the next
@@ -752,7 +871,7 @@ async function bindingNow($: EngineInterface, fresh: boolean) {
   if ('workspaceBindingOnFile' in data) {
     lastOnFile = data.workspaceBindingOnFile ?? null
     if (!lastOnFile || typeof lastOnFile.digest !== 'string') {
-      throw new Error("Le router n'a pas pu relire sa config : rien n'a été envoyé. Réessaie dans un instant.")
+      throw new Error(t('error.configUnread'))
     }
 
     return fromOnFile(lastOnFile)
@@ -765,7 +884,7 @@ async function bindingNow($: EngineInterface, fresh: boolean) {
 
 function fromOnFile(onFile: OnFile) {
   if ((onFile.aliases ?? 0) > 0) {
-    throw new Error(SPELLINGS_TEXT)
+    throw new Error(t('error.spellings'))
   }
   const precondition: Precondition = { ifBindingDigest: onFile.digest, ifNoOtherSpellings: true }
 
@@ -798,7 +917,7 @@ async function rebind(
       const now = await bindingNow($, fresh)
       if (now.vault !== shown) {
         throw new Error(
-          `La liaison a changé entre-temps (principal : ${now.vault ?? 'aucun'}) : rien n'a été envoyé, le panneau est rafraîchi.`,
+          t('error.primaryChanged', { primary: now.vault ?? t('band.none') }),
         )
       }
 
@@ -811,14 +930,14 @@ async function rebind(
 // digest of the absent entry is a precondition like any other.
 async function choosePrimary($: EngineInterface, name: string) {
   await act($, {
-    doing: `Choix de ${name} comme principal`,
-    done: `${name} principal`,
+    doing: t('action.choosePrimary.doing', { name }),
+    done: t('action.choosePrimary.done', { name }),
     tool: 'confirm_workspace_binding',
     args: async fresh => {
       const now = await bindingNow($, fresh)
       if (now.vault) {
         throw new Error(
-          `Un principal a été choisi entre-temps (${now.vault}) : rien n'a été envoyé, le panneau est rafraîchi.`,
+          t('error.primaryChosen', { primary: now.vault }),
         )
       }
 
@@ -858,7 +977,7 @@ async function openPane($: EngineInterface, start?: number) {
     return
   }
   const mine = ++paneEpoch
-  const opened = await $.ui.open({ id: PANE, title: TITLE })
+  const opened = await $.ui.open({ id: PANE, title: t('pane.title') })
   if (mine !== paneEpoch) {
     return
   }
@@ -879,6 +998,273 @@ async function openPane($: EngineInterface, start?: number) {
   await update($, paneVersion, v => v + 1)
 }
 
+// ---- WireGuard ----------------------------------------------------------------
+// Where the remote vaults live, they are reached through a WireGuard tunnel.
+// Windows: the client's own path and its tunnel services (WireGuardTunnel$<name>,
+// running while the tunnel is on); a Mac or Linux: the `wg` tool's list of the
+// interfaces it runs (which may need root: then the state stays unknown).
+const WG_EXE = 'C:\\Program Files\\WireGuard\\wireguard.exe'
+const WG_SERVICES =
+  "Get-Service -Name 'WireGuardTunnel$*' -ErrorAction SilentlyContinue | Where-Object Status -eq 'Running' | ForEach-Object { $_.Name.Substring(16) }"
+const WG_INSTALL_URL = 'https://www.wireguard.com/install/'
+const DOCS = 'https://github.com/tboome33/obsidian-mcp-router/blob/main/docs/deploy/remote-vault'
+const GUIDE_URL = `${DOCS}/README.md`
+const PROMPT_URL = `${DOCS}/PROMPT.md`
+
+async function detectWireguard($: EngineInterface): Promise<WireguardState> {
+  if (await $.env.get('APPDATA')) {
+    const isInstalled = await $.fs.stat(WG_EXE).then(
+      () => true,
+      () => false,
+    )
+    if (!isInstalled) {
+      return { state: 'absent', tunnels: [] }
+    }
+    try {
+      const ran = await $.process.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', WG_SERVICES], {
+        timeoutMs: 10_000,
+      })
+      if (ran.exitCode !== 0) {
+        // PowerShell answered with an error: the tunnels were not read.
+        return { state: 'unknown', tunnels: [] }
+      }
+      const tunnels = ran.stdout
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(Boolean)
+
+      return tunnels.length > 0 ? { state: 'active', tunnels } : { state: 'inactive', tunnels: [] }
+    } catch {
+      // No answer at all: not "off" — unknown.
+      return { state: 'unknown', tunnels: [] }
+    }
+  }
+  try {
+    const ran = await $.process.run(['wg', 'show', 'interfaces'], { timeoutMs: 5_000 })
+    if (ran.exitCode !== 0) {
+      return { state: 'unknown', tunnels: [] }
+    }
+    const tunnels = ran.stdout.trim().split(/\s+/).filter(Boolean)
+
+    return tunnels.length > 0 ? { state: 'active', tunnels } : { state: 'inactive', tunnels: [] }
+  } catch (err) {
+    // No `wg` to run: the client is not installed. Anything else (a timeout,
+    // a refusal) says nothing about it: unknown.
+    return /ENOENT|not found|no such file/i.test(message(err)) ? { state: 'absent', tunnels: [] } : { state: 'unknown', tunnels: [] }
+  }
+}
+
+// Detects WireGuard and keeps the answer; `start` is the session.start that
+// asked for it, when one did: a later start drops it. At start, a tunnel that
+// is off while a bound vault is remote is asked for, once.
+async function checkWireguard($: EngineInterface, start?: number) {
+  await update($, wireguard, () => ({ state: 'checking' as const, tunnels: [] }))
+  const found = await detectWireguard($)
+  if (start !== undefined && start !== generation) {
+    return
+  }
+  await update($, wireguard, () => found)
+  if (start !== undefined && found.state === 'inactive') {
+    const snap = await read($, snapshot)
+    const bound = snap ? [snap.primary, ...snap.secondaries] : []
+    if (bound.some(r => r?.type === 'remote')) {
+      $.ui.toast(t('wg.toastInactive'))
+    }
+  }
+}
+
+// Opens the WireGuard client, where the person turns a tunnel on.
+async function openWireguard($: EngineInterface) {
+  const isWindows = !!(await $.env.get('APPDATA'))
+  const argv = isWindows ? ['cmd', '/c', 'start', '', WG_EXE] : ['open', '-a', 'WireGuard']
+  try {
+    const ran = await $.process.run(argv, { timeoutMs: 10_000 })
+    if (ran.exitCode !== 0) {
+      throw new Error(ran.stderr.trim() || t('error.launcherExit', { program: argv[0] ?? '', code: ran.exitCode }))
+    }
+  } catch (err) {
+    await update($, failure, () => t('error.link', { error: message(err) }))
+  }
+}
+
+// Hands an https address to the default browser, as the 🌐 button does.
+async function openUrl($: EngineInterface, url: string) {
+  const launchers = (await $.env.get('APPDATA'))
+    ? [['rundll32', 'url.dll,FileProtocolHandler', url]]
+    : [['open', url], ['xdg-open', url]]
+  let lastError = t('error.noLauncher')
+  for (const argv of launchers) {
+    try {
+      const ran = await $.process.run(argv, { timeoutMs: 10_000 })
+      if (ran.exitCode === 0) {
+        return
+      }
+      lastError = ran.stderr.trim() || t('error.launcherExit', { program: argv[0] ?? '', code: ran.exitCode })
+    } catch (err) {
+      lastError = message(err)
+    }
+  }
+  await update($, failure, () => t('error.link', { error: lastError }))
+}
+
+// ---- Registering and removing a vault ------------------------------------------
+const isPort = (text: string) => /^\d{1,5}$/.test(text) && Number(text) >= 1 && Number(text) <= 65535
+
+// Where each kind of vault may be: a local one on this machine's loopback, a
+// remote one at a private address — the tunnel's side (WireGuard 10.x, a LAN,
+// Tailscale's 100.64/10). The key then never travels over a public network,
+// in clear (HTTP) or to a certificate nobody checks (the plugin's own, taken
+// with tlsInsecure).
+// An IPv4 address in plain decimal only: "010.0.0.1" or "0x0a.0.0.1" are
+// octal or hex to a URL parser ("010.0.0.1" is 8.0.0.1, a public address), so
+// they are refused before anything is judged on them.
+const OCTET = '(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)'
+const DECIMAL_IPV4 = new RegExp(`^${OCTET}(\\.${OCTET}){3}$`)
+const isLoopbackHost = (host: string) =>
+  (DECIMAL_IPV4.test(host) && host.startsWith('127.')) || host === 'localhost' || host === '::1' || host === '[::1]'
+function isPrivateIpv4(host: string) {
+  if (!DECIMAL_IPV4.test(host)) {
+    return false
+  }
+  const [a, b] = host.split('.').map(Number) as [number, number, number, number]
+
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)
+}
+
+// The vault's REST address from the form, parsed and normalised; null when
+// the parts do not make one.
+function formUrl(form: AdminForm) {
+  const host = form.host.trim()
+  const literal = host === '::1' ? '[::1]' : host
+  try {
+    const url = new URL(`${form.scheme}://${literal}:${form.port.trim()}`)
+
+    return url.origin
+  } catch {
+    return null
+  }
+}
+
+// Checks the console's form; the first problem, in words, or null.
+function formProblem(form: AdminForm, wg: WireguardState | null) {
+  const host = form.host.trim()
+  if (!form.name.trim()) {
+    return t('register.invalidName')
+  }
+  if (!/^[A-Za-z0-9.\-:\[\]]+$/.test(host)) {
+    return t('register.invalidHost')
+  }
+  if (form.kind === 'local' && !isLoopbackHost(host)) {
+    return t('register.invalidLocalHost')
+  }
+  if (form.kind === 'remote' && !isPrivateIpv4(host)) {
+    return t('register.invalidRemoteHost')
+  }
+  if (!isPort(form.port.trim())) {
+    return t('register.invalidPort')
+  }
+  if (form.uiPort.trim() && !isPort(form.uiPort.trim())) {
+    return t('register.invalidUiPort')
+  }
+  // And on the host the URL keeps, not only on what was typed: whatever a
+  // parser would turn the text into must still be on the right side.
+  const url = formUrl(form)
+  const kept = url ? new URL(url).hostname : null
+  if (!url || !kept || (form.kind === 'local' ? !isLoopbackHost(kept) : !isPrivateIpv4(kept))) {
+    return t('register.invalidHost')
+  }
+  if (!form.apiKey.trim()) {
+    return t('register.invalidKey')
+  }
+  // Refused only when WireGuard was READ as off or missing: a state the
+  // system would not say (unknown) does not block.
+  if (form.kind === 'remote' && (wg?.state === 'inactive' || wg?.state === 'absent')) {
+    return t('register.needWireguard')
+  }
+
+  return null
+}
+
+// The router reloads its config when the file changes, a moment after the
+// write: the pane reads again then, twice to be sure.
+function readSoon($: EngineInterface) {
+  $.clock.after(1_500, () => background($))
+  $.clock.after(5_000, () => background($))
+}
+
+// Bumped by every registration sent: an older one finishing late leaves the
+// form alone.
+let submission = 0
+
+async function registerVault($: EngineInterface) {
+  // Another action under way: nothing is consumed, the form stays as typed.
+  if (await read($, busy)) {
+    return
+  }
+  const form = await read($, adminForm)
+  const problem = formProblem(form, await read($, wireguard))
+  if (problem) {
+    await update($, failure, () => problem)
+
+    return
+  }
+  const name = form.name.trim()
+  const uiPort = form.uiPort.trim()
+  const description =
+    form.kind === 'remote'
+      ? `${t('register.descriptionRemote')}${uiPort ? ` (UI :${uiPort})` : ''}`
+      : t('register.descriptionLocal')
+  const args = {
+    name,
+    baseUrl: formUrl(form) ?? '',
+    apiKey: form.apiKey.trim(),
+    // The plugin's own certificate is self-signed: over the loopback or the
+    // tunnel (the only places the form accepts), the transport is the protection.
+    tlsInsecure: form.scheme === 'https',
+    description,
+  }
+  // The key leaves the form (and the session's state) BEFORE the call: it is
+  // held only in `args`, for as long as the call takes.
+  const mine = ++submission
+  await update($, adminForm, now => ({ ...now, apiKey: '' }))
+  const outcome = await act($, {
+    doing: t('action.register.doing', { name }),
+    done: t('action.register.done', { name }),
+    tool: 'register_remote_vault',
+    args: () => args,
+  })
+  if (outcome === 'busy') {
+    // Another action took the pane in between: give the key back, unsent.
+    await update($, adminForm, now => (now.apiKey ? now : { ...now, apiKey: args.apiKey }))
+
+    return
+  }
+  if (outcome === 'done' && mine === submission) {
+    // Cleared for the next vault — unless something was typed meanwhile.
+    await update($, adminForm, now =>
+      // The whole form as it was sent (its key aside, already cleared):
+      // any field changed meanwhile — a new key, the kind, the scheme — is a
+      // new entry, kept.
+      JSON.stringify({ ...now, apiKey: '' }) === JSON.stringify({ ...form, apiKey: '' }) && now.apiKey === ''
+        ? { ...EMPTY_FORM, kind: now.kind, host: now.host, scheme: now.scheme }
+        : now,
+    )
+    readSoon($)
+  }
+}
+
+async function unregisterVault($: EngineInterface, name: string) {
+  await update($, confirmRemove, () => null)
+  await act($, {
+    doing: t('action.unregister.doing', { name }),
+    done: t('action.unregister.done', { name }),
+    tool: 'unregister_vault',
+    args: () => ({ name }),
+    shows: snap => ({ ...snap, available: snap.available.filter(r => r.name !== name) }),
+  })
+  readSoon($)
+}
+
 // The pane is gone: its polling stops, and the band's toggle offers it again.
 async function markClosed($: EngineInterface) {
   paneEpoch += 1
@@ -886,6 +1272,8 @@ async function markClosed($: EngineInterface) {
   isPaneOpen = false
   isPanePlaced = false
   await update($, paneVersion, v => v + 1)
+  // A key typed but not sent does not outlive the pane.
+  await update($, adminForm, now => (now.apiKey ? { ...now, apiKey: '' } : now))
 }
 
 // The band's toggle: the pane opens (and reads the router again), or closes.
@@ -936,6 +1324,7 @@ export const register: Register = on => {
     const bandOptOut = await $.env.get('OBSIDIAN_ROUTER_NO_VAULT_BAND')
     isBandOptedOut = TRUTHY.has((bandOptOut ?? '').trim().toLowerCase())
     isEnvKnown = true
+    await startLanguage($).catch(() => undefined)
     if (isOptedOut) {
       // A pane an earlier start opened while this one read its environment
       // is closed: the earlier start's own check ran before this answer.
@@ -946,8 +1335,11 @@ export const register: Register = on => {
     }
     await $.command.register({
       name: 'vaults',
-      description: 'Afficher les vaults du router (principal, secondaires, disponibles)',
+      description: t('command.description'),
     })
+    // WireGuard, once per session in the background: the pane says whether
+    // the remote vaults can be reached, and asks for the tunnel when not.
+    void checkWireguard($, start).catch(() => undefined)
     // Opens only where the router answers: the panel follows the MCP's install.
     // The router may still be starting, so the read is tried again for a
     // while before the panel gives up. A pane the person closed meanwhile
@@ -969,9 +1361,7 @@ export const register: Register = on => {
         // The pane stays shut, but a toast says why and where to look.
         if (isRefusal(await read($, error))) {
           if (start === generation && !isStartupCancelled && !isPaneOpen) {
-            await $.ui.toast(
-              'Panneau des vaults : Claude Code bloque ses appels au router (permissions). Tape /vaults pour voir quoi autoriser.',
-            )
+            await $.ui.toast(t('startup.refusedToast'))
           }
 
           return
@@ -1004,10 +1394,10 @@ export const register: Register = on => {
 
     return {
       text: !err
-        ? 'Panneau des vaults ouvert.'
+        ? t('command.opened')
         : isRefusal(err)
-          ? `Panneau des vaults ouvert, mais ${err}`
-          : `Panneau des vaults ouvert, mais le router ne répond pas : ${err}`,
+          ? t('command.openedBut', { error: err })
+          : t('command.openedUnreachable', { error: err }),
     }
   })
 
@@ -1060,6 +1450,17 @@ export const register: Register = on => {
     const isAddShown = await read($, showAdd)
     const Select = !isPhone && 'Select' in els ? els.Select : null
     const Svg = 'Svg' in els ? els.Svg : null
+    // Read so that a change of language draws the pane again.
+    const languageCode = await read($, language)
+    const isAdminShown = await read($, showAdmin)
+    const form = await read($, adminForm)
+    const removing = await read($, confirmRemove)
+    const wg = await read($, wireguard)
+    const languages = isAdminShown ? await availableLanguages($) : []
+    // The tier menu's width, in the surface's cells: the longest label in the
+    // current language, its badge (two cells and a space), and room for the
+    // menu's own arrow and padding.
+    const modeWidth = Math.max(...MODES.map(m => cells(modeLabel(m.mode)))) + 9
 
     // A glyph per state, the colour on top: a closed local vault is no fault
     // (opening it is one click), an unreachable remote one is. A surface that
@@ -1070,7 +1471,7 @@ export const register: Register = on => {
         {Svg && online !== null ? (
           <Svg
             source={online ? MARK.open : isRemote ? MARK.unreachable : MARK.closed}
-            alt={online ? 'ouvert' : isRemote ? 'injoignable' : 'fermé'}
+            alt={online ? t('alt.open') : isRemote ? t('alt.unreachable') : t('alt.closed')}
             width={10}
             height={10}
           />
@@ -1107,12 +1508,12 @@ export const register: Register = on => {
     const bound = snap ? [snap.primary, ...snap.secondaries].filter((r): r is VaultRow => r !== null) : []
     const openCount = bound.filter(r => r.online === true).length
     const summary = snap
-      ? `${bound.length} lié${bound.length > 1 ? 's' : ''} · ${openCount} ouvert${openCount > 1 ? 's' : ''} · màj ${time(snap.fetchedAt)}`
+      ? `${tn('summary.bound', bound.length)} · ${tn('summary.open', openCount)} · ${t('summary.updated', { time: time(snap.fetchedAt) })}`
       : isRefusal(err)
-        ? 'bloqué par les permissions de Claude Code'
+        ? t('summary.blocked')
         : err
-          ? 'router injoignable'
-          : 'lecture du router…'
+          ? t('summary.unreachable')
+          : t('summary.reading')
 
     // The pane's own bar already says "Vaults": the header is the summary
     // and the refresh, nothing repeated.
@@ -1129,7 +1530,7 @@ export const register: Register = on => {
             </Text>
           )}
         </Box>
-        <Button key="refresh" label="↻ Rafraîchir" plain dimColor onPress={() => background($)} />
+        <Button key="refresh" label={t('refresh')} plain dimColor onPress={() => background($)} />
       </Box>
     )
 
@@ -1138,11 +1539,11 @@ export const register: Register = on => {
     const legend = (
       <Box key="status-legend" flexDirection="row" flexWrap="wrap" columnGap={2}>
         {[
-          { mark: dot(true, false), text: 'disponible' },
-          { mark: dot(false, false), text: 'local fermé' },
-          { mark: dot(false, true), text: 'distant injoignable' },
+          { id: 'available', mark: dot(true, false), text: t('legend.available') },
+          { id: 'closed', mark: dot(false, false), text: t('legend.closed') },
+          { id: 'unreachable', mark: dot(false, true), text: t('legend.unreachable') },
         ].map(item => (
-          <Box key={`legend-${item.text}`} flexDirection="row" gap={1} alignItems="center">
+          <Box key={`legend-${item.id}`} flexDirection="row" gap={1} alignItems="center">
             {item.mark}
             <Text size="caption" dimColor>
               {item.text}
@@ -1154,8 +1555,193 @@ export const register: Register = on => {
 
     const problems = (
       <Box flexDirection="column">
-        {!!err && <Text color="error">{snap || isRefusal(err) ? err : `Router injoignable : ${err}`}</Text>}
+        {!!err && <Text color="error">{snap || isRefusal(err) ? err : t('error.unreachable', { error: err })}</Text>}
         {!!failed && failed !== err && <Text color="error">{failed}</Text>}
+      </Box>
+    )
+
+    // The administration console: the language, WireGuard, registering and
+    // removing a vault. Built before the snapshot check: the language and
+    // WireGuard are of use while the router does not answer.
+    const field = (key: keyof AdminForm, title: string, placeholder = '') =>
+      Input ? (
+        <Box key={`field-${key}`} flexDirection="column">
+          <Text size="caption" dimColor>
+            {title}
+          </Text>
+          <Input
+            key={`admin-${key}`}
+            placeholder={placeholder}
+            value={String(form[key])}
+            submitLabel={t('register.submit')}
+            onInput={(value: string) => void update($, adminForm, now => ({ ...now, [key]: value }))}
+            onSubmit={() => void registerVault($)}
+          />
+        </Box>
+      ) : null
+    const choice = <V extends string>(key: string, options: { value: V; label: string }[], value: V, pick: (v: V) => void) => (
+      <Box key={key} flexDirection="row" flexWrap="wrap" gap={1}>
+        {options.map(o => (
+          <Button
+            key={`${key}-${o.value}`}
+            label={o.label}
+            variant={o.value === value ? 'primary' : 'secondary'}
+            onPress={() => pick(o.value)}
+          />
+        ))}
+      </Box>
+    )
+    const wgLine =
+      !wg || wg.state === 'checking'
+        ? t('wg.checking')
+        : wg.state === 'active'
+          ? wg.tunnels.length > 0
+            ? t('wg.active', { tunnels: wg.tunnels.join(', ') })
+            : t('wg.activeNoName')
+          : wg.state === 'inactive'
+            ? t('wg.inactive')
+            : wg.state === 'absent'
+              ? t('wg.absent')
+              : t('wg.unknown')
+    const removable = snap ? snap.available : []
+    const admin = (
+      <Box key="admin" flexDirection="column" gap={1}>
+        <Button
+          key="toggle-admin"
+          label={`${isAdminShown ? '▾' : '▸'} ${t('admin.toggle')}`}
+          plain
+          dimColor={!isAdminShown}
+          onPress={() =>
+            void update($, showAdmin, shownNow => !shownNow).then(async () => {
+              if (await read($, showAdmin)) {
+                await checkWireguard($)
+              } else {
+                // Folded: a key typed but not sent is dropped.
+                await update($, adminForm, now => (now.apiKey ? { ...now, apiKey: '' } : now))
+              }
+            })
+          }
+        />
+        {isAdminShown && (
+          <Box key="admin-body" flexDirection="column" gap={1} paddingLeft={2}>
+            <Box key="admin-language" flexDirection="column">
+              {section(t('admin.language'))}
+              {Select ? (
+                <Select
+                  key="admin-language-select"
+                  options={languages.map(l => ({ value: l.code, label: l.name }))}
+                  value={languageCode}
+                  onSelect={(code: string) => void setLanguage($, code)}
+                />
+              ) : (
+                choice('admin-language-choice', languages.map(l => ({ value: l.code, label: l.name })), languageCode, code =>
+                  void setLanguage($, code),
+                )
+              )}
+            </Box>
+
+            <Box key="admin-wireguard" flexDirection="column" gap={1}>
+              {section(t('wg.title'))}
+              <Text size="caption" color={wg?.state === 'active' ? 'success' : wg?.state === 'checking' || !wg ? undefined : 'warning'} dimColor={!wg || wg.state === 'checking'}>
+                {wgLine}
+              </Text>
+              <Box key="admin-wireguard-actions" flexDirection="row" flexWrap="wrap" gap={1}>
+                <Button key="wg-check" label={t('wg.check')} plain dimColor onPress={() => void checkWireguard($)} />
+                {wg?.state === 'inactive' && (
+                  <Button key="wg-open" label={t('wg.openApp')} variant="primary" onPress={() => void openWireguard($)} />
+                )}
+                {wg?.state === 'absent' && (
+                  <Button key="wg-install" label={t('wg.install')} variant="primary" onPress={() => void openUrl($, WG_INSTALL_URL)} />
+                )}
+                <Button key="wg-guide" label={t('wg.guide')} plain onPress={() => void openUrl($, GUIDE_URL)} />
+                <Button key="wg-prompt" label={t('wg.prompt')} plain onPress={() => void openUrl($, PROMPT_URL)} />
+              </Box>
+            </Box>
+
+            <Box key="admin-register" flexDirection="column" gap={1}>
+              {section(t('register.title'))}
+              {!Input ? (
+                <Text size="caption" dimColor>
+                  {t('register.phone')}
+                </Text>
+              ) : (
+                <Box key="admin-register-form" flexDirection="column" gap={1}>
+                  {choice<AdminForm['kind']>(
+                    'admin-kind',
+                    [
+                      { value: 'local', label: t('register.kindLocal') },
+                      { value: 'remote', label: t('register.kindRemote') },
+                    ],
+                    form.kind,
+                    kind =>
+                      void update($, adminForm, now => ({
+                        ...now,
+                        kind,
+                        host: kind === 'local' ? '127.0.0.1' : '10.8.0.1',
+                        scheme: kind === 'local' ? ('https' as const) : ('http' as const),
+                      })),
+                  )}
+                  {field('name', t('register.name'))}
+                  {field('host', t('register.host'), form.kind === 'local' ? '127.0.0.1' : '10.8.0.1')}
+                  {field('port', t('register.port'), form.kind === 'local' ? '27124' : '27180')}
+                  {choice<AdminForm['scheme']>(
+                    'admin-scheme',
+                    [
+                      { value: 'https', label: t('register.https') },
+                      { value: 'http', label: t('register.http') },
+                    ],
+                    form.scheme,
+                    scheme => void update($, adminForm, now => ({ ...now, scheme })),
+                  )}
+                  {form.kind === 'remote' && field('uiPort', t('register.uiPort'), '3001')}
+                  {field('apiKey', t('register.apiKey'))}
+                  <Text size="caption" dimColor>
+                    {t('register.keyNote')}
+                  </Text>
+                  {form.kind === 'remote' && (wg?.state === 'inactive' || wg?.state === 'absent') && (
+                    <Text size="caption" color="warning">
+                      {t('register.needWireguard')}
+                    </Text>
+                  )}
+                  <Box key="admin-register-actions" flexDirection="row">
+                    <Button key="admin-register-submit" label={t('register.submit')} variant="primary" onPress={() => void registerVault($)} />
+                  </Box>
+                </Box>
+              )}
+            </Box>
+
+            <Box key="admin-unregister" flexDirection="column" gap={1}>
+              {section(t('unregister.title'))}
+              <Text size="caption" dimColor>
+                {t('unregister.hint')}
+              </Text>
+              {removable.length === 0 && (
+                <Text size="caption" dimColor>
+                  {t('unregister.none')}
+                </Text>
+              )}
+              {removable.map(v => (
+                <Box key={`rm-${v.name}`} flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={1}>
+                  <Box flexDirection="row" gap={1} flexShrink={1} alignItems="center">
+                    {dot(v.online, v.type === 'remote')}
+                    <Text wrap="truncate-end">{v.name}</Text>
+                    <Text size="caption" dimColor>
+                      {v.type === 'remote' ? t('place.remote') : t('place.local')}
+                    </Text>
+                  </Box>
+                  {removing === v.name ? (
+                    <Box key={`rm-confirm-${v.name}`} flexDirection="row" gap={1}>
+                      <Button key={`unregister-confirm-${v.name}`} label={t('unregister.confirm')} variant="primary" onPress={() => void unregisterVault($, v.name)} />
+                      <Button key={`unregister-cancel-${v.name}`} label={t('unregister.cancel')} plain dimColor onPress={() => void update($, confirmRemove, () => null)} />
+                    </Box>
+                  ) : (
+                    <Button key={`unregister-${v.name}`} label={t('unregister.button')} plain dimColor onPress={() => void update($, confirmRemove, () => v.name)} />
+                  )}
+                </Box>
+              ))}
+            </Box>
+          </Box>
+        )}
       </Box>
     )
 
@@ -1164,6 +1750,7 @@ export const register: Register = on => {
         <Box flexDirection="column" gap={1}>
           {header}
           {problems}
+          {admin}
         </Box>
       )
     }
@@ -1176,7 +1763,7 @@ export const register: Register = on => {
     // Obsidian does not answer — the router's own way to open one. So it is
     // one button for all of them, not one per row that would open them all.
     const openAll = () =>
-      void rebind($, { doing: 'Ouverture des vaults fermés', done: 'Vaults fermés ouverts' }, shown, current => current, {
+      void rebind($, { doing: t('action.openClosed.doing'), done: t('action.openClosed.done') }, shown, current => current, {
         isOpening: true,
       })
 
@@ -1199,7 +1786,7 @@ export const register: Register = on => {
     const obsidianLink = (row: VaultRow) =>
       isRemote(row) || !row.path ? null : row.isKnownToObsidian === false ? (
         <Text size="caption" color="warning">
-          à ouvrir une fois dans Obsidian
+          {t('obsidian.openOnce')}
         </Text>
       ) : (
         <Button key={`obsidian-${row.name}`} label="💎" plain onPress={() => void openInObsidian($, row)} />
@@ -1233,7 +1820,7 @@ export const register: Register = on => {
           {row.name}
         </Text>
         <Text size="caption" dimColor>
-          {isRemote(row) ? 'distant' : 'local'}
+          {isRemote(row) ? t('place.remote') : t('place.local')}
         </Text>
       </Box>
     )
@@ -1241,9 +1828,9 @@ export const register: Register = on => {
     const primary = (
       <Box flexDirection="column" gap={1}>
         <Box key="primary-head" flexDirection="column">
-          {section('Principal')}
+          {section(t('primary.title'))}
           <Text size="caption" dimColor>
-            Le vault par défaut de ce projet : Claude y lit et y écrit sans rien demander.
+            {t('primary.definition')}
           </Text>
         </Box>
         {snap.primary ? (
@@ -1258,7 +1845,7 @@ export const register: Register = on => {
             <Box key="primary-controls" {...controlsLayout}>
               {snap.isLocked && (
                 <Text size="caption" color="warning">
-                  verrouillé
+                  {t('primary.locked')}
                 </Text>
               )}
               {obsidianLink(snap.primary)}
@@ -1266,36 +1853,36 @@ export const register: Register = on => {
             </Box>
           </Box>
         ) : (
-          <Text color="warning">Aucun vault principal : choisis-en un ci-dessous.</Text>
+          <Text color="warning">{t('primary.none')}</Text>
         )}
         {snap.primary?.online === false && isRemote(snap.primary) && (
           <Text size="caption" color="error">
-            Injoignable : WireGuard actif ? conteneur démarré sur la dedibox ?
+            {t('primary.unreachable')}
           </Text>
         )}
         {snap.isImported && snap.primary && (
           <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
             <Text size="caption" color="warning">
-              Liaison importée d'un .env, jamais confirmée.
+              {t('primary.imported')}
             </Text>
             <Button
               key="confirm-binding"
-              label="Confirmer"
+              label={t('primary.confirm')}
               plain
               onPress={() =>
-                void rebind($, { doing: 'Confirmation de la liaison', done: 'Liaison confirmée' }, shown, current => current)
+                void rebind($, { doing: t('action.confirm.doing'), done: t('action.confirm.done') }, shown, current => current)
               }
             />
           </Box>
         )}
         {snap.isLocked && (
           <Text size="caption" color="warning">
-            Session verrouillée sur le principal : les secondaires ne répondent pas.
+            {t('primary.sessionLocked')}
           </Text>
         )}
         {snap.lockedTo && (
           <Text size="caption" color="warning">
-            Router verrouillé sur {snap.lockedTo} pour cette session (lock_vault) : les autres vaults ne répondent pas.
+            {t('primary.routerLocked', { vault: snap.lockedTo })}
           </Text>
         )}
       </Box>
@@ -1308,8 +1895,8 @@ export const register: Register = on => {
       const next = MODES.find(m => m.mode === value)
       if (next && next.mode !== s.mode) {
         void act($, {
-          doing: `${s.name} : passage en ${next.label.toLowerCase()}`,
-          done: `${s.name} : ${next.label.toLowerCase()}`,
+          doing: t('action.mode.doing', { name: s.name, mode: modeLabel(next.mode).toLowerCase() }),
+          done: t('action.mode.done', { name: s.name, mode: modeLabel(next.mode).toLowerCase() }),
           tool: 'set_secondary_vault_mode',
           args: () => ({ vault: s.name, mode: next.mode }),
           shows: snap => ({
@@ -1325,7 +1912,7 @@ export const register: Register = on => {
         <Box key={`controls-${s.name}`} {...controlsLayout}>
           {s.online === false && isRemote(s) && (
             <Text size="caption" color="error">
-              injoignable
+              {t('secondaries.unreachable')}
             </Text>
           )}
           {obsidianLink(s)}
@@ -1333,10 +1920,10 @@ export const register: Register = on => {
           {Select ? (
             // One width for every menu, whatever tier it shows: sized on the
             // longest label, so the column lines up from row to row.
-            <Box width={MODE_WIDTH} minWidth={MODE_WIDTH} flexShrink={0}>
+            <Box width={modeWidth} minWidth={modeWidth} flexShrink={0}>
               <Select
                 key={`mode-${s.name}`}
-                options={MODES.map(m => ({ value: m.mode, label: `${m.icon} ${m.label}` }))}
+                options={MODES.map(m => ({ value: m.mode, label: `${m.icon} ${modeLabel(m.mode)}` }))}
                 value={s.mode}
                 onSelect={(value: string) => setMode(s, value)}
               />
@@ -1348,7 +1935,7 @@ export const register: Register = on => {
               {MODES.map(m => (
                 <Button
                   key={`mode-${s.name}-${m.mode}`}
-                  label={`${m.icon} ${m.label}`}
+                  label={`${m.icon} ${modeLabel(m.mode)}`}
                   plain
                   dimColor={s.mode !== m.mode}
                   onPress={() => setMode(s, m.mode)}
@@ -1364,7 +1951,7 @@ export const register: Register = on => {
             onPress={() =>
               void rebind(
                 $,
-                { doing: `Retrait de ${s.name}`, done: `${s.name} retiré` },
+                { doing: t('action.remove.doing', { name: s.name }), done: t('action.remove.done', { name: s.name }) },
                 shown,
                 current => current.filter(n => n !== s.name),
                 { shows: snap => ({ ...snap, secondaries: snap.secondaries.filter(r => r.name !== s.name) }) },
@@ -1390,39 +1977,38 @@ export const register: Register = on => {
         {/* Title, legend and filter one under the other: side by side, the
             legend folded over four lines and squeezed the field to nothing. */}
         <Box key="secondaries-head" flexDirection="column">
-          {section(`Secondaires · ${snap.secondaries.length}`)}
+          {section(t('secondaries.title', { count: snap.secondaries.length }))}
           <Text size="caption" dimColor>
-            Des vaults consultables en plus du principal, chacun avec son droit d'écriture : 🔒 lecture seule · ✋
-            écriture si tu l'acceptes · ✏️ lecture et écriture.
+            {t('secondaries.definition')}
           </Text>
           <Text size="caption" dimColor>
-            💎 Obsidian · 🌐 ton navigateur · 🪟 navigateur interne
+            {t('legend.links')}
           </Text>
         </Box>
         {Input && (
           <Input
             key="filter"
-            placeholder="Filtrer"
+            placeholder={t('filter.placeholder')}
             value={typed}
-            submitLabel="filtrer"
+            submitLabel={t('filter.submit')}
             onInput={(value: string) => void update($, filter, () => value)}
             onSubmit={(value: string) => void update($, filter, () => value)}
           />
         )}
         {snap.secondaries.length === 0 && (
           <Text size="caption" dimColor>
-            Aucun secondaire : ajoute-en un ci-dessous.
+            {t('secondaries.none')}
           </Text>
         )}
         {snap.secondaries.length > 0 && shownSecondaries.length === 0 && (
           <Text size="caption" dimColor>
-            Aucun secondaire ne correspond au filtre.
+            {t('secondaries.noMatch')}
           </Text>
         )}
         {up.length > 0 && (
           <Box flexDirection="column">
             {(closed.length > 0 || unknownN > 0) &&
-              label(unknownN > 0 ? `Ouverts · ${openN} · état inconnu · ${unknownN}` : `Ouverts · ${openN}`)}
+              label(unknownN > 0 ? t('secondaries.openUnknown', { count: openN, unknown: unknownN }) : t('secondaries.open', { count: openN }))}
             {up.map(secondaryRow)}
           </Box>
         )}
@@ -1431,7 +2017,7 @@ export const register: Register = on => {
             <Box key="closed-head" flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={1}>
               <Button
                 key="toggle-closed"
-                label={`${isClosedShown ? '▾' : '▸'} Fermés · ${closed.length}`}
+                label={`${isClosedShown ? '▾' : '▸'} ${t('secondaries.closed', { count: closed.length })}`}
                 plain
                 dimColor
                 onPress={() => void update($, showClosed, shownNow => !shownNow)}
@@ -1439,7 +2025,7 @@ export const register: Register = on => {
               {closedLocal > 0 && (
                 <Button
                   key="open-closed"
-                  label={closedLocal > 1 ? `Ouvrir les ${closedLocal} vaults locaux fermés` : 'Ouvrir le vault local fermé'}
+                  label={closedLocal > 1 ? t('secondaries.openAll', { count: closedLocal }) : t('secondaries.openOne')}
                   plain
                   onPress={openAll}
                 />
@@ -1460,14 +2046,14 @@ export const register: Register = on => {
     const isAddOpen = isAddShown || !snap.primary
     const list = (current === 'locaux' ? locals : remotes).filter(matches)
     const tabs: { id: Tab; label: string }[] = [
-      { id: 'locaux', label: `Locaux · ${locals.length}` },
-      { id: 'distants', label: `Distants · ${remotes.length}` },
+      { id: 'locaux', label: t('add.tabLocal', { count: locals.length }) },
+      { id: 'distants', label: t('add.tabRemote', { count: remotes.length }) },
     ]
     const adding = (
       <Box flexDirection="column" gap={1}>
         <Button
           key="toggle-add"
-          label={`${isAddOpen ? '▾' : '▸'} ${snap.primary ? 'Ajouter un vault' : 'Choisir le vault principal'} · ${snap.available.length} disponible${snap.available.length > 1 ? 's' : ''}`}
+          label={`${isAddOpen ? '▾' : '▸'} ${tn(snap.primary ? 'add.toggle' : 'add.choosePrimary', snap.available.length)}`}
           plain
           dimColor={!isAddOpen}
           onPress={() => void update($, showAdd, shownNow => !shownNow)}
@@ -1477,18 +2063,18 @@ export const register: Register = on => {
             {/* Two real buttons, side by side: the open tab is the primary
                 one, so which list shows is plain at a glance. */}
             <Box key="tabs" flexDirection="row" gap={1}>
-              {tabs.map(t => (
+              {tabs.map(one => (
                 <Button
-                  key={`tab-${t.id}`}
-                  label={t.label}
-                  variant={current === t.id ? 'primary' : 'secondary'}
-                  onPress={() => void update($, tab, () => t.id)}
+                  key={`tab-${one.id}`}
+                  label={one.label}
+                  variant={current === one.id ? 'primary' : 'secondary'}
+                  onPress={() => void update($, tab, () => one.id)}
                 />
               ))}
             </Box>
             {list.length === 0 && (
               <Text size="caption" dimColor>
-                Aucun vault ne correspond.
+                {t('add.noMatch')}
               </Text>
             )}
             <Box flexDirection="column">
@@ -1503,12 +2089,12 @@ export const register: Register = on => {
                     {snap.primary ? (
                       <Button
                         key={`add-${v.name}`}
-                        label="Ajouter"
+                        label={t('add.button')}
                         plain
                         onPress={() =>
                           void rebind(
                             $,
-                            { doing: `Ajout de ${v.name}`, done: `${v.name} ajouté (écriture sur accord)` },
+                            { doing: t('action.add.doing', { name: v.name }), done: t('action.add.done', { name: v.name }) },
                             shown,
                             current => (current.includes(v.name) ? current : [...current, v.name]),
                             {
@@ -1528,7 +2114,7 @@ export const register: Register = on => {
                     ) : (
                       <Button
                         key={`primary-${v.name}`}
-                        label="Principal"
+                        label={t('add.primaryButton')}
                         plain
                         onPress={() => void choosePrimary($, v.name)}
                       />
@@ -1548,20 +2134,35 @@ export const register: Register = on => {
         {legend}
         {problems}
         {isTunnelDown && (
-          // Every remote vault silent at once: the tunnel, not the vaults. The
-          // panel cannot ask WireGuard itself, hence "semble".
-          <Box key="tunnel-down" flexDirection="column" borderStyle="round" borderColor="warning" paddingX={1}>
+          // Every remote vault silent at once: the tunnel, not the vaults. Said
+          // from WireGuard's own state when the pane could read it (off, or
+          // not installed, with the button that helps), else only guessed
+          // (hence "semble"). A tunnel that is off while the remote vaults
+          // answer is not nagged about: they come some other way.
+          <Box key="tunnel-down" flexDirection="column" gap={1} borderStyle="round" borderColor="warning" paddingX={1}>
             <Text color="warning" weight="semibold">
-              WireGuard semble inactif : les vaults distants ne sont pas disponibles.
+              {wg?.state === 'inactive' ? t('wg.inactive') : wg?.state === 'absent' ? t('wg.absent') : t('tunnel.down')}
             </Text>
-            <Text size="caption" dimColor>
-              Active le tunnel, puis ↻ Rafraîchir.
-            </Text>
+            <Box key="tunnel-actions" flexDirection="row" flexWrap="wrap" gap={1}>
+              {wg?.state === 'inactive' && (
+                <Button key="tunnel-open" label={t('wg.openApp')} variant="primary" onPress={() => void openWireguard($)} />
+              )}
+              {wg?.state === 'absent' && (
+                <Button key="tunnel-install" label={t('wg.install')} variant="primary" onPress={() => void openUrl($, WG_INSTALL_URL)} />
+              )}
+              {wg?.state === 'absent' && (
+                <Button key="tunnel-guide" label={t('wg.guide')} plain onPress={() => void openUrl($, GUIDE_URL)} />
+              )}
+              <Text size="caption" dimColor>
+                {t('tunnel.hint')}
+              </Text>
+            </Box>
           </Box>
         )}
         {primary}
         {secondaries}
         {adding}
+        {admin}
       </Box>
     )
   })
@@ -1581,8 +2182,10 @@ export const register: Register = on => {
       return below
     }
     const { Box, Text, Button } = $.ui.resolve(e)
-    // Read for its redraws only: the toggle says what the module knows.
+    // Read for its redraws only: the toggle says what the module knows, and
+    // the texts follow the language.
     await read($, paneVersion)
+    await read($, language)
     const isShown = isPanePlaced
     const names = snap.secondaries.map(s => s.name)
     const fit = bandFit(snap.primary?.name ?? null, names, e.props.bodyColumns)
@@ -1591,21 +2194,25 @@ export const register: Register = on => {
         {text}
       </Text>
     )
+    // "Principal :" and "Secondaires :" in bold, the names after them plain.
+    const heading = (text: string) => (
+      <Text weight="semibold" wrap="truncate-end">
+        {text}
+      </Text>
+    )
 
     return (
       <Box flexDirection="column">
         <Box key="vault-band" flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={2}>
           <Box key="vault-band-names" flexDirection="row" alignItems="center" columnGap={1} flexShrink={1} overflow="hidden">
-            {caption('Principal')}
-            <Text weight="semibold" wrap="truncate-end">
-              {snap.primary?.name ?? 'aucun'}
-            </Text>
+            {heading(t('band.primary'))}
+            <Text wrap="truncate-end">{snap.primary?.name ?? t('band.none')}</Text>
             <Box width={1} />
-            {caption('Secondaires')}
-            {names.length === 0 && caption('aucun')}
+            {heading(t('band.secondaries'))}
+            {names.length === 0 && caption(t('band.none'))}
             {snap.secondaries.slice(0, fit.shown).map((s, i) => (
               <Box key={`band-${s.name}`} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
-                {i > 0 && caption('·')}
+                {i > 0 && caption('|')}
                 <Text wrap="truncate-end">{s.name}</Text>
                 <Text wrap="truncate-end">{iconOf(s.mode)}</Text>
               </Box>
@@ -1614,7 +2221,7 @@ export const register: Register = on => {
           </Box>
           <Button
             key="toggle-pane"
-            label={isShown ? BAND_TOGGLE.hide : BAND_TOGGLE.show}
+            label={isShown ? t('band.hide') : t('band.show')}
             plain
             dimColor
             onPress={() => void togglePane($)}

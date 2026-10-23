@@ -26,6 +26,28 @@ export type VaultRow = {
 
 export type Secondary = VaultRow & { mode: SecondaryMode }
 
+/** WireGuard on this machine, as the administration console last read it. */
+export type WireguardState = {
+  /** `checking` while the read runs; `unknown` where the system does not say. */
+  state: 'checking' | 'active' | 'inactive' | 'absent' | 'unknown'
+  /** The tunnels that are up, by name. */
+  tunnels: string[]
+}
+
+/** The administration console's form: a vault to register by its REST address. */
+export type AdminForm = {
+  /** Local: this machine's Obsidian (127.0.0.1); remote: over WireGuard. */
+  kind: 'local' | 'remote'
+  name: string
+  host: string
+  port: string
+  /** A remote vault's web UI port, written into its description. */
+  uiPort: string
+  /** Kept only until the call is sent: cleared right after, sent or refused. */
+  apiKey: string
+  scheme: 'https' | 'http'
+}
+
 export type Snapshot = {
   primary: VaultRow | null
   /** The binding restricts the session to the primary. */
@@ -58,6 +80,15 @@ declare module 'claude-code' {
        * to be drawn again. What it shows comes from the module, never from a
        * write made while drawing. */
       paneVersion: number
+      /** The language the texts are drawn in (a locales/<code>.json). */
+      language: string
+      /** The administration console is unfolded. */
+      showAdmin: boolean
+      adminForm: AdminForm
+      /** The vault whose removal waits for its confirming press. */
+      confirmRemove: string | null
+      /** WireGuard as last detected; null before the first read. */
+      wireguard: WireguardState | null
     }
   }
 }

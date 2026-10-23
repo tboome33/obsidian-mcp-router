@@ -246,6 +246,9 @@ export const IF_MATCH_EXEMPT = new Map([
     + 'is no note content a precondition could pin.'],
   ['register_remote_vault',
     'Writes a `remoteVaults` entry to the router\'s own config.json, never to a vault.'],
+  ['unregister_vault',
+    'Removes a `remoteVaults` entry, or adds a name to `disabledVaults`, in the router\'s own '
+    + 'config.json — never writes to a vault, and is refused while any binding names the vault.'],
   ['build_wiki_graph',
     'Regenerates a DERIVED artifact (the knowledge-graph JSON) wholesale from the vault\'s own '
     + 'content. There is no "content I read" to pin — the input is the whole vault — and two '

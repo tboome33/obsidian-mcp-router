@@ -655,6 +655,10 @@ describe('every tool is classified: exercised by the bench, or exempt with a rea
     // tests/register-remote-vault.test.mjs, which injects readFile/writeFile
     // seams and never touches a real config or a real disk.
     'register_remote_vault',
+    // v0.106.0 — its counterpart: removes that entry (or disables a local
+    // vault) in config.json. Covered by tests/unregister-vault.test.mjs, with
+    // the same injected readFile/writeFile seams.
+    'unregister_vault',
     // Phase 3 (portee-ergonomie-refus-roadmap) — records a secondary's write
     // tier on this workspace's binding in config.json (the router's OWN
     // config, never a vault). Same category as confirm_workspace_binding.

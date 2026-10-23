@@ -95,6 +95,7 @@ import { getViewLinkTool } from './tools/get-view-link.mjs';
 import { planVaultTool } from './tools/plan-vault.mjs';
 import { provisionVaultTool } from './tools/provision-vault.mjs';
 import { registerRemoteVaultTool } from './tools/register-remote-vault.mjs';
+import { unregisterVaultTool } from './tools/unregister-vault.mjs';
 import { viewLinkForWrite, noteForWriteResult, remoteLinkHint, resolveViewAgentToken } from './helpers/view-link.mjs';
 import { smartLinkEnabled } from './helpers/smart-link.mjs';
 import {
@@ -1249,6 +1250,19 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'unregister_vault',
+    description:
+      'Take a vault OUT of the router config — the other half of register_remote_vault. A `remoteVaults` entry (a remote vault, or a local one registered by its REST address) is deleted, its apiKey with it; a LOCAL vault the router finds by its folder is added to `disabledVaults` instead (no session loads it; its folder, notes and Obsidian are untouched; removing the name from that list brings it back). REFUSED while any workspace binding names the vault, primary or secondary — unbind it first. Also drops the name from `openVaults`. LOCAL-ONLY: absent on gated deployments (one shared config.json). Writes to the local filesystem (the router config, not a vault).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The registered vault name, as list_vaults shows it (matched case-insensitively).' },
+      },
+      required: ['name'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 /**
@@ -1378,6 +1392,7 @@ const TOOL_HANDLERS = {
   plan_vault: (reg, args) => planVaultTool(reg, args),
   provision_vault: (reg, args) => provisionVaultTool(reg, args),
   register_remote_vault: (reg, args) => registerRemoteVaultTool(reg, args),
+  unregister_vault: (reg, args) => unregisterVaultTool(reg, args),
 };
 
 // LOCAL-ONLY tools: HIDDEN from the tool list — and refused at CallTool — on
@@ -1391,7 +1406,7 @@ const TOOL_HANDLERS = {
 // entry whose name another tenant's allowlist happens to include, routing that
 // tenant's sessions through a vault (baseUrl + apiKey) the planting tenant
 // chose. Exported for testing.
-const LOCAL_ONLY_TOOL_NAMES = new Set(['plan_vault', 'provision_vault', 'register_remote_vault']);
+const LOCAL_ONLY_TOOL_NAMES = new Set(['plan_vault', 'provision_vault', 'register_remote_vault', 'unregister_vault']);
 
 /**
  * THE ARGUMENT THAT MAKES A SESSION TOOL WRITE HOST STATE — tool name → the
@@ -1559,6 +1574,9 @@ const WRITE_TOOL_NAMES = new Set([
   // v0.90.0 — writes a new remoteVaults entry (apiKey included) to config.json.
   // A read-only deployment must hide it too, same as provision_vault.
   'register_remote_vault',
+  // v0.106.0 — removes a remoteVaults entry, or disables a local vault, in
+  // config.json. A read-only deployment must hide it, as its counterpart.
+  'unregister_vault',
 ]);
 
 /**
@@ -1588,6 +1606,7 @@ const WRITE_TOOL_NAMES = new Set([
 const ALSO_TIER_EXEMPT_TOOL_NAMES = new Set([
   'provision_vault',
   'register_remote_vault',
+  'unregister_vault',
   'download_page_assets',
   'pptx_extract_assets',
 ]);
@@ -2255,6 +2274,8 @@ const FIXED_AUDIT_TARGETS = {
   // present anyway so a future decoupling of gating from audit-logging finds
   // a real label here instead of silently falling through to "(unknown)".
   register_remote_vault: 'config.json (remoteVaults)',
+  // v0.106.0 — the same file, for the removal (remoteVaults or disabledVaults).
+  unregister_vault: 'config.json (remoteVaults / disabledVaults)',
 };
 
 /** Does this tool's own inputSchema declare `field`? */

@@ -1,0 +1,34 @@
+# One Obsidian vault in one container, streamed to the browser with Selkies.
+#
+# Template used by add-vault.sh. It is copied into /opt/obsidian-vaults/<slug>/
+# next to a .env file (see vault.env.example) that sets every ${VARIABLE} below.
+#
+# Ports are published on the WireGuard address only (${WG_IP}), never 0.0.0.0.
+#   UI  : ${WG_IP}:${UI_PORT}  -> 3001 (Selkies web UI, HTTPS, self-signed)
+#   API : ${WG_IP}:${API_PORT} -> ${API_PORT} (Obsidian "Local REST API" plugin)
+# The API port is the same on both sides on purpose: the plugin's own data.json
+# decides which port it listens on inside the container, so it must match.
+
+name: obsidian-${VAULT_SLUG}
+
+services:
+  obsidian:
+    image: lscr.io/linuxserver/obsidian:latest
+    container_name: obsidian-${VAULT_SLUG}
+    restart: unless-stopped
+    shm_size: "1gb"
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      # Basic auth in front of the Selkies web UI.
+      - CUSTOM_USER=${CUSTOM_USER}
+      - PASSWORD=${PASSWORD}
+    ports:
+      - "${WG_IP}:${UI_PORT}:3001"
+      - "${WG_IP}:${API_PORT}:${API_PORT}"
+    volumes:
+      # Obsidian's own config (app settings, Selkies state). Lives next to this file.
+      - ./config-${VAULT_SLUG}:/config
+      # The vault itself, from the host. Open /vaults/<slug> in Obsidian.
+      - ${VAULT_DIR}:/vaults/${VAULT_SLUG}

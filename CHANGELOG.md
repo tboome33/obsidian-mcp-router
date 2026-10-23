@@ -10,6 +10,65 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.106.0] — 2026-10-23 — an administration console in the vault panel, WireGuard, translations, and a remote vault kit
+
+Asked on v0.105.0: the band's labels in bold with a colon and "|" between the secondaries; a
+console in the pane to register or remove a vault by IP, port and API key, local or remote over
+WireGuard; WireGuard detected, and asked for when off; a way to set up a remote vault streamed
+with Selkies when there is none; and the panel's texts in JSON files, any language, chosen in the
+console.
+
+- **The band**: "**Principal :**" and "**Secondaires :**" in bold, the vault names plain, the
+  secondaries separated by "|".
+- **⚙ Administration**, folded at the bottom of the pane:
+  - **Language**: a menu of the plugin's `locales/<code>.json` files (French and English ship);
+    the choice is kept across sessions (the plugin's store), else `OBSIDIAN_ROUTER_LANG`, else
+    French. A new language is a copied `fr.json` with its values translated.
+  - **WireGuard**: on Windows, the client's install path and its running tunnel services; on a
+    Mac or Linux, `wg show interfaces`. Off: a button opens the client, and at start a toast asks
+    for it when a bound vault is remote. Not installed: buttons open WireGuard's install page,
+    the remote vault guide and the server setup prompt. When every remote vault is silent, the
+    pane's banner says which of the two it is, with the same button.
+  - **Register a vault** by its REST address: local (`127.0.0.1`) or remote (refused while
+    WireGuard is off); name, IP, port, HTTPS (self-signed, `tlsInsecure`) or HTTP, the web UI port
+    of a remote vault (written into its description as "(UI :<port>)", which lights its 🌐/🪟), and
+    the API key — sent through `register_remote_vault`, then cleared from the form. A vault
+    registered on the loopback is shown as local.
+  - **Take a vault out of the router**: the registered vaults no workspace binds, each behind a
+    confirming second press.
+- **New router tool `unregister_vault({ name })`**: deletes a `remoteVaults` entry with its key,
+  or adds a local vault found by its folder to `disabledVaults` (files untouched); drops the name
+  from `openVaults`; refused while any workspace binding names the vault. Local-only and hidden
+  on read-only deployments, like `register_remote_vault`. The router now has 57 tools, 19 of them
+  writers.
+- **Translations**: every text of the pane and the band comes from `locales/<code>.json`. French
+  is also compiled into the module (`hooks/vault-panel/locale-fr.ts`, written by
+  `scripts/build-mod-locales.mjs`): what shows before the files are read, and where a key a file
+  lacks falls back. `tests/mod-locales.test.mjs` checks that every language has the keys and
+  `{variables}` of `fr.json`, and that the compiled copy matches it.
+- **A remote vault kit**, `docs/deploy/remote-vault/`: a guide (English and French) to run an
+  Obsidian vault on a Linux server, streamed to the browser with Selkies (the
+  `lscr.io/linuxserver/obsidian` image) and reachable only over WireGuard; a `docker-compose.yml`
+  template; `vault.env.example`; `add-vault.sh`, which creates the container and the DOCKER-USER
+  firewall rules (with the `--ctorigdstport` form for the web UI) and re-applies them at boot;
+  and `PROMPT.md`, a prompt that has Claude Code set the server up over SSH, step by step with
+  evidence. Not yet run on a fresh server.
+- **Hardened after a codex review** (2 P1, 7 P2, all fixed): the console registers a local vault
+  on the loopback only and a remote one at a private address only (10/8, 172.16/12, 192.168/16,
+  100.64/10, in plain decimal, checked again on the host the URL keeps), so the key never crosses a public network in clear or to an unchecked certificate;
+  its URL is parsed (`::1` becomes `[::1]`); the key leaves the form before the call, and when the
+  console folds or the pane closes; a busy pane consumes nothing and a newer entry is never wiped;
+  a WireGuard read that fails is "unknown" (it no longer blocks as "off"); `unregister_vault`
+  writes the local vault's exact name into `disabledVaults`, as the loader compares; `locales/`
+  ships in the npm package and the MCPB bundle; `add-vault.sh` filters only the client's
+  direction (`--ctdir ORIGINAL`, without which the UI's replies hit the DROP), applies its rules
+  before the container starts, resumes a partial install only with the values its `.env` holds,
+  restores the rules at boot before Docker brings the containers back, and writes its folder into
+  the boot script as a quoted word. A second codex pass confirmed the fixes and found the octal
+  IPv4 bypass, the resume mismatch and the boot order, fixed the same way.
+- Tests: `tests/vault-panel.test.tsx` 76 (was 63); `tests/unregister-vault.test.mjs` 6;
+  `tests/mod-locales.test.mjs` 4.
+
 ## [0.105.0] — 2026-10-23 — a vault band above the prompt, and a clearer vault panel
 
 Asked on v0.104.4: the panel's green dots had no legend, the "Locaux" / "Distants" tabs did not

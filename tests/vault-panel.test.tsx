@@ -889,7 +889,10 @@ test('an open local vault keeps its 💎: the same address brings its window to 
   obsidianKnows(on, ['C:\\VAULTS\\Notes'])
   const launched: (readonly string[])[] = []
   on('process.run', (_, e) => {
-    launched.push(e.argv)
+    // The WireGuard read (PowerShell) runs at every start: not a launch.
+    if (e.argv[0] !== 'powershell') {
+      launched.push(e.argv)
+    }
 
     return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
@@ -906,7 +909,10 @@ test('a closed local vault Obsidian knows gets its own 💎, which launches it; 
   obsidianKnows(on, ['C:\\VAULTS\\Notes'])
   const launched: (readonly string[])[] = []
   on('process.run', (_, e) => {
-    launched.push(e.argv)
+    // The WireGuard read (PowerShell) runs at every start: not a launch.
+    if (e.argv[0] !== 'powershell') {
+      launched.push(e.argv)
+    }
 
     return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
@@ -942,7 +948,10 @@ const GO = 'http://10.8.0.1:27200/go?v=extra&n=Welcome.md&s=sig'
 const launches = (on: On) => {
   const launched: (readonly string[])[] = []
   on('process.run', (_, e) => {
-    launched.push(e.argv)
+    // The WireGuard read (PowerShell) runs at every start: not a launch.
+    if (e.argv[0] !== 'powershell') {
+      launched.push(e.argv)
+    }
 
     return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
@@ -1061,10 +1070,12 @@ test('every remote vault silent: a WireGuard banner; one answering: none', async
   wire(on, state)
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /^WireGuard semble inactif/ })).toBeTruthy()
+  // No WireGuard read answers here (no `wg` to run): the banner is there,
+  // in the words of whatever the pane could tell.
+  expect(await ui.find({ key: 'tunnel-down' })).toBeTruthy()
   state.list = LIST
   await ui.press({ key: 'refresh' })
-  expect(await ui.find({ type: 'Text', text: /^WireGuard semble inactif/ })).toBeFalsy()
+  expect(await ui.find({ key: 'tunnel-down' })).toBeFalsy()
   await ui.unmount()
 })
 
@@ -1084,7 +1095,7 @@ test('every tier menu sits in a box of one fixed width, whatever tier it shows',
 // What the pane and /vaults must name when Claude Code's permissions refuse
 // the read: the rules to add, under the server the call went to.
 const READ_RULES =
-  /permissions\.allow.*mcp__plugin_obsidian-router_router__list_vaults\. Pour ses liens 🌐 et 🪟 : mcp__plugin_obsidian-router_router__list_files, mcp__plugin_obsidian-router_router__get_view_link\. Pour que ses clics changent la liaison : mcp__plugin_obsidian-router_router__confirm_workspace_binding, mcp__plugin_obsidian-router_router__set_secondary_vault_mode — ces deux règles laissent aussi le modèle/s
+  /permissions\.allow.*mcp__plugin_obsidian-router_router__list_vaults\. Pour ses liens 🌐 et 🪟 : mcp__plugin_obsidian-router_router__list_files, mcp__plugin_obsidian-router_router__get_view_link\. Pour que ses clics changent la liaison : mcp__plugin_obsidian-router_router__confirm_workspace_binding, mcp__plugin_obsidian-router_router__set_secondary_vault_mode, mcp__plugin_obsidian-router_router__register_remote_vault, mcp__plugin_obsidian-router_router__unregister_vault — ces règles laissent aussi le modèle/s
 
 test('a read refused by auto mode names the permissions to add, never "router injoignable"', async ($, on) => {
   wire(on, { list: LIST, blocked: ['list_vaults'] })
@@ -1195,7 +1206,7 @@ test('a click refused by auto mode says nothing changed and names the two write 
   expect(
     await ui.find({
       type: 'Text',
-      text: /rien n'a été changé.*mcp__plugin_obsidian-router_router__confirm_workspace_binding, mcp__plugin_obsidian-router_router__set_secondary_vault_mode — ces deux règles laissent aussi le modèle/s,
+      text: /rien n'a été changé.*mcp__plugin_obsidian-router_router__confirm_workspace_binding, mcp__plugin_obsidian-router_router__set_secondary_vault_mode, mcp__plugin_obsidian-router_router__register_remote_vault, mcp__plugin_obsidian-router_router__unregister_vault — ces règles laissent aussi le modèle/s,
     }),
   ).toBeTruthy()
   // Only the write rules: the read ones are not what this click needs.
@@ -1396,7 +1407,7 @@ test('the band shows the primary, each secondary with its write badge, and keeps
     const texts = await bandTexts(ui)
     expect(texts).toContain('main')
     // docs is read-only, notes writes on request: one badge each, in order.
-    expect(texts.slice(texts.indexOf('docs'), texts.indexOf('notes') + 2)).toEqual(['docs', '🔒', '·', 'notes', '✋'])
+    expect(texts.slice(texts.indexOf('docs'), texts.indexOf('notes') + 2)).toEqual(['docs', '🔒', '|', 'notes', '✋'])
     expect(texts.some(t => t.startsWith('…'))).toBe(false)
     expect(texts).toContain('engine band')
     await ui.unmount()
@@ -1550,10 +1561,10 @@ test('a band too narrow for even one secondary counts them all', async ($, on) =
   await ui.unmount()
 })
 
-// The band's line, cell by cell, for main + docs + notes: "Principal main",
-// spacer, "Secondaires" and the toggle take 55; "docs 🔒" 8 more; "· notes ✋" 11.
-// At 65, docs would fit alone but not with "… +1" after it: the counter's room
-// is kept, so nothing is shown and both are counted. At 74, both fit.
+// The band's line, cell by cell, for main + docs + notes: "Principal : main",
+// spacer, "Secondaires :" and the toggle take 59; "docs 🔒" 8 more; "| notes ✋"
+// 11. At 69, docs would fit alone but not with "… +1" after it: the counter's
+// room is kept, so nothing is shown and both are counted. At 78, both fit.
 test('the band keeps room for "… +N" before it shows a secondary', async ($, on) => {
   wire(on, { list: LIST })
   engineBand(on)
@@ -1565,20 +1576,20 @@ test('the band keeps room for "… +N" before it shows a secondary', async ($, o
 
     return texts
   }
-  const narrow = await at(65)
+  const narrow = await at(69)
   expect(narrow.includes('docs')).toBe(false)
   expect(narrow).toContain('… +2')
-  const enough = await at(68)
+  const enough = await at(72)
   expect(enough).toContain('docs')
   expect(enough).toContain('… +1')
-  const all = await at(74)
+  const all = await at(78)
   expect(all).toContain('notes')
   expect(all.some(t => t.startsWith('…'))).toBe(false)
-  expect((await at(73)).includes('notes')).toBe(false)
+  expect((await at(77)).includes('notes')).toBe(false)
 })
 
 // Two cells per CJK character: "資料庫一" is 8 cells, not 4. With main + two
-// such names the line needs 55 + 13 + 17 = 85; at 80 only the first fits.
+// such names the line needs 59 + 12 + 16 = 87; at 80 only the first fits.
 test('the band counts a wide character as two cells', async ($, on) => {
   const wide = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['資料庫一', '文書庫二三'] } }
   wire(on, { list: wide })
@@ -1609,4 +1620,317 @@ test('a pane the app draws on its own is told to the band', async ($, on) => {
   expect(await label()).toBe('◧ Masquer le panneau')
   await pane.unmount()
   await band.unmount()
+})
+
+test('the band names "Principal :" and "Secondaires :" in bold, the vault names plain', async ($, on) => {
+  wire(on, { list: LIST })
+  engineBand(on)
+  await begin($)
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const texts = nodesOf(await ui.drawn()).filter(n => n.type === 'Text')
+  const byText = (words: string) => texts.find(n => textOf(n) === words)
+  expect(byText('Principal :')?.props?.weight).toBe('semibold')
+  expect(byText('Secondaires :')?.props?.weight).toBe('semibold')
+  expect(byText('main')?.props?.weight).toBeFalsy()
+  expect(byText('docs')?.props?.weight).toBeFalsy()
+  await ui.unmount()
+})
+
+// What the plugin's folder holds in these tests: an English file that lacks
+// one key (the band's "Secondaries:"), so the French one shows through.
+const EN = {
+  '_meta.name': 'English',
+  'band.primary': 'Primary:',
+  'band.show': '◧ Show the pane',
+  'band.hide': '◧ Hide the pane',
+  'primary.title': 'Primary',
+}
+function localeFiles(on: On, extra: (path: string) => string | undefined = () => undefined) {
+  on('fs.read', (_, e) => {
+    if (/locales[\\/]en\.json$/.test(e.path)) {
+      return { value: JSON.stringify(EN) }
+    }
+    const other = extra(e.path)
+    if (other !== undefined) {
+      return { value: other }
+    }
+    throw new Error(`no such file: ${e.path}`)
+  })
+  on('fs.list', () => ({
+    value: [
+      { name: 'en.json', kind: 'file' as const, size: 1, mtimeMs: 0, isLink: false },
+      { name: 'fr.json', kind: 'file' as const, size: 1, mtimeMs: 0, isLink: false },
+    ],
+  }))
+}
+
+test('OBSIDIAN_ROUTER_LANG=en draws the English file, French where it lacks a key', async ($, on) => {
+  wire(on, { list: LIST, env: { OBSIDIAN_ROUTER_LANG: 'en' } })
+  localeFiles(on)
+  engineBand(on)
+  await begin($)
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const texts = await bandTexts(band)
+  expect(texts).toContain('Primary:')
+  // Missing from the English file: the compiled French.
+  expect(texts).toContain('Secondaires :')
+  await band.unmount()
+  const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await pane.find({ type: 'Text', text: /^Primary$/ })).toBeTruthy()
+  await pane.unmount()
+})
+
+const openAdmin = async (ui: Mounted) => {
+  if (!(await ui.find({ type: 'Button', key: 'admin-register-submit' }))) {
+    await ui.press({ key: 'toggle-admin' })
+  }
+}
+
+test('the console lists the language files and switches the language', async ($, on) => {
+  wire(on, { list: LIST })
+  localeFiles(on)
+  engineBand(on)
+  await begin($)
+  const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdmin(pane)
+  const select = nodesOf(await pane.drawn()).find(n => n.type === 'Select' && keyOf(n) === 'admin-language-select')
+  expect((select?.props?.options as { value: string; label: string }[] | undefined)?.map(o => o.label)).toEqual([
+    'English',
+    'Français',
+  ])
+  await pane.select({ key: 'admin-language-select', value: 'en' })
+  expect(await pane.find({ type: 'Text', text: /^Primary$/ })).toBeTruthy()
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await bandTexts(band)).toContain('Primary:')
+  await band.unmount()
+  await pane.unmount()
+})
+
+// WireGuard on Windows, as the console reads it: the client's path, and the
+// tunnels PowerShell lists as running.
+function windowsWireguard(on: On, state: { isInstalled: boolean; tunnels: string[]; launched: (readonly string[])[] }) {
+  on('fs.stat', (_, e) => {
+    if (state.isInstalled && /WireGuard[\\/]wireguard\.exe$/i.test(e.path)) {
+      return { value: { kind: 'file' as const, size: 1, mtimeMs: 0, isLink: false } }
+    }
+    throw new Error(`no such file: ${e.path}`)
+  })
+  on('process.run', (_, e) => {
+    if (e.argv[0] === 'powershell') {
+      return {
+        value: { exitCode: 0, stdout: state.tunnels.join('\r\n'), stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+      }
+    }
+    state.launched.push(e.argv)
+
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+}
+
+const SILENT_REMOTES = {
+  ...LIST,
+  vaults: LIST.vaults.map(v => (v.type === 'remote' ? { ...v, online: false } : v)),
+}
+
+test('WireGuard installed but off, remote vaults silent: the banner says so and opens the client', async ($, on) => {
+  const toasts: string[] = []
+  wire(on, { list: SILENT_REMOTES, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' }, toasts })
+  const wg = { isInstalled: true, tunnels: [] as string[], launched: [] as (readonly string[])[] }
+  windowsWireguard(on, wg)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdmin(ui)
+  expect(await ui.find({ type: 'Text', text: /^installé, mais aucun tunnel actif/ })).toBeTruthy()
+  await ui.press({ key: 'tunnel-open' })
+  expect(wg.launched).toContainEqual(['cmd', '/c', 'start', '', 'C:\\Program Files\\WireGuard\\wireguard.exe'])
+  await ui.unmount()
+})
+
+test('WireGuard not installed: the console offers the client, the guide and the setup prompt', async ($, on) => {
+  wire(on, { list: SILENT_REMOTES, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  const wg = { isInstalled: false, tunnels: [] as string[], launched: [] as (readonly string[])[] }
+  windowsWireguard(on, wg)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdmin(ui)
+  expect(await ui.find({ type: 'Text', text: /^non installé/ })).toBeTruthy()
+  await ui.press({ key: 'wg-install' })
+  await ui.press({ key: 'wg-guide' })
+  await ui.press({ key: 'wg-prompt' })
+  expect(wg.launched.map(argv => argv[2])).toEqual([
+    'https://www.wireguard.com/install/',
+    'https://github.com/tboome33/obsidian-mcp-router/blob/main/docs/deploy/remote-vault/README.md',
+    'https://github.com/tboome33/obsidian-mcp-router/blob/main/docs/deploy/remote-vault/PROMPT.md',
+  ])
+  await ui.unmount()
+})
+
+test('a local vault is registered by its REST address, and the key does not stay in the form', async ($, on) => {
+  const state = { list: LIST as unknown, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } }
+  const calls = wire(on, state)
+  windowsWireguard(on, { isInstalled: true, tunnels: ['wg0'], launched: [] })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdmin(ui)
+  // A missing key: refused in words, nothing sent.
+  await ui.input({ key: 'admin-name', text: 'notes2', kind: 'change' })
+  await ui.input({ key: 'admin-port', text: '27124', kind: 'change' })
+  await ui.press({ key: 'admin-register-submit' })
+  expect(await ui.find({ type: 'Text', text: /^Colle la clé API/ })).toBeTruthy()
+  expect(calls.some(c => c.tool === 'register_remote_vault')).toBe(false)
+  await ui.input({ key: 'admin-apiKey', text: 'KEY-123', kind: 'change' })
+  await ui.press({ key: 'admin-register-submit' })
+  expect(calls.find(c => c.tool === 'register_remote_vault')?.args).toEqual({
+    name: 'notes2',
+    baseUrl: 'https://127.0.0.1:27124',
+    apiKey: 'KEY-123',
+    tlsInsecure: true,
+    description: 'Vault local enregistré depuis le panneau des vaults',
+  })
+  const keyField = nodesOf(await ui.drawn()).find(n => n.type === 'Input' && keyOf(n) === 'admin-apiKey')
+  expect(keyField?.props?.value).toBe('')
+  expect(JSON.stringify(await ui.drawn()).includes('KEY-123')).toBe(false)
+  await ui.unmount()
+})
+
+test('a remote vault needs WireGuard on; with it, its web UI port goes into the description', async ($, on) => {
+  const calls = wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  const wg = { isInstalled: true, tunnels: [] as string[], launched: [] as (readonly string[])[] }
+  windowsWireguard(on, wg)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdmin(ui)
+  await ui.press({ key: 'admin-kind-remote' })
+  await ui.input({ key: 'admin-name', text: 'IB', kind: 'change' })
+  await ui.input({ key: 'admin-port', text: '27186', kind: 'change' })
+  await ui.input({ key: 'admin-uiPort', text: '3009', kind: 'change' })
+  await ui.input({ key: 'admin-apiKey', text: 'KEY-IB', kind: 'change' })
+  await ui.press({ key: 'admin-register-submit' })
+  expect(calls.some(c => c.tool === 'register_remote_vault')).toBe(false)
+  expect(await ui.find({ type: 'Text', text: /^Active WireGuard pour enregistrer un vault distant/ })).toBeTruthy()
+  // The tunnel comes up; checked again from the console.
+  wg.tunnels = ['wg0']
+  await ui.press({ key: 'wg-check' })
+  expect(await ui.find({ type: 'Text', text: /^actif \(wg0\)$/ })).toBeTruthy()
+  await ui.input({ key: 'admin-apiKey', text: 'KEY-IB', kind: 'change' })
+  await ui.press({ key: 'admin-register-submit' })
+  expect(calls.find(c => c.tool === 'register_remote_vault')?.args).toEqual({
+    name: 'IB',
+    baseUrl: 'http://10.8.0.1:27186',
+    apiKey: 'KEY-IB',
+    tlsInsecure: false,
+    description: 'Vault distant enregistré depuis le panneau des vaults (UI :3009)',
+  })
+  await ui.unmount()
+})
+
+test('removing a vault from the router asks for a second press, and can be cancelled', async ($, on) => {
+  const calls = wire(on, { list: LIST })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdmin(ui)
+  // Bound vaults cannot be removed: only the registered, unbound ones are listed.
+  expect(await ui.find({ type: 'Button', key: 'unregister-docs' })).toBeFalsy()
+  await ui.press({ key: 'unregister-extra' })
+  expect(calls.some(c => c.tool === 'unregister_vault')).toBe(false)
+  await ui.press({ key: 'unregister-cancel-extra' })
+  expect(await ui.find({ type: 'Button', key: 'unregister-confirm-extra' })).toBeFalsy()
+  await ui.press({ key: 'unregister-extra' })
+  await ui.press({ key: 'unregister-confirm-extra' })
+  expect(calls.find(c => c.tool === 'unregister_vault')?.args).toEqual({ name: 'extra' })
+  await ui.unmount()
+})
+
+test('a vault registered on the loopback is listed as local, with no web UI button', async ($, on) => {
+  const withLoop = {
+    ...LIST,
+    vaults: [...LIST.vaults, { name: 'loop', type: 'remote', online: true, baseUrl: 'https://127.0.0.1:27124', description: 'UI :3001' }],
+  }
+  wire(on, { list: withLoop })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdd(ui)
+  await ui.press({ key: 'tab-locaux' })
+  expect(await ui.find({ type: 'Button', key: 'add-loop' })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'ui-loop' })).toBeFalsy()
+  await ui.press({ key: 'tab-distants' })
+  expect(await ui.find({ type: 'Button', key: 'add-loop' })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('the console keeps the key off the public network: a local vault on the loopback, a remote one at a private address', async ($, on) => {
+  const calls = wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  windowsWireguard(on, { isInstalled: true, tunnels: ['wg0'], launched: [] })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdmin(ui)
+  await ui.input({ key: 'admin-name', text: 'x', kind: 'change' })
+  await ui.input({ key: 'admin-host', text: 'vault.example.com', kind: 'change' })
+  await ui.input({ key: 'admin-port', text: '27124', kind: 'change' })
+  await ui.input({ key: 'admin-apiKey', text: 'K', kind: 'change' })
+  await ui.press({ key: 'admin-register-submit' })
+  expect(await ui.find({ type: 'Text', text: /^Un vault local s'enregistre sur cette machine/ })).toBeTruthy()
+  await ui.press({ key: 'admin-kind-remote' })
+  await ui.input({ key: 'admin-host', text: '8.8.8.8', kind: 'change' })
+  await ui.input({ key: 'admin-apiKey', text: 'K', kind: 'change' })
+  await ui.press({ key: 'admin-register-submit' })
+  expect(await ui.find({ type: 'Text', text: /^Un vault distant passe par le tunnel/ })).toBeTruthy()
+  expect(calls.some(c => c.tool === 'register_remote_vault')).toBe(false)
+  // ::1 is a loopback too, written as a URL can hold it.
+  await ui.press({ key: 'admin-kind-local' })
+  await ui.input({ key: 'admin-host', text: '::1', kind: 'change' })
+  await ui.input({ key: 'admin-apiKey', text: 'K', kind: 'change' })
+  await ui.press({ key: 'admin-register-submit' })
+  expect(calls.find(c => c.tool === 'register_remote_vault')?.args?.baseUrl).toBe('https://[::1]:27124')
+  await ui.unmount()
+})
+
+test('a WireGuard read that fails is "unknown", and does not block a remote vault', async ($, on) => {
+  const calls = wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  on('fs.stat', () => ({ value: { kind: 'file' as const, size: 1, mtimeMs: 0, isLink: false } }))
+  on('process.run', () => ({
+    value: { exitCode: 1, stdout: '', stderr: 'access denied', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdmin(ui)
+  expect(await ui.find({ type: 'Text', text: /^état inconnu/ })).toBeTruthy()
+  await ui.press({ key: 'admin-kind-remote' })
+  await ui.input({ key: 'admin-name', text: 'IB', kind: 'change' })
+  await ui.input({ key: 'admin-port', text: '27186', kind: 'change' })
+  await ui.input({ key: 'admin-apiKey', text: 'K', kind: 'change' })
+  await ui.press({ key: 'admin-register-submit' })
+  expect(calls.find(c => c.tool === 'register_remote_vault')?.args?.baseUrl).toBe('http://10.8.0.1:27186')
+  await ui.unmount()
+})
+
+test('a key typed but not sent is dropped when the console is folded', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdmin(ui)
+  await ui.input({ key: 'admin-apiKey', text: 'SECRET-1', kind: 'change' })
+  await ui.press({ key: 'toggle-admin' })
+  await ui.press({ key: 'toggle-admin' })
+  const keyField = nodesOf(await ui.drawn()).find(n => n.type === 'Input' && keyOf(n) === 'admin-apiKey')
+  expect(keyField?.props?.value).toBe('')
+  await ui.unmount()
+})
+
+test('an IPv4 a URL would read as octal ("010.0.0.1" is 8.0.0.1) is refused, never sent', async ($, on) => {
+  const calls = wire(on, { list: LIST, env: { APPDATA: 'C:\Users\me\AppData\Roaming' } })
+  windowsWireguard(on, { isInstalled: true, tunnels: ['wg0'], launched: [] })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdmin(ui)
+  await ui.press({ key: 'admin-kind-remote' })
+  await ui.input({ key: 'admin-name', text: 'x', kind: 'change' })
+  await ui.input({ key: 'admin-port', text: '27180', kind: 'change' })
+  for (const host of ['010.0.0.1', '172.016.0.1', '0x0a.0.0.1']) {
+    await ui.input({ key: 'admin-host', text: host, kind: 'change' })
+    await ui.input({ key: 'admin-apiKey', text: 'K', kind: 'change' })
+    await ui.press({ key: 'admin-register-submit' })
+  }
+  expect(calls.some(c => c.tool === 'register_remote_vault')).toBe(false)
+  await ui.unmount()
 })

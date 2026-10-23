@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— quick reference</span></h1>
-  <div class="meta">v0.105.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (54 slash commands · 56 MCP tools · 49 skills)<br>
+  <div class="meta">v0.106.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (54 slash commands · 57 MCP tools · 49 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -286,7 +286,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_READONLY</td>
-    <td><strong>What it is for:</strong> an instance that cannot change anything. Truthy value (<code>true</code>/<code>1</code>/<code>yes</code>/<code>on</code>): the <strong>18 write tools</strong> (write_file, append_to_file, patch_file, set_frontmatter, merge_frontmatter, move_file, delete_file, execute_template, download_page_assets, pptx_extract_assets, build_wiki_graph, provision_vault, register_remote_vault, write_bundle, record_source, install_conventions, refresh_okf_projections, build_search_index) are removed from the tool list <em>and</em> refused when called.</td>
+    <td><strong>What it is for:</strong> an instance that cannot change anything. Truthy value (<code>true</code>/<code>1</code>/<code>yes</code>/<code>on</code>): the <strong>19 write tools</strong> (write_file, append_to_file, patch_file, set_frontmatter, merge_frontmatter, move_file, delete_file, execute_template, download_page_assets, pptx_extract_assets, build_wiki_graph, provision_vault, register_remote_vault, unregister_vault, write_bundle, record_source, install_conventions, refresh_okf_projections, build_search_index) are removed from the tool list <em>and</em> refused when called.</td>
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_USER_ID</td>
@@ -440,7 +440,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks</pre
 
 <div class="page-break"></div>
 
-<h2>The 56 MCP tools <span class="count">— what Claude actually calls, and what each is for</span></h2>
+<h2>The 57 MCP tools <span class="count">— what Claude actually calls, and what each is for</span></h2>
 
 <p>You do not call these tools yourself: the commands and skills do. This table is for understanding what happens, and for reading the responses. Every tool accepts <code>vault</code>; the writes accept <code>ifMatch</code> (see "Writes").</p>
 
@@ -466,7 +466,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks</pre
     <td><strong>Router state and workspace binding.</strong> Single-vault isolation; auto-enrichment mode; confirm, refuse or clear this workspace's binding (<code>{ vault }</code>, <code>{ vault, also: [...] }</code> for several, <code>{ refuse: true }</code>, <code>{ clear: true }</code>) — recorded in <em>your</em> <code>config.json</code>, never in the project. <code>set_secondary_vault_mode</code> sets a secondary's <strong>write tier</strong>: <code>locked</code> (server-side refusal), <code>soft</code> (the default: refused until a <code>confirmSecondaryWrite</code> confirmation is given), <code>writable</code>. On a shared instance (<code>READONLY</code> / <code>ALLOWED_VAULTS</code> / <code>USER_ID</code>), refused: a persisted answer would speak for everyone.</td>
   </tr>
   <tr>
-    <td>plan_vault · provision_vault · register_remote_vault</td>
+    <td>plan_vault · provision_vault · register_remote_vault · unregister_vault</td>
     <td><strong>Creating or declaring a vault.</strong> A read-only plan (defaults, questions, warnings) → creation in one call (plugins, port, key, wiki, registry) — the vault is judged on its real path, pinned for the whole run, and refused if its tree holds a link. <code>register_remote_vault</code> registers from the conversation a remote vault already in service (name, <code>baseUrl</code>, <code>apiKey</code>, and if its files are visible from here <code>localPath</code>) — in <code>config.json</code>, never in a project's <code>.env</code>; hidden on a shared instance.</td>
   </tr>
   <tr>

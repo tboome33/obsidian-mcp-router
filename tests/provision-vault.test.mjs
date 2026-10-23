@@ -566,11 +566,15 @@ describe('provision_vault — path/vaultPath type validation (regression, found 
 });
 
 describe('vault-wizard tools security gate', () => {
-  test('all three tools are hidden when OBSIDIAN_ROUTER_USER_ID is set (gated)', () => {
+  test('all four tools are hidden when OBSIDIAN_ROUTER_USER_ID is set (gated)', () => {
     const { TOOLS, LOCAL_ONLY_TOOL_NAMES, computeExposedTools } = _internals;
     assert.deepEqual(
       [...LOCAL_ONLY_TOOL_NAMES].sort(),
-      ['plan_vault', 'provision_vault', 'register_remote_vault'],
+      ['plan_vault', 'provision_vault', 'register_remote_vault', 'unregister_vault'],
+    );
+    assert.ok(
+      !computeExposedTools(TOOLS, { gated: true }).some((t) => t.name === 'unregister_vault'),
+      'unregister_vault hidden when gated — the same shared config.json as its counterpart',
     );
     const gated = computeExposedTools(TOOLS, { gated: true }).map((t) => t.name);
     assert.ok(!gated.includes('plan_vault'), 'plan_vault hidden when gated');

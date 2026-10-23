@@ -8,6 +8,7 @@ The router treats local and remote Obsidian vaults the same way: it just calls H
 - **NAS-hosted vault** (e.g. a QNAP/Synology running Obsidian via Docker or directly).
 - **Office ↔ Home machine** — keep a single client that can read either machine's vault.
 - **Headless VPS** — Obsidian running in an Xvfb container behind a reverse proxy. Niche but workable.
+- **A Linux server streaming Obsidian to the browser with Selkies, over WireGuard** — the setup this repository's author runs. A ready kit (a guide in English and French, a `docker-compose.yml`, an `add-vault.sh` that also writes the firewall rules, and a prompt that has Claude Code set the server up for you) lives in [`deploy/remote-vault/`](deploy/remote-vault/README.md).
 
 ## Step 1 — expose the Local REST API beyond localhost
 
@@ -37,6 +38,14 @@ never echoed back. The tool is **local-only**: it is absent from gated
 deployments (`OBSIDIAN_ROUTER_READONLY`, `OBSIDIAN_ROUTER_ALLOWED_VAULTS` or
 `OBSIDIAN_ROUTER_USER_ID` set), where the config is shared by every caller and
 one session must not add a vault for all of them.
+
+Since v0.106.0 the vault panel's **⚙ Administration** console does the same
+from a form (name, IP, port, HTTP or HTTPS, API key, and for a remote vault its
+web UI port), and refuses a remote vault while WireGuard is off. Its
+counterpart, `unregister_vault({ name })`, takes a vault out again: a
+`remoteVaults` entry is deleted with its key, a local vault found by its folder
+is added to `disabledVaults` instead (its files untouched), and the call is
+refused while a workspace binding still names the vault.
 
 ### By hand
 

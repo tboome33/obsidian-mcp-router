@@ -256,8 +256,8 @@ describe('assertAssetOutputDirWritable', () => {
  */
 describe('write tools with no `vault` argument — every one gated by where it writes', () => {
   const schemaOf = (name) => TOOLS.find((t) => t.name === name)?.inputSchema?.properties ?? {};
-  // They create a registry ENTRY; they do not write into an existing vault's folder.
-  const REGISTERS_A_VAULT = new Set(['provision_vault', 'register_remote_vault']);
+  // They create (or remove) a registry ENTRY; they do not write into an existing vault's folder.
+  const REGISTERS_A_VAULT = new Set(['provision_vault', 'register_remote_vault', 'unregister_vault']);
 
   test('a write tool whose schema declares no `vault` is exempt from the vault-argument gate', () => {
     const noVault = [...WRITE_TOOL_NAMES].filter((n) => !('vault' in schemaOf(n)));
@@ -369,11 +369,11 @@ describe('write tools with no `vault` argument — every one gated by where it w
 });
 
 describe('ALSO_TIER_EXEMPT_TOOL_NAMES', () => {
-  test('is a Set of the 4 tools that never address an already-registered vault through a `vault` argument', () => {
+  test('is a Set of the 5 tools that never address an already-registered vault through a `vault` argument', () => {
     assert.ok(ALSO_TIER_EXEMPT_TOOL_NAMES instanceof Set);
     assert.deepEqual(
       [...ALSO_TIER_EXEMPT_TOOL_NAMES].sort(),
-      ['download_page_assets', 'pptx_extract_assets', 'provision_vault', 'register_remote_vault'],
+      ['download_page_assets', 'pptx_extract_assets', 'provision_vault', 'register_remote_vault', 'unregister_vault'],
     );
   });
 
