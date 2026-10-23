@@ -585,6 +585,7 @@ function toSnapshot(data: ListVaults, fetchedAt: number): Snapshot {
       ...(byName.has(name) ? row(name) : (disabledRow(name) ?? row(name))),
       mode: modeOf(name),
     })),
+    routerVersion: data.routerBuild?.version ?? null,
     fetchedAt,
   }
 }
@@ -1326,7 +1327,18 @@ async function unregisterVault($: EngineInterface, name: string) {
 // refuses it from this project until it is resumed: set_secondary_vault_mode's
 // `paused`, one write in the router's own config. The panel keeps nothing of
 // its own, so a pause holds by every route and survives any panel state.
+// The router that knows `paused` (set_secondary_vault_mode, v0.107.0).
+const PAUSE_ROUTER: [number, number, number] = [0, 107, 0]
+
 async function setPaused($: EngineInterface, s: Secondary, paused: boolean) {
+  const routerVersion = (await read($, snapshot))?.routerVersion ?? null
+  if (!atLeast(routerVersion ?? undefined, PAUSE_ROUTER)) {
+    // The app keeps the router it started with until it restarts: the panel
+    // can be newer than the router it talks to.
+    await update($, failure, () => t('action.pauseNeedsRouter', { version: routerVersion ?? '?' }))
+
+    return
+  }
   const words = paused ? 'action.pause' : 'action.resume'
   // What the router's session applies once written: a session started before
   // another one's answer keeps it until restarted (pausedInForceHere).

@@ -2209,7 +2209,8 @@ test('the band chip unfolds, above the line, the secondaries it could not show; 
 })
 
 test('■ pauses a secondary through the router, which keeps it bound with its tier; ▶ resumes it', async ($, on) => {
-  const state = { list: LIST as unknown }
+  const ROUTER = { routerBuild: { version: '0.107.0' } }
+  const state = { list: { ...LIST, ...ROUTER } as unknown }
   const calls = wire(on, state)
   engineBand(on)
   await begin($)
@@ -2219,7 +2220,7 @@ test('■ pauses a secondary through the router, which keeps it bound with its t
   expect(calls.filter(c => c.tool === 'set_secondary_vault_mode').at(-1)?.args).toEqual({ vault: 'docs', paused: true })
   expect(calls.some(c => c.tool === 'confirm_workspace_binding')).toBe(false)
   // The router now reports docs paused, still in the binding.
-  state.list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, alsoPaused: ['docs'] } }
+  state.list = { ...LIST, ...ROUTER, workspaceBinding: { ...LIST.workspaceBinding, alsoPaused: ['docs'] } }
   await ui.press({ key: 'refresh' })
   expect(await eventually(() => ui.find({ type: 'Button', key: 'resume-docs' }))).toBeTruthy()
   expect(await ui.find({ type: 'Button', key: 'pause-docs' })).toBeFalsy()
@@ -2230,7 +2231,7 @@ test('■ pauses a secondary through the router, which keeps it bound with its t
   await band.unmount()
   await ui.press({ key: 'resume-docs' })
   expect(calls.filter(c => c.tool === 'set_secondary_vault_mode').at(-1)?.args).toEqual({ vault: 'docs', paused: false })
-  state.list = LIST
+  state.list = { ...LIST, ...ROUTER }
   await ui.press({ key: 'refresh' })
   expect(await ui.find({ type: 'Button', key: 'resume-docs' })).toBeFalsy()
   expect(await ui.find({ type: 'Button', key: 'pause-docs' })).toBeTruthy()
@@ -2271,7 +2272,7 @@ test("a paused remote vault, which the router no longer lists, still opens from 
 
 test("a resume this session's router does not apply yet is said, and the vault stays paused here", async ($, on) => {
   const state = {
-    list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, alsoPaused: ['docs'] } } as unknown,
+    list: { ...LIST, routerBuild: { version: '0.107.0' }, workspaceBinding: { ...LIST.workspaceBinding, alsoPaused: ['docs'] } } as unknown,
     answers: { set_secondary_vault_mode: { paused: false, pausedInForceHere: true } },
   }
   wire(on, state)
@@ -2281,6 +2282,16 @@ test("a resume this session's router does not apply yet is said, and the vault s
   await ui.press({ key: 'resume-docs' })
   expect(await ui.find({ type: 'Text', text: /^C'est enregistré pour docs, mais le router de cette session/ })).toBeTruthy()
   expect(await ui.find({ type: 'Button', key: 'resume-docs' })).toBeTruthy()
+  await ui.unmount()
+})
+
+test("a router older than the pause is said, and sent nothing it would refuse", async ($, on) => {
+  const calls = wire(on, { list: { ...LIST, routerBuild: { version: '0.105.0' } } })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'pause-docs' })
+  expect(calls.some(c => c.tool === 'set_secondary_vault_mode')).toBe(false)
+  expect(await ui.find({ type: 'Text', text: /^La pause demande le router v0\.107\.0 ou plus, et celui de cette session est en v0\.105\.0/ })).toBeTruthy()
   await ui.unmount()
 })
 

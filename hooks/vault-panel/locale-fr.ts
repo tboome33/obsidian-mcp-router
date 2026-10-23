@@ -201,6 +201,7 @@ export const FR: Record<string, string> = {
   "action.resume.doing": "Reprise de {name}",
   "action.resume.done": "{name} repris",
   "action.pauseNotHere": "C'est enregistré pour {name}, mais le router de cette session applique encore l'ancien état (une autre session l'a changé depuis son démarrage) : redémarre la session pour qu'il s'applique ici.",
+  "action.pauseNeedsRouter": "La pause demande le router v0.107.0 ou plus, et celui de cette session est en v{version} : l'app garde le router démarré avant la mise à jour. Quitte complètement Claude puis relance-le (une nouvelle session ne suffit pas).",
   "secondaries.paused": "En pause · {count}",
   "secondaries.pausedTag": "en pause",
   "secondaries.pauseHint": "■ met un secondaire en pause sans le retirer · ▶ le reprend avec son droit d'écriture",

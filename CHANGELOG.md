@@ -10,6 +10,16 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.107.2] — 2026-10-24 — pausing with a router older than the panel
+
+Seen on screen after the v0.107.1 update: ■ answered "set_secondary_vault_mode: `mode` must be one
+of …(got undefined)". The panel was v0.107.1, but the session's router was an older one
+(v0.105.0): the app had kept the router process it started before the update. The panel now
+reads the router's version (`list_vaults.routerBuild`) and, below v0.107.0, sends no pause or
+resume: it says which router answers and that the app has to be restarted for the new one.
+
+- Tests: `tests/vault-panel.test.tsx` 92 — a v0.105.0 router is sent nothing and is named.
+
 ## [0.107.1] — 2026-10-23 — the update reads back this project's install, not another's
 
 Seen while updating the installed plugin to v0.107.0: `claude plugin list --json` lists the

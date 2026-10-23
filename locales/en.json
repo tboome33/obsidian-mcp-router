@@ -229,6 +229,7 @@
   "action.resume.doing": "Resuming {name}",
   "action.resume.done": "{name} resumed",
   "action.pauseNotHere": "Recorded for {name}, but this session's router still applies the previous state (another session changed it after it started): restart the session for it to apply here.",
+  "action.pauseNeedsRouter": "Pausing needs router v0.107.0 or later, and this session's router is v{version}: the app keeps the router it started before the update. Quit Claude completely and start it again (a new session is not enough).",
 
   "secondaries.paused": "Paused · {count}",
   "secondaries.pausedTag": "paused",
