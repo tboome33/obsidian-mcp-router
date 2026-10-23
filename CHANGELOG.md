@@ -10,6 +10,16 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.108.1] — 2026-10-24 — ■ and ▶ on the band's line
+
+Asked after v0.108.0: pausing and resuming from the band above the conversation, not only from
+the list its "+N" unfolds. Every secondary on the band's line now carries its own control — ■
+for an active one, ▶ for a paused one (dimmed, marked ⏸); the paused ones come after the active
+ones. Those the line cannot show stay in "… +N ⏸ k", whose list has the same controls. The line's
+width counts the two cells each control takes.
+
+- Tests: `tests/vault-panel.test.tsx` 94 — ■ and ▶ pressed on the line itself.
+
 ## [0.108.0] — 2026-10-24 — every vault as a tile; pausing with a router older than the panel
 
 - **Every vault in the pane is a tile, the same tile**: the primary, the secondaries (open,

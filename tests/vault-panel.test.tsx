@@ -1607,13 +1607,13 @@ test('the band keeps room for "… +N" before it shows a secondary', async ($, o
   const narrow = await at(69)
   expect(narrow.includes('docs')).toBe(false)
   expect(narrow).toContain('… +2')
-  const enough = await at(72)
+  const enough = await at(74)
   expect(enough).toContain('docs')
   expect(enough).toContain('… +1')
-  const all = await at(78)
+  const all = await at(82)
   expect(all).toContain('notes')
   expect(all.some(t => t.startsWith('…'))).toBe(false)
-  expect((await at(77)).includes('notes')).toBe(false)
+  expect((await at(81)).includes('notes')).toBe(false)
 })
 
 // Two cells per CJK character: "資料庫一" is 8 cells, not 4. With main + two
@@ -2250,9 +2250,11 @@ test('■ pauses a secondary through the router, which keeps it bound with its t
   expect(await eventually(() => ui.find({ type: 'Button', key: 'resume-docs' }))).toBeTruthy()
   expect(await ui.find({ type: 'Button', key: 'pause-docs' })).toBeFalsy()
   expect(await ui.find({ type: 'Button', key: 'add-docs' })).toBeFalsy()
-  // The band counts it, and its list resumes it too.
+  // The band shows it on its line, marked ⏸, with its ▶ right there.
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await bandTexts(band)).toContain('⏸ 1')
+  expect(await bandTexts(band)).toContain('⏸')
+  expect(await band.find({ type: 'Button', key: 'band-resume-docs' })).toBeTruthy()
+  expect(await band.find({ type: 'Button', key: 'band-pause-notes' })).toBeTruthy()
   await band.unmount()
   await ui.press({ key: 'resume-docs' })
   expect(calls.filter(c => c.tool === 'set_secondary_vault_mode').at(-1)?.args).toEqual({ vault: 'docs', paused: false })
@@ -2289,8 +2291,8 @@ test("a paused remote vault, which the router no longer lists, still opens from 
   engineBand(on)
   await begin($)
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  await band.press({ key: 'band-more' })
-  await band.press({ key: 'band-list-open-extra' })
+  // On the band's line, where a paused vault is named too.
+  await band.press({ key: 'band-open-extra' })
   expect(launched).toContainEqual(['rundll32', 'url.dll,FileProtocolHandler', 'https://10.8.0.1:3002/'])
   await band.unmount()
 })
@@ -2318,6 +2320,23 @@ test("a router older than the pause is said, and sent nothing it would refuse", 
   expect(calls.some(c => c.tool === 'set_secondary_vault_mode')).toBe(false)
   expect(await ui.find({ type: 'Text', text: /^La pause demande le router v0\.107\.0 ou plus, et celui de cette session est en v0\.105\.0/ })).toBeTruthy()
   await ui.unmount()
+})
+
+test('■ and ▶ stand on the band\'s line, by each secondary: a press pauses or resumes it there', async ($, on) => {
+  const state = {
+    list: { ...LIST, routerBuild: { version: '0.108.0' }, workspaceBinding: { ...LIST.workspaceBinding, alsoPaused: ['notes'] } } as unknown,
+  }
+  const calls = wire(on, state)
+  engineBand(on)
+  await begin($)
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  // Nothing hidden at this width: no chip, every control on the line.
+  expect(await band.find({ type: 'Button', key: 'band-more' })).toBeFalsy()
+  await band.press({ key: 'band-pause-docs' })
+  expect(calls.filter(c => c.tool === 'set_secondary_vault_mode').at(-1)?.args).toEqual({ vault: 'docs', paused: true })
+  await band.press({ key: 'band-resume-notes' })
+  expect(calls.filter(c => c.tool === 'set_secondary_vault_mode').at(-1)?.args).toEqual({ vault: 'notes', paused: false })
+  await band.unmount()
 })
 
 test('the band list shows a few rows, and sends to the pane for the rest', async ($, on) => {
