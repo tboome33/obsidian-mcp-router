@@ -1079,8 +1079,27 @@ export const register: Register = on => {
         <Button key={`obsidian-${row.name}`} label="💎" plain onPress={() => void openInObsidian($, row)} />
       )
 
-    // The name grows into the room its row leaves, so a row too narrow for
-    // name and controls together wraps the controls below, never past the edge.
+    // A vault's row: the name on the left, its controls on the right. Too
+    // narrow for both, the controls drop to a second line, indented under the
+    // name (the dot's cell and its gap); too narrow for the controls alone,
+    // they wrap among themselves. Only a tier menu wider than the pane itself
+    // still runs past the edge: it keeps one width so the menus line up.
+    const rowLayout = {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      columnGap: 1,
+    } as const
+    const controlsLayout = {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 1,
+      alignItems: 'center',
+      flexShrink: 1,
+      paddingLeft: 3,
+    } as const
+    // The name grows into the room its row leaves, so the controls sit right.
     const name = (row: VaultRow, isStrong = false) => (
       <Box flexDirection="row" gap={1} flexGrow={1} flexShrink={1} alignItems="center">
         {dot(row.online, isRemote(row))}
@@ -1099,17 +1118,13 @@ export const register: Register = on => {
         {snap.primary ? (
           <Box
             key="primary-row"
-            flexDirection="row"
-            flexWrap="wrap"
-            justifyContent="space-between"
-            alignItems="center"
-            columnGap={1}
+            {...rowLayout}
             borderStyle="round"
             borderDimColor
             paddingX={1}
           >
             {name(snap.primary, true)}
-            <Box flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
+            <Box key="primary-controls" {...controlsLayout}>
               {snap.isLocked && (
                 <Text size="caption" color="warning">
                   verrouillé
@@ -1174,16 +1189,9 @@ export const register: Register = on => {
       }
     }
     const secondaryRow = (s: Secondary) => (
-      <Box
-        key={`sec-${s.name}`}
-        flexDirection="row"
-        flexWrap="wrap"
-        justifyContent="space-between"
-        alignItems="center"
-        columnGap={1}
-      >
+      <Box key={`sec-${s.name}`} {...rowLayout}>
         {name(s)}
-        <Box flexDirection="row" gap={1} alignItems="center" flexShrink={0} paddingLeft={3}>
+        <Box key={`controls-${s.name}`} {...controlsLayout}>
           {s.online === false && isRemote(s) && (
             <Text size="caption" color="error">
               injoignable
@@ -1205,7 +1213,7 @@ export const register: Register = on => {
           ) : (
             // A surface with no menu (the phone) keeps the three choices, as
             // quiet buttons, the current one lit.
-            <Box flexDirection="row" gap={1}>
+            <Box key={`modes-${s.name}`} flexDirection="row" flexWrap="wrap" flexShrink={1} gap={1}>
               {MODES.map(m => (
                 <Button
                   key={`mode-${s.name}-${m.mode}`}
@@ -1349,12 +1357,12 @@ export const register: Register = on => {
             )}
             <Box flexDirection="column">
               {list.map(v => (
-                <Box key={`av-${v.name}`} flexDirection="row" justifyContent="space-between" alignItems="center">
-                  <Box flexDirection="row" gap={1} flexShrink={1} alignItems="center">
+                <Box key={`av-${v.name}`} {...rowLayout}>
+                  <Box flexDirection="row" gap={1} flexGrow={1} flexShrink={1} alignItems="center">
                     {dot(v.online, isRemote(v))}
                     <Text wrap="truncate-end">{v.name}</Text>
                   </Box>
-                  <Box flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
+                  <Box key={`av-controls-${v.name}`} {...controlsLayout}>
                     {uiLink(v)}
                     {snap.primary ? (
                       <Button
