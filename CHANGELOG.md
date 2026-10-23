@@ -10,6 +10,31 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.108.0] — 2026-10-24 — every vault as a tile; pausing with a router older than the panel
+
+- **Every vault in the pane is a tile, the same tile**: the primary, the secondaries (open,
+  closed, paused) and the vaults that can be added. One card each, of one width (wide enough for
+  the tier menu), in grids that wrap: the vault's state and name on top, local or remote (and,
+  for a paused one, its tier and "en pause") under it, its controls at the bottom — Obsidian 🌐 🪟,
+  ■ / ▶, ✕ and the tier menu for a secondary, "Ajouter" or "Choisir comme principal" for a vault
+  to add. Only the primary's border is lit.
+- **Obsidian's own purple mark** replaces 💎 on the button that opens a local vault in Obsidian
+  (the mark, then "Obsidian"), and in the pane's legend; a surface that draws no SVG keeps 💎.
+  The mark comes from LobeHub's icons (`@lobehub/icons-static-svg` 1.98.0, MIT), credited in
+  NOTICE.
+
+Seen on screen after the v0.107.1 update: ■ answered "set_secondary_vault_mode: `mode` must be one
+of …(got undefined)". The panel was v0.107.1, but the session's router was an older one
+(v0.105.0): the app had kept the router process it started before the update. The panel now
+reads the router's version (`list_vaults.routerBuild`) and, below v0.107.0, sends no pause or
+resume: it says which router answers and that the app has to be restarted for the new one.
+
+- The pane's hint said ▶ "resumes it with its write right", which read as "writable again". It
+  now says ▶ resumes the vault as it was set: 🔒 read-only, ✋ write if you agree, or ✏️ read
+  and write.
+- Tests: `tests/vault-panel.test.tsx` 92 — a v0.105.0 router is sent nothing and is named; the
+  primary, the secondaries and the vaults to add are one tile, of one width, in grids that wrap.
+
 ## [0.107.1] — 2026-10-23 — the update reads back this project's install, not another's
 
 Seen while updating the installed plugin to v0.107.0: `claude plugin list --json` lists the

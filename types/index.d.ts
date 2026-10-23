@@ -88,6 +88,8 @@ export type Snapshot = {
   /** Where a new vault goes by default: the config's vaultsRoot, else the
    * folder most registered vaults sit in. */
   defaultRoot?: string | null
+  /** The version the router of this session reports (list_vaults.routerBuild). */
+  routerVersion?: string | null
   fetchedAt: number
 }
 

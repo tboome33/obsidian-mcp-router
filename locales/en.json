@@ -79,7 +79,7 @@
   "legend.available": "available",
   "legend.closed": "local, closed",
   "legend.unreachable": "remote, unreachable",
-  "legend.links": "💎 Obsidian · 🌐 your browser · 🪟 built-in browser",
+  "legend.links": "Obsidian · 🌐 your browser · 🪟 built-in browser",
 
   "alt.open": "open",
   "alt.closed": "closed",
@@ -229,10 +229,11 @@
   "action.resume.doing": "Resuming {name}",
   "action.resume.done": "{name} resumed",
   "action.pauseNotHere": "Recorded for {name}, but this session's router still applies the previous state (another session changed it after it started): restart the session for it to apply here.",
+  "action.pauseNeedsRouter": "Pausing needs router v0.107.0 or later, and this session's router is v{version}: the app keeps the router it started before the update. Quit Claude completely and start it again (a new session is not enough).",
 
   "secondaries.paused": "Paused · {count}",
   "secondaries.pausedTag": "paused",
-  "secondaries.pauseHint": "■ pauses a secondary without removing it · ▶ resumes it with its write right",
+  "secondaries.pauseHint": "■ pauses a secondary without removing it · ▶ resumes it as it was set: 🔒 read-only, ✋ write if you agree, or ✏️ read and write",
 
   "band.noOpen": "Nothing to open {name} with: no known local folder, no web UI."
 }

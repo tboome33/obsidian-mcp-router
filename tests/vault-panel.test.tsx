@@ -907,6 +907,26 @@ test('an open local vault keeps its 💎: the same address brings its window to 
   await ui.unmount()
 })
 
+test("a local vault opens with Obsidian's purple mark and an Obsidian button, the 💎 gone", async ($, on) => {
+  wire(on, { list: LOCAL_LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  obsidianKnows(on, ['C:\\VAULTS\\Notes'])
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  await begin($)
+  const desktop = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openClosed(desktop)
+  // The folder is matched to Obsidian's list after the read: waited for.
+  await eventually(() => desktop.find({ type: 'Button', key: 'obsidian-notes' }))
+  const box = nodesOf(await desktop.drawn()).find(n => keyOf(n) === 'obsidian-box-notes')
+  const mark = nodesOf(box as never).find(n => n.type === 'Svg')
+  expect(String(mark?.props?.source)).toContain('#A88BFA')
+  expect(await desktop.find({ type: 'Button', key: 'obsidian-notes' })).toMatchObject({ props: { label: 'Obsidian' } })
+  await desktop.unmount()
+  const terminal = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await openClosed(terminal)
+  expect(await eventually(() => terminal.find({ type: 'Button', key: 'obsidian-notes' }))).toMatchObject({ props: { label: 'Obsidian' } })
+  await terminal.unmount()
+})
+
 test('a closed local vault Obsidian knows gets its own 💎, which launches it; one it does not know says so instead', async ($, on) => {
   wire(on, { list: LOCAL_LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
   obsidianKnows(on, ['C:\\VAULTS\\Notes'])
@@ -1271,7 +1291,7 @@ const keyOf = (n: Drawn) => n.key ?? (n.props?.key as string | undefined)
 const textOf = (n: Drawn): string =>
   typeof n.children === 'string' ? n.children : Array.isArray(n.children) ? n.children.map(c => (typeof c === 'string' ? c : textOf(c as Drawn))).join('') : ''
 
-test('a row too narrow for its name and controls wraps the controls, never past the edge', async ($, on) => {
+test('the primary, the secondaries and the vaults to add are the same tile, in grids that wrap', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
   for (const surface of ['terminal', 'desktop', 'mobile'] as const) {
@@ -1282,20 +1302,25 @@ test('a row too narrow for its name and controls wraps the controls, never past 
     }
     await openAdd(ui)
     const nodes = nodesOf(await ui.drawn())
-    // The primary's card, every secondary's row and the add list's row: in
-    // LIST, one primary, two secondaries and one unbound local vault.
-    const rows = nodes.filter(n => /^(primary-row|sec-|av-(?!controls))/.test(keyOf(n) ?? ''))
-    expect(rows.length).toBe(4)
-    for (const row of rows) {
-      expect(row.props?.flexWrap).toBe('wrap')
-      const [nameSide, controls] = (row.children as Drawn[]).filter(c => c && typeof c === 'object')
-      // The name side grows into the room, so the controls go right when they fit.
-      expect(nameSide?.props?.flexGrow).toBe(1)
-      // The controls, on a line of their own, indent under the name and wrap
-      // among themselves rather than run past the edge.
-      expect(controls?.props?.flexWrap).toBe('wrap')
-      expect(controls?.props?.flexShrink).toBe(1)
-      expect(controls?.props?.paddingLeft).toBe(3)
+    // In LIST: one primary, two secondaries (one open, one closed), one vault to add.
+    const tiles = nodes.filter(n => /^(primary-row|sec-|av-)/.test(keyOf(n) ?? '') && !/(-controls|^sec-tiles|^av-tiles)/.test(keyOf(n) ?? ''))
+    expect(tiles.map(n => keyOf(n))).toEqual(['primary-row', 'sec-docs', 'sec-notes', 'av-closed'])
+    const width = tiles[0]!.props?.width
+    for (const tile of tiles) {
+      // One tile for all three: same width, same border, same three parts.
+      expect(tile.props?.width).toBe(width)
+      expect(tile.props?.borderStyle).toBe('round')
+      expect(tile.props?.flexDirection).toBe('column')
+      const nameText = nodesOf(tile as never).find(n => n.type === 'Text' && n.props?.weight === 'semibold')
+      expect(nameText).toBeTruthy()
+      // Its controls wrap inside the tile rather than run past its edge.
+      expect(nodes.find(n => keyOf(n) === `${keyOf(tile)}-controls`)?.props?.flexWrap).toBe('wrap')
+    }
+    // Only the primary's border is lit.
+    expect(tiles.map(n => n.props?.borderDimColor)).toEqual([false, true, true, true])
+    // The grids wrap.
+    for (const key of ['sec-tiles-open', 'sec-tiles-closed', 'av-tiles']) {
+      expect(nodes.find(n => keyOf(n) === key)?.props?.flexWrap).toBe('wrap')
     }
     // The phone has no menu: its three tier buttons wrap too.
     const modes = nodes.filter(n => /^modes-/.test(keyOf(n) ?? ''))
@@ -2209,7 +2234,8 @@ test('the band chip unfolds, above the line, the secondaries it could not show; 
 })
 
 test('■ pauses a secondary through the router, which keeps it bound with its tier; ▶ resumes it', async ($, on) => {
-  const state = { list: LIST as unknown }
+  const ROUTER = { routerBuild: { version: '0.107.0' } }
+  const state = { list: { ...LIST, ...ROUTER } as unknown }
   const calls = wire(on, state)
   engineBand(on)
   await begin($)
@@ -2219,7 +2245,7 @@ test('■ pauses a secondary through the router, which keeps it bound with its t
   expect(calls.filter(c => c.tool === 'set_secondary_vault_mode').at(-1)?.args).toEqual({ vault: 'docs', paused: true })
   expect(calls.some(c => c.tool === 'confirm_workspace_binding')).toBe(false)
   // The router now reports docs paused, still in the binding.
-  state.list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, alsoPaused: ['docs'] } }
+  state.list = { ...LIST, ...ROUTER, workspaceBinding: { ...LIST.workspaceBinding, alsoPaused: ['docs'] } }
   await ui.press({ key: 'refresh' })
   expect(await eventually(() => ui.find({ type: 'Button', key: 'resume-docs' }))).toBeTruthy()
   expect(await ui.find({ type: 'Button', key: 'pause-docs' })).toBeFalsy()
@@ -2230,7 +2256,7 @@ test('■ pauses a secondary through the router, which keeps it bound with its t
   await band.unmount()
   await ui.press({ key: 'resume-docs' })
   expect(calls.filter(c => c.tool === 'set_secondary_vault_mode').at(-1)?.args).toEqual({ vault: 'docs', paused: false })
-  state.list = LIST
+  state.list = { ...LIST, ...ROUTER }
   await ui.press({ key: 'refresh' })
   expect(await ui.find({ type: 'Button', key: 'resume-docs' })).toBeFalsy()
   expect(await ui.find({ type: 'Button', key: 'pause-docs' })).toBeTruthy()
@@ -2271,7 +2297,7 @@ test("a paused remote vault, which the router no longer lists, still opens from 
 
 test("a resume this session's router does not apply yet is said, and the vault stays paused here", async ($, on) => {
   const state = {
-    list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, alsoPaused: ['docs'] } } as unknown,
+    list: { ...LIST, routerBuild: { version: '0.107.0' }, workspaceBinding: { ...LIST.workspaceBinding, alsoPaused: ['docs'] } } as unknown,
     answers: { set_secondary_vault_mode: { paused: false, pausedInForceHere: true } },
   }
   wire(on, state)
@@ -2281,6 +2307,16 @@ test("a resume this session's router does not apply yet is said, and the vault s
   await ui.press({ key: 'resume-docs' })
   expect(await ui.find({ type: 'Text', text: /^C'est enregistré pour docs, mais le router de cette session/ })).toBeTruthy()
   expect(await ui.find({ type: 'Button', key: 'resume-docs' })).toBeTruthy()
+  await ui.unmount()
+})
+
+test("a router older than the pause is said, and sent nothing it would refuse", async ($, on) => {
+  const calls = wire(on, { list: { ...LIST, routerBuild: { version: '0.105.0' } } })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'pause-docs' })
+  expect(calls.some(c => c.tool === 'set_secondary_vault_mode')).toBe(false)
+  expect(await ui.find({ type: 'Text', text: /^La pause demande le router v0\.107\.0 ou plus, et celui de cette session est en v0\.105\.0/ })).toBeTruthy()
   await ui.unmount()
 })
 
