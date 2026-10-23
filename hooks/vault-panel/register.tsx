@@ -1437,6 +1437,8 @@ function compareVersions(x: string, y: string) {
   return 0
 }
 const BAND_LIST_ROWS = 6
+// A tile of the "add a vault" grid, in cells: a name of about 18 fits.
+const TILE_WIDTH = 24
 const isNewer = (latest: string, installed: string) => compareVersions(latest, installed) > 0
 
 async function installedVersion($: EngineInterface) {
@@ -2812,14 +2814,30 @@ export const register: Register = on => {
                 {t('add.noMatch')}
               </Text>
             )}
-            <Box flexDirection="column">
+            {/* The vaults that can be added, as tiles that wrap: name and
+                state on top, local or remote under it, the actions at the
+                bottom. One width for all, so the grid lines up. */}
+            <Box key="av-tiles" flexDirection="row" flexWrap="wrap" gap={1}>
               {list.map(v => (
-                <Box key={`av-${v.name}`} {...rowLayout}>
-                  <Box flexDirection="row" gap={1} flexGrow={1} flexShrink={1} alignItems="center">
+                <Box
+                  key={`av-${v.name}`}
+                  flexDirection="column"
+                  width={TILE_WIDTH}
+                  minWidth={TILE_WIDTH}
+                  borderStyle="round"
+                  borderDimColor
+                  paddingX={1}
+                >
+                  <Box flexDirection="row" gap={1} alignItems="center">
                     {dot(v.online, isRemote(v))}
-                    <Text wrap="truncate-end">{v.name}</Text>
+                    <Text weight="semibold" wrap="truncate-end">
+                      {v.name}
+                    </Text>
                   </Box>
-                  <Box key={`av-controls-${v.name}`} {...controlsLayout}>
+                  <Text size="caption" dimColor wrap="truncate-end">
+                    {isRemote(v) ? t('place.remote') : t('place.local')}
+                  </Text>
+                  <Box key={`av-controls-${v.name}`} flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
                     {uiLink(v)}
                     {snap.primary ? (
                       <Button

@@ -1282,10 +1282,19 @@ test('a row too narrow for its name and controls wraps the controls, never past 
     }
     await openAdd(ui)
     const nodes = nodesOf(await ui.drawn())
-    // The primary's card, every secondary's row and the add list's row: in
-    // LIST, one primary, two secondaries and one unbound local vault.
-    const rows = nodes.filter(n => /^(primary-row|sec-|av-(?!controls))/.test(keyOf(n) ?? ''))
-    expect(rows.length).toBe(4)
+    // The primary's card and every secondary's row: in LIST, one primary
+    // and two secondaries.
+    const rows = nodes.filter(n => /^(primary-row|sec-)/.test(keyOf(n) ?? ''))
+    expect(rows.length).toBe(3)
+    // The vaults that can be added are tiles of one width, in a grid that wraps.
+    expect(nodes.find(n => keyOf(n) === 'av-tiles')?.props?.flexWrap).toBe('wrap')
+    const tiles = nodes.filter(n => /^av-(?!controls|tiles)/.test(keyOf(n) ?? ''))
+    expect(tiles.length).toBe(1)
+    for (const tile of tiles) {
+      expect(tile.props?.width).toBe(24)
+      expect(tile.props?.borderStyle).toBe('round')
+      expect(nodes.find(n => keyOf(n) === `av-controls-${keyOf(tile)!.slice(3)}`)?.props?.flexWrap).toBe('wrap')
+    }
     for (const row of rows) {
       expect(row.props?.flexWrap).toBe('wrap')
       const [nameSide, controls] = (row.children as Drawn[]).filter(c => c && typeof c === 'object')

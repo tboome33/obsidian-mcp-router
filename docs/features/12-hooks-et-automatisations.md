@@ -130,6 +130,8 @@ Ce qu'il montre, dans un panneau **Vaults** et via la commande `/vaults` :
 
 **Le bandeau cliquable** (v0.107.0). Un appui sur un nom ouvre le vault : dans Obsidian s'il est local, son interface web dans le navigateur s'il est distant. La pastille « … +3 » (et « ⏸ 1 » s'il y a des secondaires en pause) déplie, au-dessus de la ligne, les secondaires qui n'y tiennent pas et ceux en pause : chacun s'y ouvre d'un appui, ■ le met en pause, ▶ le reprend.
 
+**Les vaults disponibles en tuiles** (v0.108.0). Sous « Ajouter un vault », chaque vault qu'on peut lier est une tuile de même largeur, dans une grille qui passe à la ligne : son état et son nom en haut, local ou distant dessous, ses actions en bas (🌐 🪟 pour un distant, puis « Ajouter », ou « Choisir comme principal » quand le projet n'en a pas).
+
 **La pause d'un secondaire** (v0.107.0). ■ (dans le panneau ou la liste du bandeau) met le vault en pause dans le router lui-même : `set_secondary_vault_mode({ vault, paused: true })` l'inscrit dans `alsoPaused` de la liaison de ce projet. Il reste secondaire, avec son niveau d'accès (🔒 lecture seule, ✋ écriture sur accord ou ✏️ lecture-écriture), mais le router le refuse depuis ce projet, en lecture comme en écriture, par toutes les voies (`openVaults` et `vaultReach` inactif compris). Il est listé sous « En pause » (▶ pour le reprendre, ✕ pour le retirer) et compté dans le bandeau ; ▶ le reprend tel qu'il était réglé.
 
 **La console d'administration** (v0.106.0), repliée en bas du panneau sous « ⚙ Administration » :

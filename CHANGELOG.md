@@ -10,7 +10,12 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
-## [0.107.2] — 2026-10-24 — pausing with a router older than the panel
+## [0.108.0] — 2026-10-24 — the vaults to add as tiles; pausing with a router older than the panel
+
+- **The vaults that can be added are tiles** ("Ajouter un vault"): one card each, of one width,
+  in a grid that wraps — the vault's state and name on top, local or remote under it, its
+  actions at the bottom (🌐 🪟 for a remote one, then "Ajouter", or "Choisir comme principal"
+  when the project has no primary).
 
 Seen on screen after the v0.107.1 update: ■ answered "set_secondary_vault_mode: `mode` must be one
 of …(got undefined)". The panel was v0.107.1, but the session's router was an older one
@@ -21,7 +26,8 @@ resume: it says which router answers and that the app has to be restarted for th
 - The pane's hint said ▶ "resumes it with its write right", which read as "writable again". It
   now says ▶ resumes the vault as it was set: 🔒 read-only, ✋ write if you agree, or ✏️ read
   and write.
-- Tests: `tests/vault-panel.test.tsx` 92 — a v0.105.0 router is sent nothing and is named.
+- Tests: `tests/vault-panel.test.tsx` 92 — a v0.105.0 router is sent nothing and is named; the
+  tiles' grid wraps and every tile has one width.
 
 ## [0.107.1] — 2026-10-23 — the update reads back this project's install, not another's
 
