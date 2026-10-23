@@ -1446,7 +1446,8 @@ function compareVersions(x: string, y: string) {
   return 0
 }
 // ■ and ▶: a muted red to pause, a green to resume, readable on a light and a
-// dark background alike.
+// dark background alike. The glyph is the Button's only child, a coloured
+// Text (a Button holds strings and Text only).
 const PAUSE_COLOR = '#c0605a'
 const RESUME_COLOR = '#3f9b5a'
 // A vault's tile, in cells, at the least: a name of about 18 fits. The pane
@@ -2029,28 +2030,36 @@ export const register: Register = on => {
     // The plugin's name and version on the left, the repository on the right,
     // a badge when GitHub has a newer version (its press unfolds the console,
     // where the update is). Then the summary and the refresh.
+    // The pane's name, version and links, then a rule under them: a line of
+    // box-drawing dashes, dimmed and cut at the pane's edge, so it reads as a
+    // separator on the terminal and the desktop alike.
     const title = (
-      <Box key="pane-title" flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
-        <Box flexDirection="row" gap={1} alignItems="center" flexShrink={1} flexWrap="wrap">
-          <Text weight="semibold">obsidian-mcp-router</Text>
-          {upd?.installed && (
-            <Text size="caption" dimColor>
-              v{upd.installed}
-            </Text>
-          )}
-          {upd?.isAvailable && (
-            <Button
-              key="update-badge"
-              label={t('update.badge')}
-              plain
-              onPress={() => void update($, showAdmin, () => true)}
-            />
-          )}
+      <Box key="pane-title-block" flexDirection="column">
+        <Box key="pane-title" flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+          <Box flexDirection="row" gap={1} alignItems="center" flexShrink={1} flexWrap="wrap">
+            <Text weight="semibold">obsidian-mcp-router</Text>
+            {upd?.installed && (
+              <Text size="caption" dimColor>
+                v{upd.installed}
+              </Text>
+            )}
+            {upd?.isAvailable && (
+              <Button
+                key="update-badge"
+                label={t('update.badge')}
+                plain
+                onPress={() => void update($, showAdmin, () => true)}
+              />
+            )}
+          </Box>
+          <Box flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
+            {Svg && <Svg source={GITHUB_MARK} alt="GitHub" width={14} height={14} />}
+            <Button key="github" label={t('header.github')} plain dimColor onPress={() => void openUrl($, REPO_URL)} />
+          </Box>
         </Box>
-        <Box flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
-          {Svg && <Svg source={GITHUB_MARK} alt="GitHub" width={14} height={14} />}
-          <Button key="github" label={t('header.github')} plain dimColor onPress={() => void openUrl($, REPO_URL)} />
-        </Box>
+        <Text dimColor wrap="truncate-end">
+          {'─'.repeat(240)}
+        </Text>
       </Box>
     )
     const header = (
@@ -2636,7 +2645,7 @@ export const register: Register = on => {
           ),
           obsidianLink(s),
           uiLink(s),
-          <Button key={`pause-${s.name}`} label="■" plain onPress={() => void setPaused($, s, true)}>
+          <Button key={`pause-${s.name}`} plain onPress={() => void setPaused($, s, true)}>
             <Text color={PAUSE_COLOR}>■</Text>
           </Button>,
           <Button
@@ -2735,7 +2744,7 @@ export const register: Register = on => {
                   `paused-${p.name}`,
                   p,
                   [
-                    <Button key={`resume-${p.name}`} label="▶" plain onPress={() => void setPaused($, p, false)}>
+                    <Button key={`resume-${p.name}`} plain onPress={() => void setPaused($, p, false)}>
                       <Text color={RESUME_COLOR}>▶</Text>
                     </Button>,
                     // A paused vault gone from the router is let go of here.
@@ -2990,11 +2999,11 @@ export const register: Register = on => {
     // A secondary's control: ■ pauses an active one, ▶ resumes a paused one.
     const control = (row: Secondary, isPaused: boolean) =>
       isPaused ? (
-        <Button key={`band-resume-${row.name}`} label="▶" plain onPress={() => void setPaused($, row, false)}>
+        <Button key={`band-resume-${row.name}`} plain onPress={() => void setPaused($, row, false)}>
           <Text color={RESUME_COLOR}>▶</Text>
         </Button>
       ) : (
-        <Button key={`band-pause-${row.name}`} label="■" plain onPress={() => void setPaused($, row, true)}>
+        <Button key={`band-pause-${row.name}`} plain onPress={() => void setPaused($, row, true)}>
           <Text color={PAUSE_COLOR}>■</Text>
         </Button>
       )
