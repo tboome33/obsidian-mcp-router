@@ -48,6 +48,30 @@ export type AdminForm = {
   scheme: 'https' | 'http'
 }
 
+/** The plugin's version against GitHub's, and an update under way. */
+export type UpdateState = {
+  installed: string | null
+  /** null: GitHub did not answer. */
+  latest: string | null
+  isAvailable: boolean
+  isRunning: boolean
+  /** What the last update said, in words. */
+  log: string | null
+}
+
+/** The console's form for a NEW local vault. */
+export type CreateForm = {
+  name: string
+  /** The folder; empty: the default root plus the name. */
+  path: string
+  mode: 'personal' | 'research' | 'business' | 'code'
+  conventions: string[]
+  /** Comma-separated codes, for the `languages` convention. */
+  languages: string
+  /** Bind this project to the new vault. */
+  bind: boolean
+}
+
 export type Snapshot = {
   primary: VaultRow | null
   /** The binding restricts the session to the primary. */
@@ -58,6 +82,12 @@ export type Snapshot = {
   isImported: boolean
   secondaries: Secondary[]
   available: VaultRow[]
+  /** Secondaries paused from the pane: out of the binding, kept here with
+   * their write tier until resumed. Absent in a snapshot an older panel kept. */
+  paused?: Secondary[]
+  /** Where a new vault goes by default: the config's vaultsRoot, else the
+   * folder most registered vaults sit in. */
+  defaultRoot?: string | null
   fetchedAt: number
 }
 
@@ -87,6 +117,14 @@ declare module 'claude-code' {
       adminForm: AdminForm
       /** The vault whose removal waits for its confirming press. */
       confirmRemove: string | null
+      /** The vault chosen in the removal menu; null: the first one. */
+      removePick: string | null
+      update: UpdateState | null
+      createForm: CreateForm
+      /** The band's list of the secondaries it could not show, unfolded upward. */
+      bandListOpen: boolean
+      /** Conventions a new vault still waits for: its REST API was not up yet. */
+      pendingConventions: { vault: string; ids: string[]; languages: string[] } | null
       /** WireGuard as last detected; null before the first read. */
       wireguard: WireguardState | null
     }

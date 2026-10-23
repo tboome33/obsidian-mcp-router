@@ -2,7 +2,7 @@
   "_meta.name": "Français",
   "_meta.about": "Textes du panneau et du bandeau des vaults. Pour une autre langue : copier ce fichier sous le code de la langue (de.json, es.json…), traduire les valeurs, garder les clés et les {variables}. La langue se choisit dans Administration.",
 
-  "pane.title": "Vaults",
+  "pane.title": "obsidian-mcp-router",
 
   "command.description": "Afficher les vaults du router (principal, secondaires, disponibles)",
   "command.opened": "Panneau des vaults ouvert.",
@@ -18,6 +18,7 @@
   "band.primary": "Principal :",
   "band.secondaries": "Secondaires :",
   "band.none": "aucun",
+  "band.listMore": "… et {count} autres : voir le panneau",
   "band.show": "◧ Afficher le panneau",
   "band.hide": "◧ Masquer le panneau",
 
@@ -154,6 +155,7 @@
   "register.uiPort": "Port de l'interface web (facultatif)",
   "register.https": "HTTPS (certificat du plugin)",
   "register.http": "HTTP",
+  "register.enter": "↵",
   "register.submit": "Enregistrer",
   "register.keyNote": "La clé va directement dans la config du router ; le panneau l'efface après l'envoi.",
   "register.needWireguard": "Active WireGuard pour enregistrer un vault distant.",
@@ -171,7 +173,66 @@
   "unregister.title": "Retirer un vault du router",
   "unregister.hint": "Seuls les vaults qui ne sont liés à aucun workspace peuvent être retirés. Un vault local est désactivé, ses fichiers restent intacts.",
   "unregister.none": "Aucun vault à retirer.",
+  "unregister.ask": "Retirer {name} du router ?",
   "unregister.button": "Retirer",
   "unregister.confirm": "Confirmer le retrait",
-  "unregister.cancel": "Annuler"
+  "unregister.cancel": "Annuler",
+
+  "header.github": "GitHub",
+
+  "update.badge": "● maj disponible",
+  "update.title": "Mise à jour du plugin",
+  "update.versions": "installée v{installed} · dernière v{latest}",
+  "update.upToDate": "à jour (v{installed})",
+  "update.unknown": "dernière version inconnue (GitHub ne répond pas)",
+  "update.button": "Mettre à jour",
+  "update.check": "↻ Vérifier",
+  "update.doing": "Mise à jour du plugin",
+  "update.done": "Plugin mis à jour en v{version} : ouvre une nouvelle session pour l'appliquer.",
+  "update.failed": "La mise à jour a échoué : {error}",
+  "update.partial": "Plugin mis à jour en v{version} (GitHub annonce v{latest}) : ouvre une nouvelle session pour l'appliquer.",
+  "update.unchanged": "Rien n'a changé : Claude Code a toujours la v{version}. Sa marketplace ne propose peut-être pas encore la dernière.",
+  "update.unverified": "Les commandes de mise à jour ont abouti, mais la version installée n'a pas pu être relue : vérifie avec « claude plugin list ».",
+  "update.scopeFailed": "La mise à jour ({scope}) a échoué : {error}",
+
+  "command.setupDescription": "Configurer un vault : créer un vault Obsidian avec ses conventions, ou en enregistrer un",
+  "command.setupOpened": "Configuration des vaults ouverte dans le panneau.",
+
+  "setup.toast": "Aucun vault pour ce projet : tape /vault-setup pour en créer ou en enregistrer un.",
+
+  "primary.setup": "Configurer un vault",
+
+  "create.title": "Créer un vault Obsidian",
+  "create.name": "Nom",
+  "create.path": "Dossier",
+  "create.mode": "Type de wiki",
+  "create.mode.personal": "🧠 personnel",
+  "create.mode.research": "🔬 recherche",
+  "create.mode.business": "💼 entreprise",
+  "create.mode.code": "💻 code",
+  "create.conventions": "Conventions du vault (CLAUDE.md)",
+  "create.languages": "Langues du vault (codes séparés par une virgule, ex. fr, en)",
+  "create.bind": "Lier ce projet au nouveau vault",
+  "create.submit": "Créer le vault",
+  "create.doing": "Création de {name}",
+  "create.done": "{name} créé",
+  "create.conventionsDoing": "Installation des conventions dans {name}",
+  "create.conventionsDone": "Conventions installées dans {name}",
+  "create.conventionsPending": "Les conventions n'ont pas pu être installées dans {name} (le vault doit être ouvert dans Obsidian) : {error}",
+  "create.conventionsRetry": "Réessayer d'installer les conventions",
+  "create.invalidName": "Donne un nom au vault.",
+  "create.noSeal": "Le router n'a pas renvoyé d'aperçu scellé : rien n'a été créé.",
+  "create.invalidLanguages": "Langues du vault : des codes ISO 639-1 de 2 lettres, chacun une fois, séparés par une virgule (ex. fr, en).",
+
+  "action.pause.doing": "Pause de {name}",
+  "action.pause.done": "{name} en pause",
+  "action.resume.doing": "Reprise de {name}",
+  "action.resume.done": "{name} repris",
+  "action.pauseNotHere": "C'est enregistré pour {name}, mais le router de cette session applique encore l'ancien état (une autre session l'a changé depuis son démarrage) : redémarre la session pour qu'il s'applique ici.",
+
+  "secondaries.paused": "En pause · {count}",
+  "secondaries.pausedTag": "en pause",
+  "secondaries.pauseHint": "■ met un secondaire en pause sans le retirer · ▶ le reprend avec son droit d'écriture",
+
+  "band.noOpen": "Rien pour ouvrir {name} : ni dossier local connu, ni interface web."
 }

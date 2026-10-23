@@ -19,6 +19,12 @@
  *                  is how a vault leaves the other two modes.
  *   - `writable` — lecture-écriture automatique : no friction.
  *
+ * And, orthogonal to the three (v0.107.0), `paused`: the vault stays a
+ * secondary with its tier, and is unreachable from this workspace until
+ * `paused: false` — the vault panel's ■ and ▶. Recorded in `alsoPaused` on
+ * the same binding record, so the pause and the tier are one atomic write
+ * and resuming cannot lose the tier (Codex, review of v0.107.0).
+ *
  * ---------------------------------------------------------------------------
  * WHERE THE ANSWER LIVES
  * ---------------------------------------------------------------------------
@@ -96,7 +102,9 @@ export const TOOL_DEFINITION = {
     + 'secondary, with the mode the user chose; the "configure-secondary-vaults" skill is the guided conversation '
     + 'that detects the open vaults and asks the question for each. Not available on a gated deployment '
     + '(OBSIDIAN_ROUTER_READONLY / ALLOWED_VAULTS / USER_ID): the workspace there is the server\'s own directory, '
-    + 'shared by every caller, so one caller would be opening a vault for writing on behalf of all of them.',
+    + 'shared by every caller, so one caller would be opening a vault for writing on behalf of all of them. '
+    + '`paused: true` PAUSES the secondary instead (or as well): it stays in the binding with its tier, and nothing '
+    + 'reads or writes it from this workspace until `paused: false` — only on the user\'s say-so, in both directions.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -109,8 +117,13 @@ export const TOOL_DEFINITION = {
         enum: [...SECONDARY_MODES],
         description: '"locked" | "soft" | "writable" — see the tool description for what each means.',
       },
+      paused: {
+        type: 'boolean',
+        description: 'true pauses this secondary for this workspace (unreachable, tier kept); false resumes it. '
+          + 'Give `mode`, `paused`, or both.',
+      },
     },
-    required: ['vault', 'mode'],
+    required: ['vault'],
     additionalProperties: false,
   },
 };
@@ -162,8 +175,16 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
   if (typeof vault !== 'string' || vault.trim() === '') {
     throw new Error('set_secondary_vault_mode: `vault` is required — a secondary vault of this workspace (see list_vaults → workspaceBinding.also).');
   }
+  const pausedArg = args.paused;
+  if (pausedArg !== undefined && typeof pausedArg !== 'boolean') {
+    throw new Error('set_secondary_vault_mode: `paused` must be true or false.');
+  }
+  if (args.mode === undefined && pausedArg === undefined) {
+    throw new Error('set_secondary_vault_mode: give `mode` ("locked" | "soft" | "writable"), `paused` (true | false), or both.');
+  }
+  const modeGiven = args.mode !== undefined;
   const mode = typeof args.mode === 'string' ? args.mode.trim().toLowerCase() : args.mode;
-  if (!SECONDARY_MODES.includes(mode)) {
+  if (modeGiven && !SECONDARY_MODES.includes(mode)) {
     throw new Error(
       `set_secondary_vault_mode: \`mode\` must be one of ${SECONDARY_MODES.map((m) => `"${m}"`).join(', ')} `
       + `(got ${safeForMessage(JSON.stringify(args.mode), 60)}).`,
@@ -182,6 +203,9 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
   const shown = safeForMessage(vault, 80);
   const io = { readFile, writeFile };
   let previousMode = null;
+  let previousPaused = null;
+  // The mode this call ends with: the one given, or the one recorded.
+  let finalMode = null;
   // Whether the transform actually changed anything. Read after the lock to
   // decide if this session's ROUTING may move — see the block below.
   let wrote = false;
@@ -211,6 +235,10 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
       );
     }
     previousMode = recordedMode(existing, vault);
+    previousPaused = Array.isArray(existing.alsoPaused) && existing.alsoPaused.includes(vault);
+    finalMode = modeGiven ? mode : previousMode;
+    const finalPaused = pausedArg === undefined ? previousPaused : pausedArg;
+    const changes = previousMode !== finalMode || previousPaused !== finalPaused;
     // AN ENTRY THE ROUTER HAD TO REPAIR TO READ IS NOT REWRITTEN BY A TIER
     // CHANGE. This was the last writer of the binding record without the
     // rule the lock, the unlock and the confirmation follow (rounds 10–12):
@@ -220,7 +248,7 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
     // "to settle at the bump" since round 10; both passes of round 15 called
     // it what it is. Same refusal, same renderer, same code — and asked ONLY
     // when something would be written: the no-op below stays a no-op.
-    if (previousMode !== mode) {
+    if (changes) {
       const raw = rawBindingEntry(cfg, cwd);
       const incoherences = bindingIncoherences(raw);
       if (incoherences.length) {
@@ -240,13 +268,16 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
     // file that holds every vault's API key and stamped a confirmation date
     // nobody gave. (Codex, round on fd9e1cd.) `updateConfigBindings` reads
     // the returned identity and leaves the file alone.
-    if (previousMode === mode) return cfg;
+    if (!changes) return cfg;
     wrote = true;
     const alsoLocked = existing.alsoLocked.filter((n) => n !== vault);
     const alsoWritable = existing.alsoWritable.filter((n) => n !== vault);
-    if (mode === 'locked') alsoLocked.push(vault);
-    if (mode === 'writable') alsoWritable.push(vault);
-    return withBinding(cfg, cwd, { ...existing, alsoLocked, alsoWritable });
+    if (finalMode === 'locked') alsoLocked.push(vault);
+    if (finalMode === 'writable') alsoWritable.push(vault);
+    // Always written, even empty, so a resume overrides the stored list.
+    const alsoPaused = (existing.alsoPaused || []).filter((n) => n !== vault);
+    if (finalPaused) alsoPaused.push(vault);
+    return withBinding(cfg, cwd, { ...existing, alsoLocked, alsoWritable, alsoPaused });
   }, io);
 
   // The live registry learns what the file now says — the gate reads
@@ -339,8 +370,8 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
   const globallyLocked = Array.isArray(registry.alsoLocked) && registry.alsoLocked.includes(vault);
   const globallyWritable = Array.isArray(registry.alsoWritable) && registry.alsoWritable.includes(vault);
   let overriddenBy = null;
-  if (globallyLocked && mode !== 'locked') overriddenBy = 'alsoLocked';
-  else if (globallyWritable && mode === 'soft') overriddenBy = 'alsoWritable';
+  if (globallyLocked && finalMode !== 'locked') overriddenBy = 'alsoLocked';
+  else if (globallyWritable && finalMode === 'soft') overriddenBy = 'alsoWritable';
 
   // A NO-OP REPORTS THE FILE, AND THIS SESSION MAY HOLD SOMETHING ELSE. When
   // nothing was written, nothing was adopted — deliberately, so that a call
@@ -356,7 +387,18 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
     return (b.also || []).includes(vault) ? 'soft' : null;
   };
   const inForceHere = sessionTier(registry.workspaceBinding);
-  const sessionDiffers = !wrote && inForceHere !== mode;
+  const sessionDiffers = !wrote && inForceHere !== finalMode;
+  // THE PAUSE IS A RESTRICTION, and a restriction asked for is applied here
+  // even when the file already held it (a sibling session paused it): only
+  // the pause is taken over, nothing re-routes. A resume the file already
+  // holds is reported instead, like the tier above. (Codex, review of v0.107.0.)
+  const live = registry.workspaceBinding;
+  const pausedLive = () => Array.isArray(registry.workspaceBinding?.alsoPaused)
+    && registry.workspaceBinding.alsoPaused.includes(vault);
+  if (!wrote && pausedArg === true && live && Array.isArray(live.also) && live.also.includes(vault) && !pausedLive()) {
+    registry.workspaceBinding = { ...live, alsoPaused: [...(live.alsoPaused || []), vault] };
+  }
+  const pauseDiffers = pausedArg !== undefined && pausedLive() !== pausedArg;
 
   // A WRITE ADOPTS THE FILE'S BINDING, WHICH IS NOT ALWAYS THE ONE THIS
   // SESSION HELD. Round 16 made that adoption carry the lock; nothing said
@@ -370,20 +412,29 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
   return {
     workspace: key,
     vault,
-    mode,
+    mode: finalMode,
     previousMode,
+    paused: Array.isArray(binding?.alsoPaused) && binding.alsoPaused.includes(vault),
+    // What THIS session applies right now.
+    pausedInForceHere: pausedLive(),
+    previousPaused,
     // What THIS session applies right now, which is what a write to `vault`
     // will actually meet. Equal to `mode` whenever this call wrote.
     modeInForceHere: inForceHere,
-    effectiveMode: overriddenBy === 'alsoLocked' ? 'locked' : overriddenBy === 'alsoWritable' ? 'writable' : mode,
+    effectiveMode: overriddenBy === 'alsoLocked' ? 'locked' : overriddenBy === 'alsoWritable' ? 'writable' : finalMode,
     overriddenBy,
     // What the write ALSO changed about this session's routing, because it
     // adopted the binding the file holds (round 17). `null` when nothing was
     // written, or when the adopted binding routed exactly as this one did.
     adoptedRouting: routingChanged ? adopted : null,
     message:
-      `"${shown}" is now ${MODE_WORDS[mode]} as a secondary of this workspace`
-      + (previousMode === mode ? ' (unchanged).' : ` (was: ${previousMode}).`)
+      `"${shown}" is now ${MODE_WORDS[finalMode]} as a secondary of this workspace`
+      + (previousMode === finalMode ? ' (unchanged).' : ` (was: ${previousMode}).`)
+      + (pausedArg === undefined
+        ? ''
+        : pausedArg
+          ? ` It is PAUSED: nothing reads or writes it from this workspace until it is resumed${previousPaused ? ' (it already was)' : ''}.`
+          : ` It is ${previousPaused ? 'resumed' : 'not paused'}: reachable again from this workspace, with that tier.`)
       + (overriddenBy
         ? ` NOTE: config.json's global \`${overriddenBy}\` list also names this vault and takes precedence — the mode in force is "${overriddenBy === 'alsoLocked' ? 'locked' : 'writable'}" until that list is edited by hand.`
         : '')
@@ -393,6 +444,11 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
           + `${inForceHere === null ? 'no secondary tier at all (the binding this session holds does not declare it)' : `"${inForceHere}"`}`
           + '. Another session changed the binding after this one started. Restart the session, or '
           + 'retry once hot-reload has caught up, before relying on the recorded mode here.'
+        : '')
+      + (pauseDiffers
+        ? ` NOTE: THIS session still applies ${pausedLive() ? 'the pause' : 'no pause'} to "${shown}": nothing was `
+          + 'written, because the config file already held that answer, and this session was started before it. '
+          + 'Restart the session, or retry once hot-reload has caught up, before relying on it here.'
         : '')
       + (routingChanged
         ? ' NOTE: this write also adopted the binding the config file holds, which another session had changed:'

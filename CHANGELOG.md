@@ -10,6 +10,68 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.107.0] — 2026-10-23 — the vault panel: its name, updates, vault setup, a clickable band, paused secondaries
+
+Asked after v0.106.0, with the console seen on screen: the pane titled after the plugin with a
+GitHub link and an update badge, the update itself from the console; a slash command to set a vault
+up from the pane rather than the chat; vault names in the band that open the vault; the "+N" of the
+band unfolding upward; a way to pause a secondary without removing it. And two layout defects of
+v0.106.0's console.
+
+- **The pane's head**: "obsidian-mcp-router" and the installed version on the left, the GitHub mark
+  and a link to the repository on the right; when GitHub's `main` carries a newer version, a
+  "● maj disponible" badge, whose press unfolds the console. The pane's tab is titled
+  "obsidian-mcp-router".
+- **Updating from the console** ("Mise à jour du plugin"): the installed and latest versions,
+  "↻ Vérifier", and "Mettre à jour", which runs Claude Code's own `claude plugin marketplace
+  update` then `claude plugin update` for this project and the user scope, then reads back with
+  `claude plugin list --json` the version that actually landed — "nothing changed" or "updated to
+  vX (GitHub announces vY)" when it is not GitHub's; a new session uses it. The marketplace name,
+  read off the plugin's folder, reaches `cmd /c` only if it is a plain name; versions compare as
+  SemVer (a prerelease is below its release). The update runs `--scope project` then `--scope user` and reads
+  each scope back: the lowest install is what it reports, and a scope that failed is said.
+- **`/vault-setup`**: opens the pane with the console unfolded. "Créer un vault Obsidian": name,
+  folder (by default the config's `vaultsRoot`, else the folder most registered vaults sit in),
+  wiki type, the router library's conventions as check boxes, the vault's languages when
+  `languages` is checked, and "bind this project to it" — through `plan_vault` (sealed preview),
+  `provision_vault` (opened in Obsidian, probed) and `install_conventions`. Conventions the new
+  vault cannot take yet (its REST API not up) are kept, with a retry. A project with no primary
+  gets a start toast pointing to `/vault-setup`, and a "Configurer un vault" button in the pane.
+- **The band's names open their vault**: a local one in Obsidian, a remote one's web UI in the
+  default browser — as 💎 and 🌐 do in the pane.
+- **The band's chip** ("… +3", plus "⏸ 1" for paused ones) unfolds, above the line, the
+  secondaries the line could not show and the paused ones; a name there opens its vault, ■ pauses
+  it, ▶ resumes it.
+- **Pausing a secondary** (■ in the pane and in the band's list), **in the router**:
+  `set_secondary_vault_mode` takes `paused: true | false` (with or without `mode`), recorded as
+  `alsoPaused` on this workspace's binding. A paused secondary stays in `also` with its tier, and the
+  router refuses it from this workspace, reads and writes, by every route — `openVaults` and an
+  inactive `vaultReach` included; `resolveVault` says it is paused and how to resume it, and
+  `list_vaults` lists it in `disabled[]` as paused and in `workspaceBinding.alsoPaused`. A
+  re-binding that keeps the secondary keeps its pause; one that drops it drops the pause. The
+  pane lists it under "En pause" with ▶ and ✕, the band counts it ("⏸ 1"); ▶ resumes it with
+  the tier it had. (The first draft kept the pause in the panel's store and took the vault out
+  of the binding: its tier was lost and it stayed reachable by other routes — Codex.)
+  A paused secondary cannot be made the primary (`confirm_workspace_binding`, `lock_vault`
+  with `persist`, the binding repair, `--link-workspace`, `--attach`): that would resume it unasked. A pause another session
+  already wrote is applied to this session too; refusals by path (`download_page_assets`) and
+  `lock_vault` name the pause and how to resume it; the binding repair shows and seals
+  `alsoPaused`. A paused remote vault still opens from the band, its web UI read from the
+  router config.
+- **Creating a vault**: the languages are checked before anything is created, with the router's
+  own rule (ISO 639-1 codes, each once — the list is tested against the router's), and a retry of
+  the conventions reads the field again. The conventions go to the vault by the name the router
+  registered it under (`provision_vault`'s slug).
+- A resume this session's router does not apply yet (another session's answer, older session)
+  is said rather than shown as done; a check GitHub does not answer keeps the version it last
+  announced, badge included.
+- **The band's list** shows six rows at most, then "… and N more: see the pane".
+- **The console's layout** (seen on screen on v0.106.0): a field's own submit button is a quiet
+  "↵" (it read "Enregistrer" four times); removing a vault is one menu and one "Retirer" button,
+  with its confirmation, instead of 31 rows — the phone, which draws no menu, keeps the list.
+- Tests: `tests/vault-panel.test.tsx` 91 (was 76); the pause in
+  `tests/set-secondary-vault-mode.test.mjs` and `tests/list-vaults.test.mjs`.
+
 ## [0.106.0] — 2026-10-23 — an administration console in the vault panel, WireGuard, translations, and a remote vault kit
 
 Asked on v0.105.0: the band's labels in bold with a colon and "|" between the secondaries; a

@@ -121,6 +121,7 @@ export const CONFIRM_SECONDARY_WRITE_PROP = {
  * @returns {boolean}
  */
 export function isVaultReachable(vaultName, registry) {
+  if (isPausedSecondary(vaultName, registry)) return false;
   if (!registry || registry.vaultReach !== 'declared') return true;
   const openVaults = Array.isArray(registry.openVaults) ? registry.openVaults : [];
   if (openVaults.includes(vaultName)) return true;
@@ -130,6 +131,69 @@ export function isVaultReachable(vaultName, registry) {
   // rather than re-deriving `[binding.vault, ...binding.also]` here means a
   // future change to binding shape or semantics can't make the two disagree.
   return boundVaults(registry.workspaceBinding).includes(vaultName);
+}
+
+/**
+ * Is `vaultName` a secondary this workspace has PAUSED
+ * (`set_secondary_vault_mode({ vault, paused: true })`)?
+ *
+ * A pause shuts the vault out of THIS workspace, reads and writes alike, by
+ * every route — `openVaults` and an inactive `vaultReach` included: the user
+ * paused that vault here, and a second route to it is not their answer. The
+ * primary cannot be paused. Read live, like the binding itself.
+ *
+ * @param {string} vaultName
+ * @param {{ workspaceBinding?: { vault?: string, also?: string[], alsoPaused?: string[] }|null }} registry
+ * @returns {boolean}
+ */
+export function isPausedSecondary(vaultName, registry) {
+  const binding = registry && registry.workspaceBinding;
+  if (!binding || binding.vault === vaultName) return false;
+  return Array.isArray(binding.alsoPaused) && binding.alsoPaused.includes(vaultName)
+    && Array.isArray(binding.also) && binding.also.includes(vaultName);
+}
+
+/**
+ * Would making `vaultName` the PRIMARY lift a pause the binding record holds
+ * on it? A primary is never paused, so promoting a paused secondary would
+ * resume it without anyone pressing ▶ (Codex, review of v0.107.0). Asked of
+ * the record the writer re-read inside the config lock (a normalised binding
+ * or `rawSecondaryTiers`' reading), like the strict-tier guard.
+ *
+ * @param {string} vaultName
+ * @param {{ vault?: string, also?: string[], alsoPaused?: string[] }|null|undefined} binding
+ * @returns {boolean}
+ */
+export function isPromotionOfPausedSecondaryOnDisk(vaultName, binding) {
+  if (!binding || binding.vault === vaultName) return false;
+  return Array.isArray(binding.also) && binding.also.includes(vaultName)
+    && Array.isArray(binding.alsoPaused) && binding.alsoPaused.includes(vaultName);
+}
+
+/** The refusal of that promotion, coded like the strict-tier one. */
+export function pausedSecondaryPromotionError(toolName, vaultName) {
+  return lockedSecondaryPromotionError(
+    `${toolName}: "${vaultName}" is a PAUSED secondary of this workspace. Making it the primary would `
+    + 'resume it without anyone asking — resume it first, in its own act '
+    + `(set_secondary_vault_mode({ vault: ${identifierForCall(vaultName)}, paused: false })), or choose another primary.`,
+  );
+}
+
+/**
+ * The refusal of a vault this workspace cannot reach, worded for its cause:
+ * a pause is undone by resuming it, an undeclared vault by binding it.
+ *
+ * @param {string} vaultName
+ * @param {object} registry
+ * @param {string} declaredRemedy the sentence for the undeclared case
+ * @returns {string}
+ */
+export function unreachableReason(vaultName, registry, declaredRemedy) {
+  if (isPausedSecondary(vaultName, registry)) {
+    return `"${vaultName}" is PAUSED for this workspace (a secondary of its binding, kept with its write tier). `
+      + `Resume it first, on the user's say-so: set_secondary_vault_mode({ vault: ${identifierForCall(vaultName)}, paused: false }).`;
+  }
+  return declaredRemedy;
 }
 
 /**

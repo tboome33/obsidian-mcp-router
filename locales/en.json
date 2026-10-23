@@ -2,7 +2,7 @@
   "_meta.name": "English",
   "_meta.about": "Texts of the vault pane and band. For another language: copy this file under the language's code (de.json, es.json…), translate the values, keep the keys and the {variables}. The language is chosen in Administration.",
 
-  "pane.title": "Vaults",
+  "pane.title": "obsidian-mcp-router",
 
   "command.description": "Show the router's vaults (primary, secondaries, available)",
   "command.opened": "Vault pane opened.",
@@ -18,6 +18,7 @@
   "band.primary": "Primary:",
   "band.secondaries": "Secondaries:",
   "band.none": "none",
+  "band.listMore": "… and {count} more: see the pane",
   "band.show": "◧ Show the pane",
   "band.hide": "◧ Hide the pane",
 
@@ -154,6 +155,7 @@
   "register.uiPort": "Web UI port (optional)",
   "register.https": "HTTPS (the plugin's certificate)",
   "register.http": "HTTP",
+  "register.enter": "↵",
   "register.submit": "Register",
   "register.keyNote": "The key goes straight into the router config; the pane clears it once sent.",
   "register.needWireguard": "Turn WireGuard on to register a remote vault.",
@@ -171,7 +173,66 @@
   "unregister.title": "Take a vault out of the router",
   "unregister.hint": "Only vaults no workspace is bound to can be taken out. A local vault is disabled; its files stay untouched.",
   "unregister.none": "No vault to take out.",
+  "unregister.ask": "Take {name} out of the router?",
   "unregister.button": "Take out",
   "unregister.confirm": "Confirm",
-  "unregister.cancel": "Cancel"
+  "unregister.cancel": "Cancel",
+
+  "header.github": "GitHub",
+
+  "update.badge": "● update available",
+  "update.title": "Plugin update",
+  "update.versions": "installed v{installed} · latest v{latest}",
+  "update.upToDate": "up to date (v{installed})",
+  "update.unknown": "latest version unknown (GitHub does not answer)",
+  "update.button": "Update",
+  "update.check": "↻ Check",
+  "update.doing": "Updating the plugin",
+  "update.done": "Plugin updated to v{version}: open a new session to use it.",
+  "update.failed": "The update failed: {error}",
+  "update.partial": "Plugin updated to v{version} (GitHub announces v{latest}): open a new session to use it.",
+  "update.unchanged": "Nothing changed: Claude Code still has v{version}. Its marketplace may not offer the latest yet.",
+  "update.unverified": "The update commands succeeded, but the installed version could not be read back: check with \"claude plugin list\".",
+  "update.scopeFailed": "The update ({scope}) failed: {error}",
+
+  "command.setupDescription": "Set up a vault: create an Obsidian vault with its conventions, or register one",
+  "command.setupOpened": "Vault setup opened in the pane.",
+
+  "setup.toast": "No vault for this project: type /vault-setup to create or register one.",
+
+  "primary.setup": "Set up a vault",
+
+  "create.title": "Create an Obsidian vault",
+  "create.name": "Name",
+  "create.path": "Folder",
+  "create.mode": "Wiki type",
+  "create.mode.personal": "🧠 personal",
+  "create.mode.research": "🔬 research",
+  "create.mode.business": "💼 business",
+  "create.mode.code": "💻 code",
+  "create.conventions": "Vault conventions (CLAUDE.md)",
+  "create.languages": "Vault languages (comma-separated codes, e.g. en, fr)",
+  "create.bind": "Bind this project to the new vault",
+  "create.submit": "Create the vault",
+  "create.doing": "Creating {name}",
+  "create.done": "{name} created",
+  "create.conventionsDoing": "Installing the conventions in {name}",
+  "create.conventionsDone": "Conventions installed in {name}",
+  "create.conventionsPending": "The conventions could not be installed in {name} (the vault must be open in Obsidian): {error}",
+  "create.conventionsRetry": "Try installing the conventions again",
+  "create.invalidName": "Give the vault a name.",
+  "create.noSeal": "The router returned no sealed preview: nothing was created.",
+  "create.invalidLanguages": "The vault's languages: ISO 639-1 codes of 2 letters, each once, separated by commas (e.g. fr, en).",
+
+  "action.pause.doing": "Pausing {name}",
+  "action.pause.done": "{name} paused",
+  "action.resume.doing": "Resuming {name}",
+  "action.resume.done": "{name} resumed",
+  "action.pauseNotHere": "Recorded for {name}, but this session's router still applies the previous state (another session changed it after it started): restart the session for it to apply here.",
+
+  "secondaries.paused": "Paused · {count}",
+  "secondaries.pausedTag": "paused",
+  "secondaries.pauseHint": "■ pauses a secondary without removing it · ▶ resumes it with its write right",
+
+  "band.noOpen": "Nothing to open {name} with: no known local folder, no web UI."
 }

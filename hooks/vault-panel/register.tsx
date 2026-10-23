@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { AdminForm, Secondary, SecondaryMode, Snapshot, Tab, VaultRow, WireguardState } from '../../types'
+import type { AdminForm, CreateForm, Secondary, SecondaryMode, Snapshot, Tab, VaultRow, WireguardState } from '../../types'
 import { FR } from './locale-fr'
 
 const PANE = 'vault-panel'
@@ -41,6 +41,12 @@ const showAdmin = atom({ plugin: 'obsidian-router', key: 'showAdmin' } as const,
 const EMPTY_FORM: AdminForm = { kind: 'local', name: '', host: '127.0.0.1', port: '', uiPort: '', apiKey: '', scheme: 'https' }
 const adminForm = atom({ plugin: 'obsidian-router', key: 'adminForm' } as const, EMPTY_FORM)
 const confirmRemove = atom({ plugin: 'obsidian-router', key: 'confirmRemove' } as const, null)
+const removePick = atom({ plugin: 'obsidian-router', key: 'removePick' } as const, null)
+const updateState = atom({ plugin: 'obsidian-router', key: 'update' } as const, null)
+const EMPTY_CREATE: CreateForm = { name: '', path: '', mode: 'personal', conventions: [], languages: '', bind: true }
+const createForm = atom({ plugin: 'obsidian-router', key: 'createForm' } as const, EMPTY_CREATE)
+const bandListOpen = atom({ plugin: 'obsidian-router', key: 'bandListOpen' } as const, false)
+const pendingConventions = atom({ plugin: 'obsidian-router', key: 'pendingConventions' } as const, null)
 const wireguard = atom({ plugin: 'obsidian-router', key: 'wireguard' } as const, null)
 
 // ---- Texts ----------------------------------------------------------------
@@ -180,28 +186,32 @@ const charCells = (code: number) =>
         (code >= 0xfe30 && code <= 0xfe4f) ||
         (code >= 0xff00 && code <= 0xff60) ||
         (code >= 0xffe0 && code <= 0xffe6) ||
+        (code >= 0x23e9 && code <= 0x23fa) ||
         (code >= 0x1f300 && code <= 0x1faff) ||
         (code >= 0x20000 && code <= 0x3fffd)
       ? 2
       : 1
 const cells = (text: string) => [...text].reduce((sum, char) => sum + charCells(char.codePointAt(0) ?? 0), 0)
-function bandFit(primary: string | null, secondaries: string[], columns: number) {
+// The band's chip: the secondaries it could not show ("… +3"), and the paused
+// ones ("⏸ 1"); a press unfolds them upward.
+function chipText(hidden: number, paused: number) {
+  return [hidden > 0 ? `… +${hidden}` : '', paused > 0 ? `⏸ ${paused}` : ''].filter(Boolean).join(' ')
+}
+function bandFit(primary: string | null, secondaries: string[], columns: number, paused = 0) {
   const toggle = 2 + Math.max(cells(t('band.show')), cells(t('band.hide'))) + 4
-  let used =
+  const base =
     cells(t('band.primary')) + 1 + cells(primary ?? t('band.none')) + 1 + 1 + 1 + cells(t('band.secondaries')) + toggle
-  const more = (left: number) => 1 + cells(`… +${left}`)
-  let shown = 0
-  for (const name of secondaries) {
-    const width = 1 + (shown > 0 ? 2 : 0) + cells(name) + 1 + 2
-    const left = secondaries.length - shown - 1
-    if (used + width + (left > 0 ? more(left) : 0) > columns) {
-      break
+  const widths = secondaries.map((name, i) => 1 + (i > 0 ? 2 : 0) + cells(name) + 1 + 2)
+  // The most secondaries that fit with the chip their remainder needs.
+  for (let shown = secondaries.length; shown > 0; shown -= 1) {
+    const chip = chipText(secondaries.length - shown, paused)
+    const used = base + widths.slice(0, shown).reduce((a, b) => a + b, 0) + (chip ? 1 + cells(chip) : 0)
+    if (used <= columns) {
+      return { shown, hidden: secondaries.length - shown }
     }
-    used += width
-    shown += 1
   }
 
-  return { shown, hidden: secondaries.length - shown }
+  return { shown: 0, hidden: secondaries.length }
 }
 
 type Binding = {
@@ -211,6 +221,8 @@ type Binding = {
   confirmedVia?: string
   alsoLocked?: string[]
   alsoWritable?: string[]
+  /** The secondaries this project paused (router v0.107.0+): bound, unreachable. */
+  alsoPaused?: string[]
 }
 
 // A `remoteVaults` entry on the loopback is a vault of this machine's own
@@ -546,6 +558,15 @@ function toSnapshot(data: ListVaults, fetchedAt: number): Snapshot {
   }
   const b = data.workspaceBinding
   const bound = new Set(b ? [b.vault, ...(b.also ?? [])] : [])
+  // A paused secondary stays in the binding; the router keeps it out of reach.
+  const pausedNames = new Set((b?.alsoPaused ?? []).filter(n => n !== b?.vault && (b?.also ?? []).includes(n)))
+  const modeOf = (name: string): SecondaryMode =>
+    b?.alsoLocked?.includes(name) ? 'locked' : b?.alsoWritable?.includes(name) ? 'writable' : 'soft'
+  const disabledRow = (name: string) => {
+    const d = data.disabled.find(x => x.name === name)
+
+    return d ? { name, online: null, type: d.type ?? null, description: null, uiUrl: null } : null
+  }
   const available = [
     ...data.vaults.filter(v => !bound.has(v.name)).map(v => row(v.name)),
     ...data.disabled
@@ -558,16 +579,18 @@ function toSnapshot(data: ListVaults, fetchedAt: number): Snapshot {
     isLocked: b?.locked ?? false,
     lockedTo: data.lockedTo ?? null,
     isImported: b?.confirmedVia === 'migration',
-    secondaries: (b?.also ?? []).map(name => ({
-      ...row(name),
-      mode: b?.alsoLocked?.includes(name) ? 'locked' : b?.alsoWritable?.includes(name) ? 'writable' : 'soft',
-    })),
+    secondaries: (b?.also ?? []).filter(name => !pausedNames.has(name)).map(name => ({ ...row(name), mode: modeOf(name) })),
     available,
+    paused: [...pausedNames].map(name => ({
+      ...(byName.has(name) ? row(name) : (disabledRow(name) ?? row(name))),
+      mode: modeOf(name),
+    })),
     fetchedAt,
   }
 }
 
 type RouterConfig = {
+  remoteVaults?: { name?: string; baseUrl?: string; description?: string }[]
   vaultNames?: Record<string, string>
   vaultsById?: Record<string, { path?: string; ports?: { http?: number; https?: number } }>
 }
@@ -634,6 +657,34 @@ async function fillUnknown($: EngineInterface, snap: Snapshot, configPath: strin
   )
 }
 
+// A paused vault is out of the router's list (it is not pinged), so its row
+// comes with no address: a remote one's web UI is read from the router
+// config, as for any vault this workspace does not reach; a local one gets its
+// folder in markObsidianKnown.
+async function keepPausedOpeners($: EngineInterface, snap: Snapshot, configPath: string | undefined) {
+  const rows = (snap.paused ?? []).filter(r => !r.uiUrl && r.type !== 'local')
+  if (rows.length === 0 || !configPath) {
+    return
+  }
+  try {
+    const config = JSON.parse(await $.fs.read(configPath)) as RouterConfig
+    for (const r of rows) {
+      const entry = (config.remoteVaults ?? []).find(v => v.name === r.name)
+      if (!entry?.baseUrl) {
+        continue
+      }
+      if (isLoopbackUrl(entry.baseUrl)) {
+        r.type = 'local'
+      } else {
+        r.type = 'remote'
+        r.uiUrl = uiUrlOf(entry.baseUrl, entry.description)
+      }
+    }
+  } catch {
+    // No config to read: the row opens nothing, and says so when pressed.
+  }
+}
+
 // Where Obsidian keeps the list of the vaults it knows, on each platform.
 // The places to look, in order: Windows, then a Mac, then Linux.
 async function obsidianRegistries($: EngineInterface) {
@@ -662,7 +713,7 @@ const samePath = (p: string) => p.replace(/[\\/]+/g, '/').replace(/\/$/, '').toL
 // to open it once by hand instead. Rows the router listed without a folder
 // (a vault this workspace has not declared) get theirs from the router config.
 async function markObsidianKnown($: EngineInterface, snap: Snapshot, configPath: string | undefined) {
-  const rows = [snap.primary, ...snap.secondaries, ...snap.available].filter(
+  const rows = [snap.primary, ...snap.secondaries, ...snap.available, ...(snap.paused ?? [])].filter(
     (r): r is VaultRow => r !== null && r.type !== 'remote',
   )
   if (rows.length === 0) {
@@ -740,6 +791,8 @@ async function refresh($: EngineInterface): Promise<boolean> {
   try {
     const data = JSON.parse(await withTimeout($, call($, 'list_vaults'))) as ListVaults
     const next = toSnapshot(data, await $.clock.now())
+    next.defaultRoot = data.configPath ? await defaultVaultRoot($, data.configPath) : null
+    await keepPausedOpeners($, next, data.configPath)
     await fillUnknown($, next, data.configPath)
     await markObsidianKnown($, next, data.configPath)
     if (id === lastRefresh) {
@@ -785,6 +838,8 @@ type Action = {
   tool: string
   args: (fresh: boolean) => Promise<Record<string, unknown>> | Record<string, unknown>
   shows?: (snap: Snapshot) => Snapshot
+  /** The router's answer, read before anything is drawn or said. */
+  answer?: (text: string) => void
 }
 
 // Runs one change against the router. The pane is locked only while the
@@ -821,6 +876,7 @@ async function act($: EngineInterface, action: Action): Promise<'busy' | 'done' 
       isRetried = true
     }
     noteWrite(text)
+    action.answer?.(text)
     // A read started before this write must not undo it: not the entry just
     // noted, nor the change drawn below.
     lastRefresh += 1
@@ -909,7 +965,7 @@ async function rebind(
   change: (also: string[]) => string[],
   options: { isOpening?: boolean; shows?: (snap: Snapshot) => Snapshot } = {},
 ) {
-  await act($, {
+  return act($, {
     ...words,
     tool: 'confirm_workspace_binding',
     shows: options.shows,
@@ -1265,6 +1321,401 @@ async function unregisterVault($: EngineInterface, name: string) {
   readSoon($)
 }
 
+// ---- Pausing a secondary ------------------------------------------------------
+// A paused secondary stays in the binding with its write tier, and the router
+// refuses it from this project until it is resumed: set_secondary_vault_mode's
+// `paused`, one write in the router's own config. The panel keeps nothing of
+// its own, so a pause holds by every route and survives any panel state.
+async function setPaused($: EngineInterface, s: Secondary, paused: boolean) {
+  const words = paused ? 'action.pause' : 'action.resume'
+  // What the router's session applies once written: a session started before
+  // another one's answer keeps it until restarted (pausedInForceHere).
+  let isInForce = true
+  const outcome = await act($, {
+    doing: t(`${words}.doing`, { name: s.name }),
+    done: t(`${words}.done`, { name: s.name }),
+    tool: 'set_secondary_vault_mode',
+    args: () => ({ vault: s.name, paused }),
+    answer: text => {
+      try {
+        const here = (JSON.parse(text) as { pausedInForceHere?: unknown }).pausedInForceHere
+        isInForce = typeof here !== 'boolean' || here === paused
+      } catch {
+        isInForce = true
+      }
+    },
+    shows: snap =>
+      !isInForce
+        ? snap
+        : paused
+        ? {
+            ...snap,
+            secondaries: snap.secondaries.filter(r => r.name !== s.name),
+            paused: [...(snap.paused ?? []).filter(r => r.name !== s.name), s],
+          }
+        : {
+            ...snap,
+            paused: (snap.paused ?? []).filter(r => r.name !== s.name),
+            secondaries: [...snap.secondaries.filter(r => r.name !== s.name), s],
+          },
+  })
+  if (outcome === 'done' && !isInForce) {
+    await update($, failure, () => t('action.pauseNotHere', { name: s.name }))
+  }
+  readSoon($)
+}
+
+// ---- Opening a vault from the band ------------------------------------------------
+// A local vault in Obsidian, a remote one's web UI in the default browser
+// (Chrome on this machine): what its row in the pane offers as 💎 and 🌐.
+async function openVault($: EngineInterface, row: VaultRow) {
+  if (row.type !== 'remote' && row.path) {
+    await openInObsidian($, row)
+  } else if (row.uiUrl) {
+    await openInBrowser($, row)
+  } else {
+    $.ui.toast(t('band.noOpen', { name: row.name }))
+  }
+}
+
+// ---- Plugin update ------------------------------------------------------------------
+const REPO_URL = 'https://github.com/tboome33/obsidian-mcp-router'
+const LATEST_MANIFEST = 'https://raw.githubusercontent.com/tboome33/obsidian-mcp-router/main/.claude-plugin/plugin.json'
+// The octicon "mark-github" (MIT), grey so it reads on a light and a dark pane.
+const GITHUB_MARK =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#6e7681" d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>'
+
+// SemVer: x.y.z, an optional -prerelease (below its release), +build ignored.
+const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/
+const isVersion = (v: unknown): v is string => typeof v === 'string' && SEMVER.test(v)
+function compareVersions(x: string, y: string) {
+  const a = SEMVER.exec(x)
+  const b = SEMVER.exec(y)
+  if (!a || !b) {
+    return 0
+  }
+  for (let i = 1; i <= 3; i += 1) {
+    if (Number(a[i]) !== Number(b[i])) {
+      return Number(a[i]) > Number(b[i]) ? 1 : -1
+    }
+  }
+  if (!a[4] || !b[4]) {
+    return a[4] ? -1 : b[4] ? 1 : 0
+  }
+  const pa = a[4].split('.')
+  const pb = b[4].split('.')
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    if (pa[i] === undefined || pb[i] === undefined) {
+      return pa[i] === undefined ? -1 : 1
+    }
+    const na = /^\d+$/.test(pa[i]!) ? Number(pa[i]) : null
+    const nb = /^\d+$/.test(pb[i]!) ? Number(pb[i]) : null
+    if (pa[i] !== pb[i]) {
+      if (na !== null && nb !== null) {
+        return na > nb ? 1 : -1
+      }
+      if (na !== null || nb !== null) {
+        return na !== null ? -1 : 1
+      }
+
+      return pa[i]! > pb[i]! ? 1 : -1
+    }
+  }
+
+  return 0
+}
+const BAND_LIST_ROWS = 6
+const isNewer = (latest: string, installed: string) => compareVersions(latest, installed) > 0
+
+async function installedVersion($: EngineInterface) {
+  const root = pluginRoot($)
+  try {
+    const manifest = root ? (JSON.parse(await $.fs.read(`${root}/.claude-plugin/plugin.json`)) as { version?: string }) : null
+
+    return isVersion(manifest?.version) ? manifest.version : null
+  } catch {
+    return null
+  }
+}
+
+// GitHub's manifest on main against the plugin's own: the pane's badge.
+async function checkUpdate($: EngineInterface) {
+  const installed = await installedVersion($)
+  // GitHub silent: the version it last announced stands, badge included.
+  const known = (await read($, updateState))?.latest ?? null
+  let latest: string | null = null
+  try {
+    const answer = $.http.fetch(LATEST_MANIFEST).then(res => (res.ok ? (JSON.parse(res.text) as { version?: string }).version : undefined))
+    const late = $.clock.sleep(8_000).then(() => undefined)
+    const found = await Promise.race([answer, late])
+    latest = isVersion(found) ? found : known
+  } catch {
+    latest = known
+  }
+  await update($, updateState, now => ({
+    installed,
+    latest,
+    isAvailable: !!installed && !!latest && isNewer(latest, installed),
+    isRunning: false,
+    log: now?.log ?? null,
+  }))
+}
+
+// The marketplace the plugin was installed from, read off its folder
+// (…/cache/<marketplace>/obsidian-router/<version>); the project's own else.
+function marketplaceOf($: EngineInterface) {
+  const parts = (pluginRoot($) ?? '').split(/[\\/]/)
+  const at = parts.lastIndexOf('obsidian-router')
+
+  const found = at > 1 && parts[at - 2] === 'cache' ? parts[at - 1]! : ''
+
+  // It reaches cmd /c: a plain name only — no &, |, quotes or spaces.
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(found) ? found : 'obsidian-mcp-router-marketplace'
+}
+
+// The versions Claude Code now has installed, read back from it per scope:
+// what the update reports is what landed, not what GitHub announced.
+type Installs = { user: string | null; project: string | null }
+async function installedNow($: EngineInterface, plugin: string): Promise<Installs | null> {
+  try {
+    const listed = await runClaude($, ['plugin', 'list', '--json'])
+    const entries = JSON.parse(listed.stdout) as { id?: string; version?: string; scope?: string }[]
+    // The lowest of a scope's installs: one left behind is not "updated".
+    const of = (scopes: string[]) =>
+      entries
+        .filter(e => e.id === plugin && isVersion(e.version) && scopes.includes(e.scope ?? ''))
+        .map(e => e.version as string)
+        .reduce<string | null>((x, y) => (x === null || compareVersions(y, x) < 0 ? y : x), null)
+
+    return { user: of(['user']), project: of(['project', 'local']) }
+  } catch {
+    return null
+  }
+}
+
+// Claude Code's own commands, through cmd on Windows (claude is a .cmd shim
+// there): the marketplace is fetched again, then the plugin updated where it
+// is installed — this project and the user's own scope.
+async function runClaude($: EngineInterface, args: string[]) {
+  const argv = (await $.env.get('APPDATA')) ? ['cmd', '/c', 'claude', ...args] : ['claude', ...args]
+
+  return $.process.run(argv, { timeoutMs: 180_000 })
+}
+
+async function updatePlugin($: EngineInterface) {
+  const now = await read($, updateState)
+  if (now?.isRunning || (await read($, busy))) {
+    return
+  }
+  await update($, updateState, s => (s ? { ...s, isRunning: true, log: null } : s))
+  await update($, busy, () => t('update.doing'))
+  const market = marketplaceOf($)
+  const plugin = `obsidian-router@${market}`
+  try {
+    const fetched = await runClaude($, ['plugin', 'marketplace', 'update', market])
+    if (fetched.exitCode !== 0) {
+      throw new Error(fetched.stderr.trim() || fetched.stdout.trim() || `exit ${fetched.exitCode}`)
+    }
+    const project = await runClaude($, ['plugin', 'update', plugin, '--scope', 'project'])
+    const user = await runClaude($, ['plugin', 'update', plugin, '--scope', 'user'])
+    if (project.exitCode !== 0 && user.exitCode !== 0) {
+      throw new Error(project.stderr.trim() || user.stderr.trim() || `exit ${project.exitCode}`)
+    }
+    await checkUpdate($)
+    const state = await read($, updateState)
+    const latest = state?.latest ?? null
+    const installs = await installedNow($, plugin)
+    // The scopes whose update ran, read back; the lowest is what this says.
+    const ran = [project.exitCode === 0 ? installs?.project : undefined, user.exitCode === 0 ? installs?.user : undefined]
+    const found = ran.filter((v): v is string => typeof v === 'string')
+    const landed = found.length > 0 ? found.reduce((x, y) => (compareVersions(y, x) < 0 ? y : x)) : null
+    const failedScope = project.exitCode !== 0 ? 'project' : user.exitCode !== 0 ? 'user' : null
+    const before = state?.installed ?? null
+    const log =
+      (landed === null
+        ? t('update.unverified')
+        : before && compareVersions(landed, before) <= 0
+          ? t('update.unchanged', { version: landed })
+          : latest && compareVersions(landed, latest) < 0
+            ? t('update.partial', { version: landed, latest })
+            : t('update.done', { version: landed })) +
+      (failedScope
+        ? ` ${t('update.scopeFailed', {
+            scope: failedScope,
+            error: (failedScope === 'project' ? project : user).stderr.trim() || `exit ${(failedScope === 'project' ? project : user).exitCode}`,
+          })}`
+        : '')
+    const isCurrent = !failedScope && !!landed && (!latest || compareVersions(landed, latest) >= 0)
+    await update($, updateState, s => (s ? { ...s, isRunning: false, isAvailable: s.isAvailable && !isCurrent, log } : s))
+    $.ui.toast(log)
+  } catch (err) {
+    await update($, updateState, s => (s ? { ...s, isRunning: false, log: t('update.failed', { error: message(err) }) } : s))
+  }
+  await update($, busy, () => null)
+}
+
+// ---- Creating a vault --------------------------------------------------------------
+// The library's conventions, by id: the snippet files the router ships.
+const RECOMMENDED_CONVENTIONS = [
+  'roadmap-discipline',
+  'default-vault-health-check',
+  'wiki-query-first',
+  'path-disambiguation',
+  'source-type',
+  'languages',
+  'heading-hierarchy',
+  'auto-enrichment',
+]
+
+async function conventionIds($: EngineInterface) {
+  const root = pluginRoot($)
+  try {
+    const entries = root ? await $.fs.list(`${root}/skills/conventions/snippets`) : []
+    const ids = entries
+      .filter(e => e.kind === 'file' && e.name.endsWith('.md'))
+      .map(e => e.name.slice(0, -3))
+      .filter(id => /^[a-z0-9][a-z0-9-]{0,63}$/.test(id))
+
+    return ids.length > 0 ? ids.sort() : RECOMMENDED_CONVENTIONS
+  } catch {
+    return RECOMMENDED_CONVENTIONS
+  }
+}
+
+// Where a new vault goes by default: the config's vaultsRoot, else the
+// folder most registered vaults sit in.
+async function defaultVaultRoot($: EngineInterface, configPath: string) {
+  try {
+    const config = JSON.parse(await $.fs.read(configPath)) as RouterConfig & { vaultsRoot?: string }
+    if (typeof config.vaultsRoot === 'string' && config.vaultsRoot) {
+      return config.vaultsRoot
+    }
+    const counts = new Map<string, number>()
+    for (const entry of Object.values(config.vaultsById ?? {})) {
+      const parent = entry.path?.replace(/[\\/][^\\/]+[\\/]?$/, '')
+      if (parent) {
+        counts.set(parent, (counts.get(parent) ?? 0) + 1)
+      }
+    }
+
+    return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+  } catch {
+    return null
+  }
+}
+
+// The vault's languages, read as the router reads them (parseLanguagesValue,
+// src/helpers/convention-languages.mjs): ISO 639-1 codes, none twice. Null
+// when the field holds none, or anything else — nothing is dropped in silence,
+// and nothing is created that its conventions would then refuse.
+const ISO_639_1 = new Set(
+  (
+    'aa ab ae af ak am an ar as av ay az ba be bg bi bm bn bo br bs ca ce ch co cr cs cu cv cy ' +
+    'da de dv dz ee el en eo es et eu fa ff fi fj fo fr fy ga gd gl gn gu gv ha he hi ho hr ht ' +
+    'hu hy hz ia id ie ig ii ik io is it iu ja jv ka kg ki kj kk kl km kn ko kr ks ku kv kw ky ' +
+    'la lb lg li ln lo lt lu lv mg mh mi mk ml mn mr ms mt my na nb nd ne ng nl nn no nr nv ny ' +
+    'oc oj om or os pa pi pl ps pt qu rm rn ro ru rw sa sc sd se sg si sk sl sm sn so sq sr ss ' +
+    'st su sv sw ta te tg th ti tk tl tn to tr ts tt tw ty ug uk ur uz ve vi vo wa wo xh yi yo ' +
+    'za zh zu'
+  ).split(' '),
+)
+const languagesOf = (text: string) => {
+  const tokens = text.replace(/[[\]]/g, ' ').split(/[\s,;]+/).filter(Boolean)
+  const codes = tokens.map(code => code.toLowerCase())
+  const isEach = tokens.every(code => /^[A-Za-z]{2}$/.test(code) && ISO_639_1.has(code.toLowerCase()))
+
+  return codes.length > 0 && isEach && new Set(codes).size === codes.length ? codes : null
+}
+
+async function installConventions($: EngineInterface, vault: string, ids: string[], languages: string[]) {
+  const outcome = await act($, {
+    doing: t('create.conventionsDoing', { name: vault }),
+    done: t('create.conventionsDone', { name: vault }),
+    tool: 'install_conventions',
+    args: () => ({ vault, ids, ...(ids.includes('languages') ? { languages } : {}) }),
+  })
+  if (outcome === 'done') {
+    await update($, pendingConventions, () => null)
+  } else if (outcome === 'failed') {
+    const why = (await read($, failure)) ?? ''
+    await update($, pendingConventions, () => ({ vault, ids, languages }))
+    await update($, failure, () => t('create.conventionsPending', { name: vault, error: why }))
+  }
+}
+
+// A new local vault: the router's sealed preview (plan_vault), then the
+// creation with that seal (provision_vault, opened in Obsidian and probed),
+// then the conventions chosen (install_conventions), which need its REST API
+// up — kept for a retry when it is not yet.
+async function createVault($: EngineInterface, defaultRoot: string | null | undefined) {
+  if (await read($, busy)) {
+    return
+  }
+  const form = await read($, createForm)
+  const name = form.name.trim()
+  if (!name) {
+    await update($, failure, () => t('create.invalidName'))
+
+    return
+  }
+  const codes = form.conventions.includes('languages') ? languagesOf(form.languages) : []
+  if (!codes) {
+    await update($, failure, () => t('create.invalidLanguages'))
+
+    return
+  }
+  const sep = defaultRoot?.includes('\\') ? '\\' : '/'
+  const path = form.path.trim() || (defaultRoot ? `${defaultRoot}${sep}${name}` : '')
+  const base = {
+    name,
+    ...(path ? { path } : {}),
+    wikiMode: { mode: form.mode },
+    open: true,
+    probe: true,
+    bindToWorkspace: form.bind,
+  }
+  let seal: string | null = null
+  try {
+    const plan = JSON.parse(await call($, 'plan_vault', base)) as { approvedPlanSha256?: string }
+    seal = typeof plan.approvedPlanSha256 === 'string' ? plan.approvedPlanSha256 : null
+  } catch (err) {
+    await update($, failure, () => plainly(message(err)))
+
+    return
+  }
+  if (!seal) {
+    await update($, failure, () => t('create.noSeal'))
+
+    return
+  }
+  const sealed = seal
+  // The router names the vault it registers (its slug): the conventions go to that name.
+  let created = name
+  const outcome = await act($, {
+    doing: t('create.doing', { name }),
+    done: t('create.done', { name }),
+    tool: 'provision_vault',
+    args: () => ({ ...base, approvedPlanSha256: sealed }),
+    answer: text => {
+      try {
+        const slug = (JSON.parse(text) as { slug?: unknown }).slug
+        created = typeof slug === 'string' && slug !== '' ? slug : name
+      } catch {
+        created = name
+      }
+    },
+  })
+  if (outcome !== 'done') {
+    return
+  }
+  // The conventions stay chosen, for a retry to correct.
+  await update($, createForm, now => ({ ...EMPTY_CREATE, conventions: now.conventions, languages: now.languages, mode: now.mode }))
+  readSoon($)
+  if (form.conventions.length > 0) {
+    await installConventions($, created, form.conventions, codes)
+  }
+}
+
 // The pane is gone: its polling stops, and the band's toggle offers it again.
 async function markClosed($: EngineInterface) {
   paneEpoch += 1
@@ -1337,6 +1788,12 @@ export const register: Register = on => {
       name: 'vaults',
       description: t('command.description'),
     })
+    await $.command.register({
+      name: 'vault-setup',
+      description: t('command.setupDescription'),
+    })
+    // The plugin's version against GitHub's, once per session.
+    void checkUpdate($).catch(() => undefined)
     // WireGuard, once per session in the background: the pane says whether
     // the remote vaults can be reached, and asks for the tunnel when not.
     void checkWireguard($, start).catch(() => undefined)
@@ -1353,6 +1810,10 @@ export const register: Register = on => {
           // `/vaults` may have opened it meanwhile: it is not opened twice.
           if (!isStartupCancelled && !isPaneOpen) {
             await openPane($, start)
+          }
+          // No vault for this project yet: where to set one up.
+          if (start === generation && !(await read($, snapshot))?.primary) {
+            $.ui.toast(t('setup.toast'))
           }
 
           return
@@ -1384,6 +1845,18 @@ export const register: Register = on => {
     }
 
     return next(e)
+  })
+
+  // /vault-setup: the pane, with its administration unfolded on creating or
+  // registering a vault — not a conversation with the model.
+  on('command.run', { command: 'vault-setup' }, async $ => {
+    isStartupCancelled = false
+    await update($, showAdmin, () => true)
+    await openPane($)
+    await refresh($)
+    void checkWireguard($).catch(() => undefined)
+
+    return { text: t('command.setupOpened') }
   })
 
   on('command.run', { command: 'vaults' }, async $ => {
@@ -1455,8 +1928,13 @@ export const register: Register = on => {
     const isAdminShown = await read($, showAdmin)
     const form = await read($, adminForm)
     const removing = await read($, confirmRemove)
+    const picked = await read($, removePick)
     const wg = await read($, wireguard)
     const languages = isAdminShown ? await availableLanguages($) : []
+    const upd = await read($, updateState)
+    const creating = await read($, createForm)
+    const pending = await read($, pendingConventions)
+    const conventions = isAdminShown ? await conventionIds($) : []
     // The tier menu's width, in the surface's cells: the longest label in the
     // current language, its badge (two cells and a space), and room for the
     // menu's own arrow and padding.
@@ -1515,8 +1993,33 @@ export const register: Register = on => {
           ? t('summary.unreachable')
           : t('summary.reading')
 
-    // The pane's own bar already says "Vaults": the header is the summary
-    // and the refresh, nothing repeated.
+    // The plugin's name and version on the left, the repository on the right,
+    // a badge when GitHub has a newer version (its press unfolds the console,
+    // where the update is). Then the summary and the refresh.
+    const title = (
+      <Box key="pane-title" flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+        <Box flexDirection="row" gap={1} alignItems="center" flexShrink={1} flexWrap="wrap">
+          <Text weight="semibold">obsidian-mcp-router</Text>
+          {upd?.installed && (
+            <Text size="caption" dimColor>
+              v{upd.installed}
+            </Text>
+          )}
+          {upd?.isAvailable && (
+            <Button
+              key="update-badge"
+              label={t('update.badge')}
+              plain
+              onPress={() => void update($, showAdmin, () => true)}
+            />
+          )}
+        </Box>
+        <Box flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
+          {Svg && <Svg source={GITHUB_MARK} alt="GitHub" width={14} height={14} />}
+          <Button key="github" label={t('header.github')} plain dimColor onPress={() => void openUrl($, REPO_URL)} />
+        </Box>
+      </Box>
+    )
     const header = (
       <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
         <Box flexShrink={1}>
@@ -1573,7 +2076,7 @@ export const register: Register = on => {
             key={`admin-${key}`}
             placeholder={placeholder}
             value={String(form[key])}
-            submitLabel={t('register.submit')}
+            submitLabel={t('register.enter')}
             onInput={(value: string) => void update($, adminForm, now => ({ ...now, [key]: value }))}
             onSubmit={() => void registerVault($)}
           />
@@ -1637,6 +2140,141 @@ export const register: Register = on => {
                 choice('admin-language-choice', languages.map(l => ({ value: l.code, label: l.name })), languageCode, code =>
                   void setLanguage($, code),
                 )
+              )}
+            </Box>
+
+            <Box key="admin-update" flexDirection="column" gap={1}>
+              {section(t('update.title'))}
+              <Text size="caption" color={upd?.isAvailable ? 'warning' : undefined} dimColor={!upd?.isAvailable}>
+                {!upd?.installed
+                  ? t('update.unknown')
+                  : !upd.latest
+                    ? t('update.unknown')
+                    : upd.isAvailable
+                      ? t('update.versions', { installed: upd.installed, latest: upd.latest })
+                      : t('update.upToDate', { installed: upd.installed })}
+              </Text>
+              <Box key="admin-update-actions" flexDirection="row" flexWrap="wrap" gap={1}>
+                <Button key="update-check" label={t('update.check')} plain dimColor onPress={() => void checkUpdate($)} />
+                {upd?.isAvailable && (
+                  <Button key="update-run" label={t('update.button')} variant="primary" onPress={() => void updatePlugin($)} />
+                )}
+              </Box>
+              {upd?.log && (
+                <Text size="caption" color={upd.log.startsWith(t('update.failed', { error: '' }).trim()) ? 'error' : 'success'}>
+                  {upd.log}
+                </Text>
+              )}
+            </Box>
+
+            <Box key="admin-create" flexDirection="column" gap={1}>
+              {section(t('create.title'))}
+              {!Input ? (
+                <Text size="caption" dimColor>
+                  {t('register.phone')}
+                </Text>
+              ) : (
+                <Box key="admin-create-form" flexDirection="column" gap={1}>
+                  <Box key="create-name" flexDirection="column">
+                    <Text size="caption" dimColor>
+                      {t('create.name')}
+                    </Text>
+                    <Input
+                      key="create-name-field"
+                      value={creating.name}
+                      submitLabel={t('register.enter')}
+                      onInput={(value: string) => void update($, createForm, now => ({ ...now, name: value }))}
+                      onSubmit={() => void createVault($, snap?.defaultRoot)}
+                    />
+                  </Box>
+                  <Box key="create-path" flexDirection="column">
+                    <Text size="caption" dimColor>
+                      {t('create.path')}
+                    </Text>
+                    <Input
+                      key="create-path-field"
+                      value={creating.path}
+                      placeholder={
+                        snap?.defaultRoot
+                          ? `${snap.defaultRoot}${snap.defaultRoot.includes('\\') ? '\\' : '/'}${creating.name.trim() || '…'}`
+                          : ''
+                      }
+                      submitLabel={t('register.enter')}
+                      onInput={(value: string) => void update($, createForm, now => ({ ...now, path: value }))}
+                      onSubmit={() => void createVault($, snap?.defaultRoot)}
+                    />
+                  </Box>
+                  <Text size="caption" dimColor>
+                    {t('create.mode')}
+                  </Text>
+                  {choice<CreateForm['mode']>(
+                    'create-mode',
+                    (['personal', 'research', 'business', 'code'] as const).map(mode => ({ value: mode, label: t(`create.mode.${mode}`) })),
+                    creating.mode,
+                    mode => void update($, createForm, now => ({ ...now, mode })),
+                  )}
+                  <Text size="caption" dimColor>
+                    {t('create.conventions')}
+                  </Text>
+                  <Box key="create-conventions" flexDirection="row" flexWrap="wrap" gap={1}>
+                    {conventions.map(id => (
+                      <Button
+                        key={`convention-${id}`}
+                        label={`${creating.conventions.includes(id) ? '☑' : '☐'} ${id}`}
+                        plain
+                        dimColor={!creating.conventions.includes(id)}
+                        onPress={() =>
+                          void update($, createForm, now => ({
+                            ...now,
+                            conventions: now.conventions.includes(id)
+                              ? now.conventions.filter(c => c !== id)
+                              : [...now.conventions, id],
+                          }))
+                        }
+                      />
+                    ))}
+                  </Box>
+                  {creating.conventions.includes('languages') && (
+                    <Box key="create-languages" flexDirection="column">
+                      <Text size="caption" dimColor>
+                        {t('create.languages')}
+                      </Text>
+                      <Input
+                        key="create-languages-field"
+                        value={creating.languages}
+                        placeholder={languageCode}
+                        submitLabel={t('register.enter')}
+                        onInput={(value: string) => void update($, createForm, now => ({ ...now, languages: value }))}
+                        onSubmit={() => void createVault($, snap?.defaultRoot)}
+                      />
+                    </Box>
+                  )}
+                  <Button
+                    key="create-bind"
+                    label={`${creating.bind ? '☑' : '☐'} ${t('create.bind')}`}
+                    plain
+                    onPress={() => void update($, createForm, now => ({ ...now, bind: !now.bind }))}
+                  />
+                  <Box key="create-actions" flexDirection="row" flexWrap="wrap" gap={1}>
+                    <Button key="create-submit" label={t('create.submit')} variant="primary" onPress={() => void createVault($, snap?.defaultRoot)} />
+                    {pending && (
+                      <Button
+                        key="create-conventions-retry"
+                        label={t('create.conventionsRetry')}
+                        onPress={() => {
+                          // What the field says now, so a wrong code can be corrected.
+                          const codes = pending.ids.includes('languages') ? languagesOf(creating.languages) : []
+                          if (!codes) {
+                            void update($, failure, () => t('create.invalidLanguages'))
+
+                            return
+                          }
+                          void installConventions($, pending.vault, pending.ids, codes)
+                        }}
+                      />
+                    )}
+                  </Box>
+                </Box>
               )}
             </Box>
 
@@ -1720,7 +2358,39 @@ export const register: Register = on => {
                   {t('unregister.none')}
                 </Text>
               )}
-              {removable.map(v => (
+              {Select && removable.length > 0 && (
+                <Box key="admin-remove" flexDirection="column" gap={1}>
+                  {removing ? (
+                    <Box key="admin-remove-ask" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+                      <Text color="warning">{t('unregister.ask', { name: removing })}</Text>
+                      <Button key="admin-remove-confirm" label={t('unregister.confirm')} variant="primary" onPress={() => void unregisterVault($, removing)} />
+                      <Button key="admin-remove-cancel" label={t('unregister.cancel')} plain dimColor onPress={() => void update($, confirmRemove, () => null)} />
+                    </Box>
+                  ) : (
+                    <Box key="admin-remove-pick" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+                      <Select
+                        key="admin-remove-select"
+                        options={removable.map(v => ({
+                          value: v.name,
+                          label: `${v.name} (${v.type === 'remote' ? t('place.remote') : t('place.local')})`,
+                        }))}
+                        value={picked && removable.some(v => v.name === picked) ? picked : removable[0]!.name}
+                        onSelect={(name: string) => void update($, removePick, () => name)}
+                      />
+                      <Button
+                        key="admin-remove-button"
+                        label={t('unregister.button')}
+                        onPress={() =>
+                          void update($, confirmRemove, () =>
+                            picked && removable.some(v => v.name === picked) ? picked : removable[0]!.name,
+                          )
+                        }
+                      />
+                    </Box>
+                  )}
+                </Box>
+              )}
+              {!Select && removable.map(v => (
                 <Box key={`rm-${v.name}`} flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={1}>
                   <Box flexDirection="row" gap={1} flexShrink={1} alignItems="center">
                     {dot(v.online, v.type === 'remote')}
@@ -1748,6 +2418,7 @@ export const register: Register = on => {
     if (!snap) {
       return (
         <Box flexDirection="column" gap={1}>
+          {title}
           {header}
           {problems}
           {admin}
@@ -1853,7 +2524,10 @@ export const register: Register = on => {
             </Box>
           </Box>
         ) : (
-          <Text color="warning">{t('primary.none')}</Text>
+          <Box key="primary-none" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+            <Text color="warning">{t('primary.none')}</Text>
+            <Button key="primary-setup" label={t('primary.setup')} variant="primary" onPress={() => void update($, showAdmin, () => true)} />
+          </Box>
         )}
         {snap.primary?.online === false && isRemote(snap.primary) && (
           <Text size="caption" color="error">
@@ -1917,6 +2591,7 @@ export const register: Register = on => {
           )}
           {obsidianLink(s)}
           {uiLink(s)}
+          <Button key={`pause-${s.name}`} label="■" plain dimColor onPress={() => void setPaused($, s, true)} />
           {Select ? (
             // One width for every menu, whatever tier it shows: sized on the
             // longest label, so the column lines up from row to row.
@@ -1995,9 +2670,51 @@ export const register: Register = on => {
             onSubmit={(value: string) => void update($, filter, () => value)}
           />
         )}
-        {snap.secondaries.length === 0 && (
+        {snap.secondaries.length === 0 && (snap.paused ?? []).length === 0 && (
           <Text size="caption" dimColor>
             {t('secondaries.none')}
+          </Text>
+        )}
+        {(snap.paused ?? []).length > 0 && (
+          <Box key="paused" flexDirection="column">
+            {label(t('secondaries.paused', { count: (snap.paused ?? []).length }))}
+            {(snap.paused ?? []).map(p => (
+              <Box key={`paused-${p.name}`} {...rowLayout}>
+                <Box flexDirection="row" gap={1} flexGrow={1} flexShrink={1} alignItems="center">
+                  {dot(p.online, isRemote(p))}
+                  <Text dimColor wrap="truncate-end">
+                    {p.name}
+                  </Text>
+                  <Text size="caption" dimColor>
+                    {iconOf(p.mode)} {t('secondaries.pausedTag')}
+                  </Text>
+                </Box>
+                <Box key={`paused-controls-${p.name}`} {...controlsLayout}>
+                  <Button key={`resume-${p.name}`} label="▶" plain onPress={() => void setPaused($, p, false)} />
+                  {/* A paused vault gone from the router is let go of here. */}
+                  <Button
+                    key={`remove-${p.name}`}
+                    label="✕"
+                    plain
+                    dimColor
+                    onPress={() =>
+                      void rebind(
+                        $,
+                        { doing: t('action.remove.doing', { name: p.name }), done: t('action.remove.done', { name: p.name }) },
+                        shown,
+                        current => current.filter(n => n !== p.name),
+                        { shows: snap => ({ ...snap, paused: (snap.paused ?? []).filter(r => r.name !== p.name) }) },
+                      )
+                    }
+                  />
+                </Box>
+              </Box>
+            ))}
+          </Box>
+        )}
+        {(snap.secondaries.length > 0 || (snap.paused ?? []).length > 0) && (
+          <Text size="caption" dimColor>
+            {t('secondaries.pauseHint')}
           </Text>
         )}
         {snap.secondaries.length > 0 && shownSecondaries.length === 0 && (
@@ -2130,6 +2847,7 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column" gap={1}>
+        {title}
         {header}
         {legend}
         {problems}
@@ -2187,8 +2905,29 @@ export const register: Register = on => {
     await read($, paneVersion)
     await read($, language)
     const isShown = isPanePlaced
+    const isListOpen = await read($, bandListOpen)
     const names = snap.secondaries.map(s => s.name)
-    const fit = bandFit(snap.primary?.name ?? null, names, e.props.bodyColumns)
+    const paused = snap.paused ?? []
+    const fit = bandFit(snap.primary?.name ?? null, names, e.props.bodyColumns, paused.length)
+    const chip = chipText(fit.hidden, paused.length)
+    // A vault's name, pressed, opens it: Obsidian for a local one, the browser
+    // for a remote one's web UI.
+    const opener = (row: VaultRow, key: string, isDim = false) => (
+      <Button key={key} plain onPress={() => void openVault($, row)}>
+        <Text dimColor={isDim} wrap="truncate-end">
+          {row.name}
+        </Text>
+      </Button>
+    )
+    // What the chip unfolds, above the line: the secondaries the line could
+    // not show, and the paused ones — each with ■ or ▶.
+    const unfolded: { row: Secondary; isPaused: boolean }[] = [
+      ...snap.secondaries.slice(fit.shown).map(row => ({ row, isPaused: false })),
+      ...paused.map(row => ({ row, isPaused: true })),
+    ]
+    // A few rows at most above the prompt: the others are in the pane.
+    const listed = unfolded.slice(0, BAND_LIST_ROWS)
+    const beyond = unfolded.length - listed.length
     const caption = (text: string) => (
       <Text size="caption" dimColor wrap="truncate-end">
         {text}
@@ -2203,21 +2942,48 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
+        {isListOpen && listed.length > 0 && (
+          <Box key="vault-band-list" flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+            {listed.map(({ row, isPaused }) => (
+              <Box key={`band-list-${row.name}`} flexDirection="row" alignItems="center" columnGap={1}>
+                {opener(row, `band-list-open-${row.name}`, isPaused)}
+                <Text wrap="truncate-end">{iconOf(row.mode)}</Text>
+                {isPaused && caption(t('secondaries.pausedTag'))}
+                {isPaused ? (
+                  <Button key={`band-resume-${row.name}`} label="▶" plain onPress={() => void setPaused($, row, false)} />
+                ) : (
+                  <Button key={`band-pause-${row.name}`} label="■" plain dimColor onPress={() => void setPaused($, row, true)} />
+                )}
+              </Box>
+            ))}
+            {beyond > 0 && (
+              <Button key="band-list-more" plain dimColor onPress={() => void openPane($)}>
+                <Text dimColor wrap="truncate-end">
+                  {t('band.listMore', { count: beyond })}
+                </Text>
+              </Button>
+            )}
+          </Box>
+        )}
         <Box key="vault-band" flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={2}>
           <Box key="vault-band-names" flexDirection="row" alignItems="center" columnGap={1} flexShrink={1} overflow="hidden">
             {heading(t('band.primary'))}
-            <Text wrap="truncate-end">{snap.primary?.name ?? t('band.none')}</Text>
+            {snap.primary ? opener(snap.primary, 'band-open-primary') : <Text wrap="truncate-end">{t('band.none')}</Text>}
             <Box width={1} />
             {heading(t('band.secondaries'))}
-            {names.length === 0 && caption(t('band.none'))}
+            {names.length === 0 && paused.length === 0 && caption(t('band.none'))}
             {snap.secondaries.slice(0, fit.shown).map((s, i) => (
               <Box key={`band-${s.name}`} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
                 {i > 0 && caption('|')}
-                <Text wrap="truncate-end">{s.name}</Text>
+                {opener(s, `band-open-${s.name}`)}
                 <Text wrap="truncate-end">{iconOf(s.mode)}</Text>
               </Box>
             ))}
-            {fit.hidden > 0 && caption(`… +${fit.hidden}`)}
+            {chip && (
+              <Button key="band-more" plain dimColor onPress={() => void update($, bandListOpen, open => !open)}>
+                <Text dimColor>{chip}</Text>
+              </Button>
+            )}
           </Box>
           <Button
             key="toggle-pane"

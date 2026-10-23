@@ -59,6 +59,8 @@ import {
 } from '../src/helpers/binding-repair-plan.mjs';
 import {
   isPromotionOfLockedSecondaryOnDisk,
+  isPromotionOfPausedSecondaryOnDisk,
+  pausedSecondaryPromotionError,
   lockedSecondaryTierSource,
   lockedSecondaryPromotionRemedy,
   PROMOTION_REFUSED_CODE,
@@ -2503,6 +2505,10 @@ function linkWorkspaceToVault({ workspacePath, vaultPath, vaultSlug, opts = {} }
         if (strictFrom) {
           throw promotionRefusal(vaultSlug, strictFrom);
         }
+        // NOR A PAUSED ONE: that would resume it unasked (v0.107.0).
+        if (!same && isPromotionOfPausedSecondaryOnDisk(vaultSlug, previous)) {
+          throw pausedSecondaryPromotionError('--link-workspace', vaultSlug);
+        }
         if (previous && !same) dropped = { also: previous.also, alsoLocked: previous.alsoLocked, alsoWritable: previous.alsoWritable, locked: previous.locked };
         // The write tier of each secondary that STAYS (Phase 3, per-workspace
         // `alsoLocked`/`alsoWritable` on the binding) survives a re-link to the
@@ -2955,6 +2961,9 @@ export async function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = 
       {
         const strictFrom = lockedSecondaryTierSource(primary.slug, previous, cfg);
         if (strictFrom) throw promotionRefusal(primary.slug, strictFrom);
+        if (isPromotionOfPausedSecondaryOnDisk(primary.slug, previous)) {
+          throw pausedSecondaryPromotionError('--attach', primary.slug);
+        }
       }
       // The previous PRIMARY too: unlike `lock_vault --persist`, this command
       // does not carry it over as a secondary.
@@ -6842,6 +6851,7 @@ if (args[0] === '--repair-binding') {
     info(`  secondaries:  ${preview.also.join(', ') || '(none)'}`);
     info(`  alsoLocked:   ${preview.alsoLocked.join(', ') || '(none)'}`);
     info(`  alsoWritable: ${preview.alsoWritable.join(', ') || '(none)'}`);
+    info(`  alsoPaused:   ${(preview.alsoPaused ?? []).join(', ') || '(none)'}`);
     info(`  locked:       ${preview.locked}`);
     info(`  other fields kept: ${preview.unknownFields.join(', ') || '(none)'}`);
     // WHAT IT WILL PERMIT, which the two lists above do not answer alone: a
