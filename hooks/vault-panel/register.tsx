@@ -192,19 +192,22 @@ const charCells = (code: number) =>
       ? 2
       : 1
 const cells = (text: string) => [...text].reduce((sum, char) => sum + charCells(char.codePointAt(0) ?? 0), 0)
-// The band's chip: the secondaries it could not show ("… +3"), and the paused
-// ones ("⏸ 1"); a press unfolds them upward.
+// The band's chip: the secondaries the line could not show ("… +3"), of which
+// so many paused ("⏸ 1"); a press unfolds them upward.
 function chipText(hidden: number, paused: number) {
   return [hidden > 0 ? `… +${hidden}` : '', paused > 0 ? `⏸ ${paused}` : ''].filter(Boolean).join(' ')
 }
-function bandFit(primary: string | null, secondaries: string[], columns: number, paused = 0) {
+// The secondaries on the band's line, active ones then paused ones, each as
+// its name, its badge (tier or ⏸) and its ■ or ▶; `paused[i]` says which.
+function bandFit(primary: string | null, secondaries: string[], columns: number, paused: boolean[] = []) {
   const toggle = 2 + Math.max(cells(t('band.show')), cells(t('band.hide'))) + 4
   const base =
     cells(t('band.primary')) + 1 + cells(primary ?? t('band.none')) + 1 + 1 + 1 + cells(t('band.secondaries')) + toggle
-  const widths = secondaries.map((name, i) => 1 + (i > 0 ? 2 : 0) + cells(name) + 1 + 2)
+  // A gap, "| " after the first, the name, a gap and its badge, a gap and its control.
+  const widths = secondaries.map((name, i) => 1 + (i > 0 ? 2 : 0) + cells(name) + 1 + 2 + 1 + 1)
   // The most secondaries that fit with the chip their remainder needs.
   for (let shown = secondaries.length; shown > 0; shown -= 1) {
-    const chip = chipText(secondaries.length - shown, paused)
+    const chip = chipText(secondaries.length - shown, paused.slice(shown).filter(Boolean).length)
     const used = base + widths.slice(0, shown).reduce((a, b) => a + b, 0) + (chip ? 1 + cells(chip) : 0)
     if (used <= columns) {
       return { shown, hidden: secondaries.length - shown }
@@ -2943,8 +2946,19 @@ export const register: Register = on => {
     const isListOpen = await read($, bandListOpen)
     const names = snap.secondaries.map(s => s.name)
     const paused = snap.paused ?? []
-    const fit = bandFit(snap.primary?.name ?? null, names, e.props.bodyColumns, paused.length)
-    const chip = chipText(fit.hidden, paused.length)
+    // Every secondary on the line, the paused ones after the active ones: each
+    // with its own ■ (pause) or ▶ (resume), right where it is named.
+    const entries: { row: Secondary; isPaused: boolean }[] = [
+      ...snap.secondaries.map(row => ({ row, isPaused: false })),
+      ...paused.map(row => ({ row, isPaused: true })),
+    ]
+    const fit = bandFit(
+      snap.primary?.name ?? null,
+      entries.map(entry => entry.row.name),
+      e.props.bodyColumns,
+      entries.map(entry => entry.isPaused),
+    )
+    const chip = chipText(fit.hidden, entries.slice(fit.shown).filter(entry => entry.isPaused).length)
     // A vault's name, pressed, opens it: Obsidian for a local one, the browser
     // for a remote one's web UI.
     const opener = (row: VaultRow, key: string, isDim = false) => (
@@ -2955,11 +2969,15 @@ export const register: Register = on => {
       </Button>
     )
     // What the chip unfolds, above the line: the secondaries the line could
-    // not show, and the paused ones — each with ■ or ▶.
-    const unfolded: { row: Secondary; isPaused: boolean }[] = [
-      ...snap.secondaries.slice(fit.shown).map(row => ({ row, isPaused: false })),
-      ...paused.map(row => ({ row, isPaused: true })),
-    ]
+    // not show, each with its ■ or ▶ as on the line.
+    const unfolded = entries.slice(fit.shown)
+    // A secondary's control: ■ pauses an active one, ▶ resumes a paused one.
+    const control = (row: Secondary, isPaused: boolean) =>
+      isPaused ? (
+        <Button key={`band-resume-${row.name}`} label="▶" plain onPress={() => void setPaused($, row, false)} />
+      ) : (
+        <Button key={`band-pause-${row.name}`} label="■" plain dimColor onPress={() => void setPaused($, row, true)} />
+      )
     // A few rows at most above the prompt: the others are in the pane.
     const listed = unfolded.slice(0, BAND_LIST_ROWS)
     const beyond = unfolded.length - listed.length
@@ -2984,11 +3002,7 @@ export const register: Register = on => {
                 {opener(row, `band-list-open-${row.name}`, isPaused)}
                 <Text wrap="truncate-end">{iconOf(row.mode)}</Text>
                 {isPaused && caption(t('secondaries.pausedTag'))}
-                {isPaused ? (
-                  <Button key={`band-resume-${row.name}`} label="▶" plain onPress={() => void setPaused($, row, false)} />
-                ) : (
-                  <Button key={`band-pause-${row.name}`} label="■" plain dimColor onPress={() => void setPaused($, row, true)} />
-                )}
+                {control(row, isPaused)}
               </Box>
             ))}
             {beyond > 0 && (
@@ -3007,11 +3021,12 @@ export const register: Register = on => {
             <Box width={1} />
             {heading(t('band.secondaries'))}
             {names.length === 0 && paused.length === 0 && caption(t('band.none'))}
-            {snap.secondaries.slice(0, fit.shown).map((s, i) => (
-              <Box key={`band-${s.name}`} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
+            {entries.slice(0, fit.shown).map(({ row, isPaused }, i) => (
+              <Box key={`band-${row.name}`} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
                 {i > 0 && caption('|')}
-                {opener(s, `band-open-${s.name}`)}
-                <Text wrap="truncate-end">{iconOf(s.mode)}</Text>
+                {opener(row, `band-open-${row.name}`, isPaused)}
+                {isPaused ? caption('⏸') : <Text wrap="truncate-end">{iconOf(row.mode)}</Text>}
+                {control(row, isPaused)}
               </Box>
             ))}
             {chip && (
