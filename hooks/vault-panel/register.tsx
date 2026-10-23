@@ -1447,8 +1447,7 @@ function compareVersions(x: string, y: string) {
 }
 // ■ and ▶: a muted red to pause, a green to resume, readable on a light and a
 // dark background alike. The glyph is the Button's only child, a coloured
-// Text, and no `label`: with one, the desktop drew the plain label (seen on
-// screen in v0.108.3) and the colour was lost.
+// Text (a Button holds strings and Text only).
 const PAUSE_COLOR = '#c0605a'
 const RESUME_COLOR = '#3f9b5a'
 // A vault's tile, in cells, at the least: a name of about 18 fits. The pane

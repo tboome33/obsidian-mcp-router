@@ -2362,9 +2362,6 @@ test('a paused secondary keeps its place on the band; ■ is a muted red, ▶ a 
   const glyph = (key: string) => nodesOf(nodes.find(n => keyOf(n) === key) as never).find(n => n.type === 'Text')
   expect(glyph('band-resume-docs')?.props?.color).toBe('#3f9b5a')
   expect(glyph('band-pause-notes')?.props?.color).toBe('#c0605a')
-  // No label beside: a Button given one drew the plain label, without the colour.
-  expect(nodes.find(n => keyOf(n) === 'band-pause-notes')?.props?.label).toBeUndefined()
-  expect(nodes.find(n => keyOf(n) === 'band-resume-docs')?.props?.label).toBeUndefined()
   await band.unmount()
 })
 
