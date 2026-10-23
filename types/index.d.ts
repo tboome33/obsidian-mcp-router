@@ -54,6 +54,10 @@ declare module 'claude-code' {
       showClosed: boolean
       /** The add list is shown (folded by default, unless there is no primary). */
       showAdd: boolean
+      /** Bumped at every open and close of the Vaults pane: the band reads it
+       * to be drawn again. What it shows comes from the module, never from a
+       * write made while drawing. */
+      paneVersion: number
     }
   }
 }

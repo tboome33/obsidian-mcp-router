@@ -164,7 +164,7 @@ const notConnected = (server: string, tool: string) => ({
 // Answers every engine call the panel makes; `list` is read at each list_vaults.
 // `hold`, when set, holds the next list_vaults answer until the test calls
 // the function it returns: the way to make two reads overlap.
-function wire(on: On, state: { list: unknown; answers?: Record<string, unknown>; refuse?: string; refuseOnce?: string; unreachable?: string; refuseText?: string; writeAnswer?: unknown; held?: Promise<void>; env?: Record<string, string>; opens?: number; closes?: number; openHeld?: Promise<void>; blocked?: string[]; toasts?: string[] }) {
+function wire(on: On, state: { list: unknown; answers?: Record<string, unknown>; refuse?: string; refuseOnce?: string; unreachable?: string; refuseText?: string; writeAnswer?: unknown; held?: Promise<void>; env?: Record<string, string>; opens?: number; closes?: number; openHeld?: Promise<void>; blocked?: string[]; toasts?: string[]; unplaced?: boolean; clock?: ReturnType<typeof mock.clock> }) {
   const calls: { server: string; tool: string; args: Record<string, unknown> }[] = []
   on('env.get', (_, e) => ({ value: state.env?.[e.name] }))
   on('mcp.call', async (_, e) => {
@@ -206,7 +206,8 @@ function wire(on: On, state: { list: unknown; answers?: Record<string, unknown>;
     state.openHeld = undefined
     await held
 
-    return { value: { isPlaced: true } }
+    // A narrow terminal answers an unasked open without drawing it.
+    return { value: state.unplaced ? { isPlaced: false as const, reason: 'narrow terminal' } : { isPlaced: true as const } }
   })
   on('ui.close', () => {
     state.closes = (state.closes ?? 0) + 1
@@ -218,7 +219,7 @@ function wire(on: On, state: { list: unknown; answers?: Record<string, unknown>;
 
     return { value: undefined }
   })
-  mock.clock(on)
+  state.clock = mock.clock(on)
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('command.run', () => ({ text: '' }))
 
@@ -1325,4 +1326,287 @@ test('the filter field has a line of its own, not beside the legend', async ($, 
   const rows = nodes.filter(n => n.type === 'Box' && !/^column/.test(String(n.props?.flexDirection ?? 'row')))
   expect(rows.some(r => nodesOf(r.children).some(n => n.type === 'Input'))).toBe(false)
   await ui.unmount()
+})
+
+test('a legend names the three marks, and each section says what it is', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    for (const words of [/^disponible$/, /^local fermé$/, /^distant injoignable$/]) {
+      expect(await ui.find({ type: 'Text', text: words })).toBeTruthy()
+    }
+    expect(await ui.find({ type: 'Text', text: /^Le vault par défaut de ce projet/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /^Des vaults consultables en plus du principal/ })).toBeTruthy()
+    await ui.unmount()
+  }
+})
+
+test('the Locaux and Distants tabs are real buttons, the open one lit', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await openAdd(ui)
+    await ui.press({ key: 'tab-locaux' })
+    const tabOf = async (key: string) => nodesOf(await ui.drawn()).find(n => n.type === 'Button' && keyOf(n) === key)
+    expect((await tabOf('tab-locaux'))?.props?.variant).toBe('primary')
+    expect((await tabOf('tab-distants'))?.props?.variant).toBe('secondary')
+    expect((await tabOf('tab-locaux'))?.props?.plain).toBeFalsy()
+    await ui.press({ key: 'tab-distants' })
+    expect((await tabOf('tab-distants'))?.props?.variant).toBe('primary')
+    expect((await tabOf('tab-locaux'))?.props?.variant).toBe('secondary')
+    await ui.unmount()
+  }
+})
+
+const BAND = {
+  plugin: 'obsidian-router',
+  component: 'AbovePrompt',
+  props: {
+    hasSurvey: false,
+    isWorking: false,
+    maxRows: 10,
+    bodyColumns: 120,
+    scroll: { offset: 0, bodyRows: 10 },
+    view: {},
+  },
+} as const
+
+// What stands for the engine's own band, under the plugin's.
+function engineBand(on: On) {
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>engine band</Text>
+  })
+}
+
+const bandTexts = async (ui: { drawn(): Promise<unknown> }) =>
+  nodesOf(await ui.drawn())
+    .filter(n => n.type === 'Text')
+    .map(textOf)
+
+test('the band shows the primary, each secondary with its write badge, and keeps the band under it', async ($, on) => {
+  wire(on, { list: LIST })
+  engineBand(on)
+  await begin($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...BAND, surface })
+    const texts = await bandTexts(ui)
+    expect(texts).toContain('main')
+    // docs is read-only, notes writes on request: one badge each, in order.
+    expect(texts.slice(texts.indexOf('docs'), texts.indexOf('notes') + 2)).toEqual(['docs', '🔒', '·', 'notes', '✋'])
+    expect(texts.some(t => t.startsWith('…'))).toBe(false)
+    expect(texts).toContain('engine band')
+    await ui.unmount()
+  }
+})
+
+test('a band too narrow for every secondary ends with "…" and how many it left out', async ($, on) => {
+  const names = ['alpha-vault', 'beta-vault', 'gamma-vault', 'delta-vault', 'epsilon-vault']
+  const many = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: names } }
+  wire(on, { list: many })
+  engineBand(on)
+  await begin($)
+  const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 90 }, surface: 'desktop' })
+  const texts = await bandTexts(ui)
+  const shown = names.filter(n => texts.includes(n))
+  expect(shown.length).toBeGreaterThan(0)
+  expect(shown.length).toBeLessThan(5)
+  // Binding order: the first ones are kept, the tail is counted.
+  expect(shown).toEqual(names.slice(0, shown.length))
+  expect(texts).toContain(`… +${5 - shown.length}`)
+  await ui.unmount()
+
+  // Wide enough, all of them and no "…".
+  const wide = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 200 }, surface: 'desktop' })
+  const all = await bandTexts(wide)
+  expect(names.every(n => all.includes(n))).toBe(true)
+  expect(all.some(t => t.startsWith('…'))).toBe(false)
+  await wide.unmount()
+})
+
+test("the band's toggle closes the pane, then opens it again", async ($, on) => {
+  const state: { list: unknown; opens?: number; closes?: number } = { list: LIST }
+  wire(on, state)
+  engineBand(on)
+  // /vaults opened the pane: the toggle offers to hide it.
+  await begin($)
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const toggle = async () => nodesOf(await ui.drawn()).find(n => n.type === 'Button' && keyOf(n) === 'toggle-pane')
+  expect((await toggle())?.props?.label).toBe('◧ Masquer le panneau')
+  const closesBefore = state.closes ?? 0
+  await ui.press({ key: 'toggle-pane' })
+  expect(state.closes).toBe(closesBefore + 1)
+  expect((await toggle())?.props?.label).toBe('◧ Afficher le panneau')
+  const opensBefore = state.opens ?? 0
+  await ui.press({ key: 'toggle-pane' })
+  expect(state.opens).toBe(opensBefore + 1)
+  expect((await toggle())?.props?.label).toBe('◧ Masquer le panneau')
+  await ui.unmount()
+})
+
+test('the band yields to an unread router, to OBSIDIAN_ROUTER_NO_VAULT_BAND and to a survey', async ($, on) => {
+  const state = { list: LIST as unknown, env: { OBSIDIAN_ROUTER_NO_VAULT_BAND: '1' } as Record<string, string> }
+  wire(on, state)
+  engineBand(on)
+  // Not read yet: the engine's band only.
+  const before = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await before.find({ type: 'Button', key: 'toggle-pane' })).toBeFalsy()
+  expect(await before.find({ type: 'Text', text: /^engine band$/ })).toBeTruthy()
+  await before.unmount()
+
+  await begin($)
+  // Opted out: the band is the engine's, the pane still works.
+  const off = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await off.find({ type: 'Button', key: 'toggle-pane' })).toBeFalsy()
+  expect(await off.find({ type: 'Text', text: /^engine band$/ })).toBeTruthy()
+  await off.unmount()
+  const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await pane.find({ type: 'Text', text: /^Principal$/ })).toBeTruthy()
+  await pane.unmount()
+
+  // Opted in again: drawn, but a survey up makes it yield.
+  state.env = {}
+  await begin($)
+  const shown = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await shown.find({ type: 'Button', key: 'toggle-pane' })).toBeTruthy()
+  await shown.unmount()
+  const survey = await $.ui.mount({ ...BAND, props: { ...BAND.props, hasSurvey: true }, surface: 'desktop' })
+  expect(await survey.find({ type: 'Button', key: 'toggle-pane' })).toBeFalsy()
+  await survey.unmount()
+})
+
+test('the tier menu shows each tier with the badge the band uses', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const menu = nodesOf(await ui.drawn()).find(n => n.type === 'Select' && keyOf(n) === 'mode-docs')
+  expect((menu?.props?.options as { label: string }[] | undefined)?.map(o => o.label)).toEqual([
+    '🔒 Lecture seule',
+    '✋ Écriture sur accord',
+    '✏️ Lecture/écriture',
+  ])
+  await ui.unmount()
+})
+
+test('a pane asked for but waiting undrawn is offered by the band, and its press opens it', async ($, on) => {
+  // A narrow terminal: the open is answered, not placed.
+  const state: { list: unknown; opens?: number; unplaced?: boolean } = { list: LIST, unplaced: true }
+  wire(on, state)
+  engineBand(on)
+  await begin($)
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const toggle = async () => nodesOf(await ui.drawn()).find(n => n.type === 'Button' && keyOf(n) === 'toggle-pane')
+  expect((await toggle())?.props?.label).toBe('◧ Afficher le panneau')
+  const opensBefore = state.opens ?? 0
+  await ui.press({ key: 'toggle-pane' })
+  expect(state.opens).toBe(opensBefore + 1)
+  await ui.unmount()
+})
+
+test('hiding the pane while the startup read is under way keeps it hidden', async ($, on) => {
+  let release = () => {}
+  const state: { list: unknown; opens?: number; closes?: number; held?: Promise<void> } = {
+    list: LIST,
+    held: new Promise<void>(resolve => {
+      release = resolve
+    }),
+  }
+  wire(on, state)
+  engineBand(on)
+  // The startup read takes the hold; /vaults reads past it and opens the pane.
+  await $.session.start(START)
+  await $.command.run({
+    command: 'vaults',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 80 },
+  })
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await ui.find({ type: 'Button', key: 'toggle-pane' })).toBeTruthy()
+  await ui.press({ key: 'toggle-pane' })
+  const opensAfterHide = state.opens ?? 0
+  // The startup read answers now: it must not reopen what was hidden.
+  release()
+  for (let i = 0; i < 50; i += 1) {
+    await ui.drawn()
+  }
+  expect(state.opens ?? 0).toBe(opensAfterHide)
+  const label = nodesOf(await ui.drawn()).find(n => n.type === 'Button' && keyOf(n) === 'toggle-pane')?.props?.label
+  expect(label).toBe('◧ Afficher le panneau')
+  await ui.unmount()
+})
+
+test('a band too narrow for even one secondary counts them all', async ($, on) => {
+  wire(on, { list: LIST })
+  engineBand(on)
+  await begin($)
+  const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 40 }, surface: 'desktop' })
+  const texts = await bandTexts(ui)
+  expect(texts.includes('docs') || texts.includes('notes')).toBe(false)
+  expect(texts).toContain('… +2')
+  await ui.unmount()
+})
+
+// The band's line, cell by cell, for main + docs + notes: "Principal main",
+// spacer, "Secondaires" and the toggle take 55; "docs 🔒" 8 more; "· notes ✋" 11.
+// At 65, docs would fit alone but not with "… +1" after it: the counter's room
+// is kept, so nothing is shown and both are counted. At 74, both fit.
+test('the band keeps room for "… +N" before it shows a secondary', async ($, on) => {
+  wire(on, { list: LIST })
+  engineBand(on)
+  await begin($)
+  const at = async (bodyColumns: number) => {
+    const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns }, surface: 'desktop' })
+    const texts = await bandTexts(ui)
+    await ui.unmount()
+
+    return texts
+  }
+  const narrow = await at(65)
+  expect(narrow.includes('docs')).toBe(false)
+  expect(narrow).toContain('… +2')
+  const enough = await at(68)
+  expect(enough).toContain('docs')
+  expect(enough).toContain('… +1')
+  const all = await at(74)
+  expect(all).toContain('notes')
+  expect(all.some(t => t.startsWith('…'))).toBe(false)
+  expect((await at(73)).includes('notes')).toBe(false)
+})
+
+// Two cells per CJK character: "資料庫一" is 8 cells, not 4. With main + two
+// such names the line needs 55 + 13 + 17 = 85; at 80 only the first fits.
+test('the band counts a wide character as two cells', async ($, on) => {
+  const wide = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['資料庫一', '文書庫二三'] } }
+  wire(on, { list: wide })
+  engineBand(on)
+  await begin($)
+  const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 80 }, surface: 'terminal' })
+  const texts = await bandTexts(ui)
+  expect(texts).toContain('資料庫一')
+  expect(texts.includes('文書庫二三')).toBe(false)
+  expect(texts).toContain('… +1')
+  await ui.unmount()
+})
+
+test('a pane the app draws on its own is told to the band', async ($, on) => {
+  const state: { list: unknown; clock?: ReturnType<typeof mock.clock> } = { list: LIST }
+  wire(on, state)
+  engineBand(on)
+  await begin($)
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const label = async () => nodesOf(await band.drawn()).find(n => n.type === 'Button' && keyOf(n) === 'toggle-pane')?.props?.label
+  // Hidden from the band: it offers the pane again.
+  await band.press({ key: 'toggle-pane' })
+  expect(await label()).toBe('◧ Afficher le panneau')
+  // The app draws the pane from its saved layout, through no open of the
+  // module's and with no read behind it: only the pane's own drawing says so.
+  const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await state.clock?.advance(0)
+  expect(await label()).toBe('◧ Masquer le panneau')
+  await pane.unmount()
+  await band.unmount()
 })

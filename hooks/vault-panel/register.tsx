@@ -29,6 +29,9 @@ const tab = atom({ plugin: 'obsidian-router', key: 'tab' } as const, 'locaux')
 // The two folded parts of the pane: the closed secondaries, and adding one.
 const showClosed = atom({ plugin: 'obsidian-router', key: 'showClosed' } as const, false)
 const showAdd = atom({ plugin: 'obsidian-router', key: 'showAdd' } as const, false)
+// Bumped at every open and close of the pane: the band reads it so that it is
+// drawn again; what the toggle says comes from isPanePlaced.
+const paneVersion = atom({ plugin: 'obsidian-router', key: 'paneVersion' } as const, 0)
 
 // The status marks, all on one 12×12 box.
 const MARK = {
@@ -39,14 +42,62 @@ const MARK = {
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12"><path d="M2 2L10 10M10 2L2 10" stroke="#d1242f" stroke-width="1.8" stroke-linecap="round"/></svg>',
 }
 
-const MODES: { mode: SecondaryMode; label: string }[] = [
-  { mode: 'locked', label: 'Lecture seule' },
-  { mode: 'soft', label: 'Écriture sur accord' },
-  { mode: 'writable', label: 'Lecture/écriture' },
+// Each tier's badge: the pane's menu and the band above the prompt show the
+// same one, so the band reads without a legend of its own.
+const MODES: { mode: SecondaryMode; label: string; icon: string }[] = [
+  { mode: 'locked', label: 'Lecture seule', icon: '🔒' },
+  { mode: 'soft', label: 'Écriture sur accord', icon: '✋' },
+  { mode: 'writable', label: 'Lecture/écriture', icon: '✏️' },
 ]
-// The tier menu's width, in the surface's cells: the longest label plus room
-// for the menu's own arrow and padding.
-const MODE_WIDTH = Math.max(...MODES.map(m => m.label.length)) + 6
+const iconOf = (mode: SecondaryMode) => MODES.find(m => m.mode === mode)?.icon ?? '🔒'
+// The tier menu's width, in the surface's cells: the longest label, its badge
+// (two cells and a space) and room for the menu's own arrow and padding.
+const MODE_WIDTH = Math.max(...MODES.map(m => m.label.length)) + 9
+
+// What the band shows of the secondaries in `columns` cells: as many as fit
+// after the primary and the toggle, in binding order, the rest counted as
+// "… +N". The line as the band draws it, cell by cell: "Principal", a gap, the
+// primary, a gap, a one-cell spacer, a gap, "Secondaires", then per secondary a
+// gap, "·" and a gap after the first, its name, a gap and its badge (an emoji,
+// two cells); "… +N" after a gap; the toggle after a gap of two, with room for
+// its chrome. Measured in characters: the band also cuts any text that still
+// runs over, so a misjudged width costs a cut, never a second line.
+const BAND_TOGGLE = { show: '◧ Afficher le panneau', hide: '◧ Masquer le panneau' }
+// A character's cells on a terminal line: two for the East Asian wide ranges
+// (CJK, Hangul, full-width forms) and the emoji planes, none for a joiner, a
+// variation selector or a combining mark, one otherwise.
+const charCells = (code: number) =>
+  code === 0x200d || (code >= 0xfe00 && code <= 0xfe0f) || (code >= 0x0300 && code <= 0x036f)
+    ? 0
+    : (code >= 0x1100 && code <= 0x115f) ||
+        (code >= 0x2e80 && code <= 0xa4cf) ||
+        (code >= 0xac00 && code <= 0xd7a3) ||
+        (code >= 0xf900 && code <= 0xfaff) ||
+        (code >= 0xfe30 && code <= 0xfe4f) ||
+        (code >= 0xff00 && code <= 0xff60) ||
+        (code >= 0xffe0 && code <= 0xffe6) ||
+        (code >= 0x1f300 && code <= 0x1faff) ||
+        (code >= 0x20000 && code <= 0x3fffd)
+      ? 2
+      : 1
+const cells = (text: string) => [...text].reduce((sum, char) => sum + charCells(char.codePointAt(0) ?? 0), 0)
+function bandFit(primary: string | null, secondaries: string[], columns: number) {
+  const toggle = 2 + Math.max(cells(BAND_TOGGLE.show), cells(BAND_TOGGLE.hide)) + 4
+  let used = cells('Principal') + 1 + cells(primary ?? 'aucun') + 1 + 1 + 1 + cells('Secondaires') + toggle
+  const more = (left: number) => 1 + cells(`… +${left}`)
+  let shown = 0
+  for (const name of secondaries) {
+    const width = 1 + (shown > 0 ? 2 : 0) + cells(name) + 1 + 2
+    const left = secondaries.length - shown - 1
+    if (used + width + (left > 0 ? more(left) : 0) > columns) {
+      break
+    }
+    used += width
+    shown += 1
+  }
+
+  return { shown, hidden: secondaries.length - shown }
+}
 
 type Binding = {
   vault: string
@@ -77,6 +128,11 @@ let server: string | null = null
 let connectTries = 0
 let ticker: Timer | null = null
 let isPaneOpen = false
+// The pane is on screen, not only asked for: a pane opened unasked in a narrow
+// terminal waits undrawn (`isPlaced: false`). What the band's toggle says.
+let isPanePlaced = false
+// This session turned the band above the prompt off (OBSIDIAN_ROUTER_NO_VAULT_BAND).
+let isBandOptedOut = false
 // The pane was closed (by the person or an unload) since this
 // session started: the startup read must not open it any more.
 let isStartupCancelled = false
@@ -772,8 +828,16 @@ async function choosePrimary($: EngineInterface, name: string) {
 }
 
 // The pane is up: it polls, and the model's binding calls redraw it.
+// Called while the pane is drawn too: so it writes no state (refused while a
+// ui.render hook draws). A pane drawing is a pane on screen.
 function adoptPane($: EngineInterface) {
   isPaneOpen = true
+  if (!isPanePlaced) {
+    isPanePlaced = true
+    // A pane the app drew on its own (restored) went through no openPane: the
+    // band learns of it from a timer, which runs after this drawing.
+    $.clock.after(0, () => void update($, paneVersion, v => v + 1).catch(() => undefined))
+  }
   if (!ticker) {
     ticker = $.clock.every(REFRESH_MS, () => background($))
   }
@@ -794,7 +858,7 @@ async function openPane($: EngineInterface, start?: number) {
     return
   }
   const mine = ++paneEpoch
-  await $.ui.open({ id: PANE, title: TITLE })
+  const opened = await $.ui.open({ id: PANE, title: TITLE })
   if (mine !== paneEpoch) {
     return
   }
@@ -809,13 +873,53 @@ async function openPane($: EngineInterface, start?: number) {
     return
   }
   adoptPane($)
+  // Asked for but waiting undrawn (a narrow terminal): the band offers to
+  // show it; drawing it later adopts it as placed.
+  isPanePlaced = opened.isPlaced !== false
+  await update($, paneVersion, v => v + 1)
 }
+
+// The pane is gone: its polling stops, and the band's toggle offers it again.
+async function markClosed($: EngineInterface) {
+  paneEpoch += 1
+  stopTicker()
+  isPaneOpen = false
+  isPanePlaced = false
+  await update($, paneVersion, v => v + 1)
+}
+
+// The band's toggle: the pane opens (and reads the router again), or closes.
+// A plugin's own ui.close is not seen by its own hook, so the close is marked
+// here.
+// Shown, it closes; asked for but waiting (or closed), the press opens it —
+// a person's open is placed at any width. Hiding also cancels the startup's
+// own open, before any await: a startup read still under way would otherwise
+// reopen what was just hidden.
+async function togglePane($: EngineInterface) {
+  if (isPanePlaced) {
+    isStartupCancelled = true
+    await $.ui.close({ id: PANE }).catch(() => undefined)
+    await markClosed($)
+
+    return
+  }
+  isStartupCancelled = false
+  await openPane($)
+  background($)
+}
+
+// The band is drawn in this session: neither the panel nor the band is off.
+const isBandOn = () => isEnvKnown && !isOptedOut && !isBandOptedOut
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const start = ++generation
+    // An open still pending from before this start (a /vaults, the band's
+    // toggle) finds the epoch moved and adopts nothing.
+    paneEpoch += 1
     stopTicker()
     isPaneOpen = false
+    isPanePlaced = false
     isStartupCancelled = false
     isEnvKnown = false
     // A read the previous session left running writes nothing into this one,
@@ -829,6 +933,8 @@ export const register: Register = on => {
     // the plugin's other hooks: no command, no pane, no router call.
     const optOut = await $.env.get('OBSIDIAN_ROUTER_NO_VAULT_PANEL')
     isOptedOut = TRUTHY.has((optOut ?? '').trim().toLowerCase())
+    const bandOptOut = await $.env.get('OBSIDIAN_ROUTER_NO_VAULT_BAND')
+    isBandOptedOut = TRUTHY.has((bandOptOut ?? '').trim().toLowerCase())
     isEnvKnown = true
     if (isOptedOut) {
       // A pane an earlier start opened while this one read its environment
@@ -879,9 +985,7 @@ export const register: Register = on => {
 
   // Closing the pane stops its polling and its redraws after tool calls.
   on('ui.close', { id: PANE }, async ($, e, next) => {
-    paneEpoch += 1
-    stopTicker()
-    isPaneOpen = false
+    await markClosed($)
     // The person's close, or an unload, also cancels the startup open; a
     // plugin's close (this module's own clean-up included) does not, so it
     // never poisons a later start that wants the pane.
@@ -909,11 +1013,11 @@ export const register: Register = on => {
 
   // The model may change the binding too: redraw after its router calls.
   // An observer, not a guard: no .catch, so a failure here fails open and the
-  // tool's own result stands. Only while the pane is open: nobody reads the
-  // snapshot otherwise.
+  // tool's own result stands. Only while the pane is open or the band is drawn:
+  // nobody reads the snapshot otherwise.
   on('tool.call', async ($, e, next) => {
     const ran = await next(e)
-    if (isPaneOpen && ROUTER_TOOL.test(e.tool)) {
+    if ((isPaneOpen || isBandOn()) && ROUTER_TOOL.test(e.tool)) {
       background($)
     }
 
@@ -921,6 +1025,9 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    // A close (or a new start) during this drawing's reads bumps the epoch:
+    // the drawing then adopts nothing.
+    const drawnFor = paneEpoch
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
     // The phone draws no field and no menu (its table may still name them):
@@ -937,7 +1044,7 @@ export const register: Register = on => {
     // read under way, it starts the read itself; its answer (data or error) is
     // written, so this fires once, not at every redraw. Neither happens before
     // this session's opt-out is known, nor in an opted-out session.
-    if (isEnvKnown && !isOptedOut) {
+    if (isEnvKnown && !isOptedOut && drawnFor === paneEpoch) {
       adoptPane($)
       if (!snap && !err && reading === 0) {
         background($)
@@ -1023,6 +1130,25 @@ export const register: Register = on => {
           )}
         </Box>
         <Button key="refresh" label="↻ Rafraîchir" plain dimColor onPress={() => background($)} />
+      </Box>
+    )
+
+    // What the coloured marks say, in one line under the header. "Disponible"
+    // covers both kinds: a local vault open in Obsidian, a remote one that answers.
+    const legend = (
+      <Box key="status-legend" flexDirection="row" flexWrap="wrap" columnGap={2}>
+        {[
+          { mark: dot(true, false), text: 'disponible' },
+          { mark: dot(false, false), text: 'local fermé' },
+          { mark: dot(false, true), text: 'distant injoignable' },
+        ].map(item => (
+          <Box key={`legend-${item.text}`} flexDirection="row" gap={1} alignItems="center">
+            {item.mark}
+            <Text size="caption" dimColor>
+              {item.text}
+            </Text>
+          </Box>
+        ))}
       </Box>
     )
 
@@ -1114,7 +1240,12 @@ export const register: Register = on => {
 
     const primary = (
       <Box flexDirection="column" gap={1}>
-        {section('Principal')}
+        <Box key="primary-head" flexDirection="column">
+          {section('Principal')}
+          <Text size="caption" dimColor>
+            Le vault par défaut de ce projet : Claude y lit et y écrit sans rien demander.
+          </Text>
+        </Box>
         {snap.primary ? (
           <Box
             key="primary-row"
@@ -1205,7 +1336,7 @@ export const register: Register = on => {
             <Box width={MODE_WIDTH} minWidth={MODE_WIDTH} flexShrink={0}>
               <Select
                 key={`mode-${s.name}`}
-                options={MODES.map(m => ({ value: m.mode, label: m.label }))}
+                options={MODES.map(m => ({ value: m.mode, label: `${m.icon} ${m.label}` }))}
                 value={s.mode}
                 onSelect={(value: string) => setMode(s, value)}
               />
@@ -1217,7 +1348,7 @@ export const register: Register = on => {
               {MODES.map(m => (
                 <Button
                   key={`mode-${s.name}-${m.mode}`}
-                  label={m.label}
+                  label={`${m.icon} ${m.label}`}
                   plain
                   dimColor={s.mode !== m.mode}
                   onPress={() => setMode(s, m.mode)}
@@ -1260,6 +1391,10 @@ export const register: Register = on => {
             legend folded over four lines and squeezed the field to nothing. */}
         <Box key="secondaries-head" flexDirection="column">
           {section(`Secondaires · ${snap.secondaries.length}`)}
+          <Text size="caption" dimColor>
+            Des vaults consultables en plus du principal, chacun avec son droit d'écriture : 🔒 lecture seule · ✋
+            écriture si tu l'acceptes · ✏️ lecture et écriture.
+          </Text>
           <Text size="caption" dimColor>
             💎 Obsidian · 🌐 ton navigateur · 🪟 navigateur interne
           </Text>
@@ -1339,13 +1474,14 @@ export const register: Register = on => {
         />
         {isAddOpen && (
           <Box flexDirection="column" gap={1}>
-            <Box flexDirection="row" gap={2}>
+            {/* Two real buttons, side by side: the open tab is the primary
+                one, so which list shows is plain at a glance. */}
+            <Box key="tabs" flexDirection="row" gap={1}>
               {tabs.map(t => (
                 <Button
                   key={`tab-${t.id}`}
                   label={t.label}
-                  plain
-                  dimColor={current !== t.id}
+                  variant={current === t.id ? 'primary' : 'secondary'}
                   onPress={() => void update($, tab, () => t.id)}
                 />
               ))}
@@ -1409,6 +1545,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column" gap={1}>
         {header}
+        {legend}
         {problems}
         {isTunnelDown && (
           // Every remote vault silent at once: the tunnel, not the vaults. The
@@ -1425,6 +1562,65 @@ export const register: Register = on => {
         {primary}
         {secondaries}
         {adding}
+      </Box>
+    )
+  })
+
+  // The band above the prompt: one line with the primary, the secondaries and
+  // their write badge, and a toggle for the pane. It draws only from what the
+  // pane's reads left (the startup read, a refresh, a click, the model's
+  // binding calls): it never calls the router itself. Another plugin's band,
+  // or the engine's own, stays under it.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const below = await next(e)
+    if (!isBandOn() || e.props.hasSurvey) {
+      return below
+    }
+    const snap = await read($, snapshot)
+    if (!snap) {
+      return below
+    }
+    const { Box, Text, Button } = $.ui.resolve(e)
+    // Read for its redraws only: the toggle says what the module knows.
+    await read($, paneVersion)
+    const isShown = isPanePlaced
+    const names = snap.secondaries.map(s => s.name)
+    const fit = bandFit(snap.primary?.name ?? null, names, e.props.bodyColumns)
+    const caption = (text: string) => (
+      <Text size="caption" dimColor wrap="truncate-end">
+        {text}
+      </Text>
+    )
+
+    return (
+      <Box flexDirection="column">
+        <Box key="vault-band" flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={2}>
+          <Box key="vault-band-names" flexDirection="row" alignItems="center" columnGap={1} flexShrink={1} overflow="hidden">
+            {caption('Principal')}
+            <Text weight="semibold" wrap="truncate-end">
+              {snap.primary?.name ?? 'aucun'}
+            </Text>
+            <Box width={1} />
+            {caption('Secondaires')}
+            {names.length === 0 && caption('aucun')}
+            {snap.secondaries.slice(0, fit.shown).map((s, i) => (
+              <Box key={`band-${s.name}`} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
+                {i > 0 && caption('·')}
+                <Text wrap="truncate-end">{s.name}</Text>
+                <Text wrap="truncate-end">{iconOf(s.mode)}</Text>
+              </Box>
+            ))}
+            {fit.hidden > 0 && caption(`… +${fit.hidden}`)}
+          </Box>
+          <Button
+            key="toggle-pane"
+            label={isShown ? BAND_TOGGLE.hide : BAND_TOGGLE.show}
+            plain
+            dimColor
+            onPress={() => void togglePane($)}
+          />
+        </Box>
+        {below}
       </Box>
     )
   })
