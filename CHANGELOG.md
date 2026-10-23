@@ -18,6 +18,9 @@ of …(got undefined)". The panel was v0.107.1, but the session's router was an 
 reads the router's version (`list_vaults.routerBuild`) and, below v0.107.0, sends no pause or
 resume: it says which router answers and that the app has to be restarted for the new one.
 
+- The pane's hint said ▶ "resumes it with its write right", which read as "writable again". It
+  now says ▶ resumes the vault as it was set: 🔒 read-only, ✋ write if you agree, or ✏️ read
+  and write.
 - Tests: `tests/vault-panel.test.tsx` 92 — a v0.105.0 router is sent nothing and is named.
 
 ## [0.107.1] — 2026-10-23 — the update reads back this project's install, not another's

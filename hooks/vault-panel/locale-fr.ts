@@ -204,6 +204,6 @@ export const FR: Record<string, string> = {
   "action.pauseNeedsRouter": "La pause demande le router v0.107.0 ou plus, et celui de cette session est en v{version} : l'app garde le router démarré avant la mise à jour. Quitte complètement Claude puis relance-le (une nouvelle session ne suffit pas).",
   "secondaries.paused": "En pause · {count}",
   "secondaries.pausedTag": "en pause",
-  "secondaries.pauseHint": "■ met un secondaire en pause sans le retirer · ▶ le reprend avec son droit d'écriture",
+  "secondaries.pauseHint": "■ met un secondaire en pause sans le retirer · ▶ le reprend tel qu'il était réglé : 🔒 lecture seule, ✋ écriture si tu l'acceptes ou ✏️ lecture et écriture",
   "band.noOpen": "Rien pour ouvrir {name} : ni dossier local connu, ni interface web."
 }

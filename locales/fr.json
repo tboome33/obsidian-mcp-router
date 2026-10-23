@@ -233,7 +233,7 @@
 
   "secondaries.paused": "En pause · {count}",
   "secondaries.pausedTag": "en pause",
-  "secondaries.pauseHint": "■ met un secondaire en pause sans le retirer · ▶ le reprend avec son droit d'écriture",
+  "secondaries.pauseHint": "■ met un secondaire en pause sans le retirer · ▶ le reprend tel qu'il était réglé : 🔒 lecture seule, ✋ écriture si tu l'acceptes ou ✏️ lecture et écriture",
 
   "band.noOpen": "Rien pour ouvrir {name} : ni dossier local connu, ni interface web."
 }

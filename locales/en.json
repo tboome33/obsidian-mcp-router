@@ -233,7 +233,7 @@
 
   "secondaries.paused": "Paused · {count}",
   "secondaries.pausedTag": "paused",
-  "secondaries.pauseHint": "■ pauses a secondary without removing it · ▶ resumes it with its write right",
+  "secondaries.pauseHint": "■ pauses a secondary without removing it · ▶ resumes it as it was set: 🔒 read-only, ✋ write if you agree, or ✏️ read and write",
 
   "band.noOpen": "Nothing to open {name} with: no known local folder, no web UI."
 }
