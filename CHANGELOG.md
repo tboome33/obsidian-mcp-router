@@ -10,6 +10,15 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.108.4] — 2026-10-24 — a rule under the pane's title
+
+Asked: a horizontal separator under "obsidian-mcp-router v0.108.x". The pane's title row is now
+followed by a rule — a line of box-drawing dashes, dimmed and cut at the pane's edge (the
+engine has no rule element, and a Box border cannot be drawn on one side only), so it reads as a
+separator on the terminal and the desktop alike.
+
+- Tests: `tests/vault-panel.test.tsx` 95 — the rule, dimmed, right under the title row.
+
 ## [0.108.3] — 2026-10-24 — a paused vault stays in its place; ■ red, ▶ green
 
 Seen on screen after v0.108.2: pausing "Stacks techniques" swapped it with "nasqnap" on the band,

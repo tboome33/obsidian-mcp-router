@@ -2011,6 +2011,24 @@ test('the pane is titled obsidian-mcp-router, links its repository, and badges a
   await ui.unmount()
 })
 
+test('a rule separates the pane title from the rest, on the terminal and the desktop', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    const nodes = nodesOf(await ui.drawn())
+    const at = (key: string) => nodes.findIndex(n => keyOf(n) === key)
+    const ruleAt = nodes.findIndex(n => n.type === 'Text' && /^─+$/.test(textOf(n)))
+    const rule = nodes[ruleAt]
+    expect(rule?.props?.dimColor).toBe(true)
+    expect(rule?.props?.wrap).toBe('truncate-end')
+    // Right under the title row, before everything else the pane draws.
+    expect(at('pane-title')).toBeLessThan(ruleAt)
+    expect(ruleAt).toBeLessThan(at('status-legend'))
+    await ui.unmount()
+  }
+})
+
 test('no badge when GitHub has the installed version', async ($, on) => {
   wire(on, { list: LIST })
   versions(on, '0.107.0', '0.107.0')

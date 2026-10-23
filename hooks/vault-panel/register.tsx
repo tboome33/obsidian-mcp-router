@@ -2029,28 +2029,36 @@ export const register: Register = on => {
     // The plugin's name and version on the left, the repository on the right,
     // a badge when GitHub has a newer version (its press unfolds the console,
     // where the update is). Then the summary and the refresh.
+    // The pane's name, version and links, then a rule under them: a line of
+    // box-drawing dashes, dimmed and cut at the pane's edge, so it reads as a
+    // separator on the terminal and the desktop alike.
     const title = (
-      <Box key="pane-title" flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
-        <Box flexDirection="row" gap={1} alignItems="center" flexShrink={1} flexWrap="wrap">
-          <Text weight="semibold">obsidian-mcp-router</Text>
-          {upd?.installed && (
-            <Text size="caption" dimColor>
-              v{upd.installed}
-            </Text>
-          )}
-          {upd?.isAvailable && (
-            <Button
-              key="update-badge"
-              label={t('update.badge')}
-              plain
-              onPress={() => void update($, showAdmin, () => true)}
-            />
-          )}
+      <Box key="pane-title-block" flexDirection="column">
+        <Box key="pane-title" flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+          <Box flexDirection="row" gap={1} alignItems="center" flexShrink={1} flexWrap="wrap">
+            <Text weight="semibold">obsidian-mcp-router</Text>
+            {upd?.installed && (
+              <Text size="caption" dimColor>
+                v{upd.installed}
+              </Text>
+            )}
+            {upd?.isAvailable && (
+              <Button
+                key="update-badge"
+                label={t('update.badge')}
+                plain
+                onPress={() => void update($, showAdmin, () => true)}
+              />
+            )}
+          </Box>
+          <Box flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
+            {Svg && <Svg source={GITHUB_MARK} alt="GitHub" width={14} height={14} />}
+            <Button key="github" label={t('header.github')} plain dimColor onPress={() => void openUrl($, REPO_URL)} />
+          </Box>
         </Box>
-        <Box flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
-          {Svg && <Svg source={GITHUB_MARK} alt="GitHub" width={14} height={14} />}
-          <Button key="github" label={t('header.github')} plain dimColor onPress={() => void openUrl($, REPO_URL)} />
-        </Box>
+        <Text dimColor wrap="truncate-end">
+          {'─'.repeat(240)}
+        </Text>
       </Box>
     )
     const header = (
