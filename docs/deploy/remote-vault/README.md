@@ -272,7 +272,7 @@ The mount unit name comes from the path: `systemd-escape -p --suffix=mount /srv/
 The image needs `shm_size: "1gb"` (already in the template). Check `PUID`/`PGID` own `config-<slug>/` and `VAULT_DIR`.
 
 **Docker cannot start the container: "cannot assign requested address".**
-The WireGuard interface is not up, so `WG_IP` does not exist yet on the host. Start `wg-quick@wg0` first. To be safe at boot, add `After=wg-quick@wg0.service` to Docker with `systemctl edit docker`.
+The WireGuard interface is not up, so `WG_IP` does not exist yet on the host. Start `wg-quick@wg0` first. To be safe at boot, add `After=wg-quick@wg0` to Docker with `systemctl edit docker`.
 
 **`http://…:3001` does not work.**
 Port 3001 in the container is HTTPS. Use `https://`. Port 3000 (HTTP) only redirects to HTTPS and is not published by the template.
@@ -546,7 +546,7 @@ Le nom de l'unité de montage vient du chemin : `systemd-escape -p --suffix=moun
 L'image a besoin de `shm_size: "1gb"` (déjà dans le modèle). Vérifiez que `PUID`/`PGID` possèdent `config-<slug>/` et `VAULT_DIR`.
 
 **Docker ne démarre pas le conteneur : « cannot assign requested address ».**
-L'interface WireGuard n'est pas montée, donc `WG_IP` n'existe pas encore sur l'hôte. Démarrez d'abord `wg-quick@wg0`. Pour être tranquille au démarrage, ajoutez `After=wg-quick@wg0.service` à Docker avec `systemctl edit docker`.
+L'interface WireGuard n'est pas montée, donc `WG_IP` n'existe pas encore sur l'hôte. Démarrez d'abord `wg-quick@wg0`. Pour être tranquille au démarrage, ajoutez `After=wg-quick@wg0` à Docker avec `systemctl edit docker`.
 
 **`http://…:3001` ne marche pas.**
 Le port 3001 du conteneur est en HTTPS. Utilisez `https://`. Le port 3000 (HTTP) ne fait que rediriger vers HTTPS et n'est pas publié par le modèle.

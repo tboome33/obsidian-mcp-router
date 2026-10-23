@@ -42,7 +42,8 @@ describe('vault panel translations', () => {
   }
 
   test('the French copy compiled into the module is what fr.json says', () => {
-    const compiled = fs.readFileSync(path.join(root, 'hooks', 'vault-panel', 'locale-fr.ts'), 'utf8');
+    // Line endings aside: a checkout may turn LF into CRLF.
+    const compiled = fs.readFileSync(path.join(root, 'hooks', 'vault-panel', 'locale-fr.ts'), 'utf8').replace(/\r\n/g, '\n');
     assert.equal(compiled, renderLocaleModule(fr), 'run `node scripts/build-mod-locales.mjs`');
   });
 });
