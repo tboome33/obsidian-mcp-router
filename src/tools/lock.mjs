@@ -57,6 +57,9 @@ import {
 import {
   isVaultReachable,
   isPromotionOfLockedSecondaryOnDisk,
+  isPromotionOfPausedSecondaryOnDisk,
+  pausedSecondaryPromotionError,
+  unreachableReason,
   lockedSecondaryPromotionError,
   PROMOTION_REFUSED_CODE,
 } from '../helpers/vault-reach.mjs';
@@ -128,10 +131,11 @@ export async function lockVault(registry, args = {}) {
   // unknown vault — just one guard later, and previously unchecked here.
   if (!isVaultReachable(vault, registry)) {
     throw new Error(
-      `lock_vault: cannot lock to "${vault}" — it is registered but not reachable from this workspace ` +
+      `lock_vault: cannot lock to "${vault}" — ` + unreachableReason(vault, registry,
+        'it is registered but not reachable from this workspace ' +
         '(vaultReach: "declared" is active, and this workspace\'s binding does not name it, nor is it in ' +
         '`openVaults`). Locking to it would refuse every subsequent call until unlock. Bind this workspace ' +
-        'to it with confirm_workspace_binding first, or add it to `openVaults` in config.json.',
+        'to it with confirm_workspace_binding first, or add it to `openVaults` in config.json.'),
     );
   }
 
@@ -612,6 +616,9 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
         // the re-read meant to make the write safe. (Codex, round on fd9e1cd.)
         if (isPromotionOfLockedSecondaryOnDisk(vault, existing, cfg)) {
           throw lockedSecondaryPromotionError(promotionRefusal(vault));
+        }
+        if (isPromotionOfPausedSecondaryOnDisk(vault, existing)) {
+          throw pausedSecondaryPromotionError('lock_vault', vault);
         }
         // THE NAME THIS LOCK RECORDS AS PRIMARY MUST BE ONE A BINDING MAY
         // NAME — the writer's rule, asked of the FILE inside the lock. Round

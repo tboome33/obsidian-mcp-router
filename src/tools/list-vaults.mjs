@@ -28,7 +28,7 @@ import {
 } from '../helpers/vault-slug.mjs';
 import { probeConversionToolbox } from '../helpers/conversion-readiness.mjs';
 import { DEFAULT_PROJECT_ROOT as PROJECT_ROOT } from '../markdownify/markitdown.mjs';
-import { isVaultReachable } from '../helpers/vault-reach.mjs';
+import { isVaultReachable, isPausedSecondary } from '../helpers/vault-reach.mjs';
 import { sharingRequirement } from '../helpers/vault-sharing.mjs';
 import { HINT_STATUS, bindingOnFileOf } from '../helpers/workspace-bindings.mjs';
 import { classifyVaultReachability } from '../helpers/vault-reachability.mjs';
@@ -335,7 +335,15 @@ export async function listVaults(registry, sharedConfig = null) {
         awaitingDeclaration: false,
       };
     }),
-    ...unreachable.map((v) => (disabledSince(v.name)
+    ...unreachable.map((v) => (isPausedSecondary(v.name, registry)
+      ? {
+        name: v.name,
+        type: v.type,
+        reason: 'paused for this workspace (a secondary of its binding, kept with its write tier — '
+          + 'set_secondary_vault_mode with paused: false resumes it)',
+        awaitingDeclaration: false,
+      }
+      : disabledSince(v.name)
       ? {
         name: v.name,
         type: v.type,
@@ -442,6 +450,8 @@ export async function listVaults(registry, sharedConfig = null) {
       // "configure-secondary-vaults" conversation reads back before asking.
       alsoLocked: Array.isArray(b.alsoLocked) ? b.alsoLocked.filter(str) : [],
       alsoWritable: Array.isArray(b.alsoWritable) ? b.alsoWritable.filter(str) : [],
+      // The secondaries this workspace paused (v0.107.0): in `also`, not reachable.
+      alsoPaused: Array.isArray(b.alsoPaused) ? b.alsoPaused.filter(str) : [],
     };
   };
   // The hint, same treatment. `status` must be one the classifier can produce

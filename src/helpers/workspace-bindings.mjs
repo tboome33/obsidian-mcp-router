@@ -194,6 +194,15 @@ export function normalizeBinding(raw) {
   };
   const alsoLocked = tierList(raw.alsoLocked);
   const alsoWritable = tierList(raw.alsoWritable).filter((n) => !alsoLocked.includes(n));
+  // PAUSED SECONDARIES (v0.107.0): kept in `also`, with their tier, and
+  // unreachable from this workspace until resumed (`isPausedSecondary`).
+  // ORTHOGONAL TO THE TIER, so resuming gives back exactly the tier the vault
+  // had — the first version kept the pause in the vault panel's own store and
+  // took the vault out of the binding, which dropped its tier and left it
+  // reachable by every other route (Codex, review of v0.107.0). Present only
+  // when the stored entry carries the field, so a binding that never paused
+  // anything reads exactly as before.
+  const paused = Array.isArray(raw.alsoPaused) ? { alsoPaused: tierList(raw.alsoPaused) } : {};
 
   return {
     vault,
@@ -203,6 +212,7 @@ export function normalizeBinding(raw) {
     confirmedVia: typeof raw.confirmedVia === 'string' && raw.confirmedVia ? raw.confirmedVia : null,
     alsoLocked,
     alsoWritable,
+    ...paused,
   };
 }
 
@@ -505,7 +515,12 @@ export function rawSecondaryTiers(raw) {
   const alsoSet = new Set(also);
   const alsoLocked = [...new Set(names(raw.alsoLocked).filter((n) => alsoSet.has(n)))];
   const alsoWritable = [...new Set(names(raw.alsoWritable).filter((n) => alsoSet.has(n) && !alsoLocked.includes(n)))];
-  return { also, alsoLocked, alsoWritable };
+  // The pause (v0.107.0), when the entry carries one: what the promotion
+  // guards ask beside the strict tier.
+  const paused = Array.isArray(raw.alsoPaused)
+    ? { alsoPaused: [...new Set(names(raw.alsoPaused).filter((n) => alsoSet.has(n)))] }
+    : {};
+  return { also, alsoLocked, alsoWritable, ...paused };
 }
 
 /**
@@ -758,7 +773,7 @@ export function bindingIncoherences(raw) {
   if (!hasPrimary) out.push({ kind: BINDING_INCOHERENCE.NO_PRIMARY, names: [] });
 
   const malformed = [];
-  for (const field of ['also', 'alsoLocked', 'alsoWritable']) {
+  for (const field of ['also', 'alsoLocked', 'alsoWritable', 'alsoPaused']) {
     if (raw[field] === undefined) continue;
     if (!Array.isArray(raw[field]) || raw[field].some((s) => typeof s !== 'string' || s.trim() === '')) {
       malformed.push(field);
@@ -1230,11 +1245,24 @@ export function withBinding(config, cwd, binding) {
   const unknownFields = storedRaw && typeof storedRaw === 'object' && !Array.isArray(storedRaw)
     ? Object.fromEntries(Object.entries(storedRaw).filter(([k]) => !KNOWN.has(k)))
     : {};
-  all[key] = {
+  const entry = {
     ...unknownFields,
     ...normalized,
     confirmedAt: normalized.confirmedAt || new Date().toISOString().slice(0, 10),
   };
+  // A PAUSE SURVIVES EVERY WRITER THAT DOES NOT NAME IT — `alsoPaused` is not
+  // a KNOWN field, so a re-binding, a lock or `--attach` carries the stored
+  // list through as it carries any field it does not write. Only the
+  // secondaries that stay are kept: a vault that leaves `also` leaves its
+  // pause, and does not come back paused the day it is bound again.
+  if (Object.prototype.hasOwnProperty.call(entry, 'alsoPaused')) {
+    const kept = Array.isArray(entry.alsoPaused)
+      ? [...new Set(entry.alsoPaused.filter((n) => typeof n === 'string' && normalized.also.includes(n)))]
+      : [];
+    if (kept.length) entry.alsoPaused = kept;
+    else delete entry.alsoPaused;
+  }
+  all[key] = entry;
   // WRITING THE SAME BINDING BACK CHANGES NOTHING, and returning the input
   // object says so — which is what `updateConfigBindings` reads to decide
   // whether to touch the file at all. Re-running `lock_vault --persist` on an

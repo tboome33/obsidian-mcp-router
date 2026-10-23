@@ -404,7 +404,10 @@ test('a malformed port in the router config never moves the probe off 127.0.0.1'
     }),
   }))
   on('http.fetch', (_, e) => {
-    fetched.push(e.url)
+    // The plugin's own update check reads GitHub: not a vault probe.
+    if (!e.url.startsWith('https://raw.githubusercontent.com/')) {
+      fetched.push(e.url)
+    }
 
     return { value: { status: 200, ok: true, headers: {}, text: '' } }
   })
@@ -1824,19 +1827,24 @@ test('a remote vault needs WireGuard on; with it, its web UI port goes into the 
   await ui.unmount()
 })
 
-test('removing a vault from the router asks for a second press, and can be cancelled', async ($, on) => {
+test('removing a vault from the router: one menu, one button, a confirming second press', async ($, on) => {
   const calls = wire(on, { list: LIST })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await openAdmin(ui)
-  // Bound vaults cannot be removed: only the registered, unbound ones are listed.
-  expect(await ui.find({ type: 'Button', key: 'unregister-docs' })).toBeFalsy()
-  await ui.press({ key: 'unregister-extra' })
+  // Bound vaults cannot be removed: the menu lists only the registered, unbound ones.
+  const menu = nodesOf(await ui.drawn()).find(n => n.type === 'Select' && keyOf(n) === 'admin-remove-select')
+  const values = ((menu?.props?.options as { value: string }[] | undefined) ?? []).map(o => o.value)
+  expect(values).toContain('extra')
+  expect(values).not.toContain('docs')
+  await ui.select({ key: 'admin-remove-select', value: 'extra' })
+  await ui.press({ key: 'admin-remove-button' })
   expect(calls.some(c => c.tool === 'unregister_vault')).toBe(false)
-  await ui.press({ key: 'unregister-cancel-extra' })
-  expect(await ui.find({ type: 'Button', key: 'unregister-confirm-extra' })).toBeFalsy()
-  await ui.press({ key: 'unregister-extra' })
-  await ui.press({ key: 'unregister-confirm-extra' })
+  expect(await ui.find({ type: 'Text', text: /^Retirer extra du router \?$/ })).toBeTruthy()
+  await ui.press({ key: 'admin-remove-cancel' })
+  expect(await ui.find({ type: 'Button', key: 'admin-remove-confirm' })).toBeFalsy()
+  await ui.press({ key: 'admin-remove-button' })
+  await ui.press({ key: 'admin-remove-confirm' })
   expect(calls.find(c => c.tool === 'unregister_vault')?.args).toEqual({ name: 'extra' })
   await ui.unmount()
 })
@@ -1933,4 +1941,356 @@ test('an IPv4 a URL would read as octal ("010.0.0.1" is 8.0.0.1) is refused, nev
   }
   expect(calls.some(c => c.tool === 'register_remote_vault')).toBe(false)
   await ui.unmount()
+})
+
+// The plugin's own manifest and GitHub's, for the update check.
+function versions(on: On, installed: string, latest: string, extra: (path: string) => string | undefined = () => undefined) {
+  on('fs.read', (_, e) => {
+    if (/\.claude-plugin[\\/]plugin\.json$/.test(e.path)) {
+      return { value: JSON.stringify({ name: 'obsidian-router', version: installed }) }
+    }
+    const other = extra(e.path)
+    if (other !== undefined) {
+      return { value: other }
+    }
+    throw new Error(`no such file: ${e.path}`)
+  })
+  on('http.fetch', (_, e) => {
+    if (e.url.startsWith('https://raw.githubusercontent.com/')) {
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ version: latest }) } }
+    }
+    throw new Error(`unreachable: ${e.url}`)
+  })
+}
+
+test('the pane is titled obsidian-mcp-router, links its repository, and badges a newer version', async ($, on) => {
+  const launched: (readonly string[])[] = []
+  wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  versions(on, '0.107.0', '0.108.0')
+  on('process.run', (_, e) => {
+    if (e.argv[0] !== 'powershell') {
+      launched.push(e.argv)
+    }
+
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^obsidian-mcp-router$/ })).toBeTruthy()
+  expect(await eventually(() => ui.find({ type: 'Button', key: 'update-badge' }))).toBeTruthy()
+  await ui.press({ key: 'github' })
+  expect(launched).toContainEqual(['rundll32', 'url.dll,FileProtocolHandler', 'https://github.com/tboome33/obsidian-mcp-router'])
+  // The badge unfolds the console, where the update is.
+  await ui.press({ key: 'update-badge' })
+  expect(await ui.find({ type: 'Button', key: 'update-run' })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('no badge when GitHub has the installed version', async ($, on) => {
+  wire(on, { list: LIST })
+  versions(on, '0.107.0', '0.107.0')
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await eventually(() => ui.find({ type: 'Text', text: /^v0\.107\.0$/ }))
+  expect(await ui.find({ type: 'Button', key: 'update-badge' })).toBeFalsy()
+  await ui.unmount()
+})
+
+// Claude Code's answers to the update: the commands succeed, and its list
+// reports the version that landed.
+function claudeCli(on: On, runs: (readonly string[])[], landed: string, project = landed, failing?: 'project' | 'user') {
+  on('process.run', (_, e) => {
+    if (e.argv[0] !== 'powershell') {
+      runs.push(e.argv)
+    }
+    const id = 'obsidian-router@obsidian-mcp-router-marketplace'
+    const stdout = e.argv.includes('list')
+      ? JSON.stringify([
+          { id, version: landed, scope: 'user' },
+          { id, version: project, scope: 'project' },
+        ])
+      : 'ok'
+    const isFailing = !!failing && e.argv.includes('update') && e.argv.includes(failing) && e.argv.includes('--scope')
+
+    return {
+      value: {
+        exitCode: isFailing ? 1 : 0,
+        stdout,
+        stderr: isFailing ? 'permission denied' : '',
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
+    }
+  })
+}
+
+test('the console updates the plugin through Claude Code: the marketplace, then this project and the user scope', async ($, on) => {
+  const runs: (readonly string[])[] = []
+  wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  versions(on, '0.107.0', '0.108.0')
+  claudeCli(on, runs, '0.108.0')
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await eventually(() => ui.find({ type: 'Button', key: 'update-badge' }))
+  await ui.press({ key: 'update-badge' })
+  await ui.press({ key: 'update-run' })
+  expect(runs).toEqual([
+    ['cmd', '/c', 'claude', 'plugin', 'marketplace', 'update', 'obsidian-mcp-router-marketplace'],
+    ['cmd', '/c', 'claude', 'plugin', 'update', 'obsidian-router@obsidian-mcp-router-marketplace', '--scope', 'project'],
+    ['cmd', '/c', 'claude', 'plugin', 'update', 'obsidian-router@obsidian-mcp-router-marketplace', '--scope', 'user'],
+    // What landed is read back, not assumed.
+    ['cmd', '/c', 'claude', 'plugin', 'list', '--json'],
+  ])
+  expect(await ui.find({ type: 'Text', text: /^Plugin mis à jour en v0\.108\.0/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'update-badge' })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('an update that installs nothing new says so, and keeps the badge', async ($, on) => {
+  const runs: (readonly string[])[] = []
+  wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  versions(on, '0.107.0', '0.108.0')
+  claudeCli(on, runs, '0.107.0')
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await eventually(() => ui.find({ type: 'Button', key: 'update-badge' }))
+  await ui.press({ key: 'update-badge' })
+  await ui.press({ key: 'update-run' })
+  expect(await ui.find({ type: 'Text', text: /^Rien n'a changé : Claude Code a toujours la v0\.107\.0/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'update-badge' })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('a project left behind is not "updated": the lowest install is said, and the badge stays', async ($, on) => {
+  const runs: (readonly string[])[] = []
+  wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  versions(on, '0.107.0', '0.108.0')
+  claudeCli(on, runs, '0.108.0', '0.107.0', 'project')
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await eventually(() => ui.find({ type: 'Button', key: 'update-badge' }))
+  await ui.press({ key: 'update-badge' })
+  await ui.press({ key: 'update-run' })
+  // Only the user scope ran: it is what is read back, and the project's failure is said.
+  expect(await ui.find({ type: 'Text', text: /La mise à jour \(project\) a échoué : permission denied/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'update-badge' })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('a prerelease is older than its release: the badge shows for 0.108.0-rc.1 → 0.108.0', async ($, on) => {
+  wire(on, { list: LIST })
+  versions(on, '0.108.0-rc.1', '0.108.0')
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await eventually(() => ui.find({ type: 'Button', key: 'update-badge' }))).toBeTruthy()
+  await ui.unmount()
+})
+
+test('a vault is not created while its languages field holds no valid code', async ($, on) => {
+  const state = { list: { ...LIST, workspaceBinding: null } as unknown, answers: { plan_vault: { approvedPlanSha256: 'f'.repeat(64) } } }
+  const calls = wire(on, state)
+  await $.session.start(START)
+  await $.command.run({ command: 'vault-setup', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.input({ key: 'create-name-field', text: 'N', kind: 'change' })
+  await ui.input({ key: 'create-path-field', text: 'C:\\VAULTS\\N', kind: 'change' })
+  await ui.press({ key: 'convention-languages' })
+  // Codes the router itself would refuse: not ISO 639-1, three letters, twice.
+  for (const text of ['fr, english', 'xx', 'eng', 'fr, fr']) {
+    await ui.input({ key: 'create-languages-field', text, kind: 'change' })
+    await ui.press({ key: 'create-submit' })
+    expect(calls.some(c => c.tool === 'plan_vault' || c.tool === 'provision_vault')).toBe(false)
+    expect(await ui.find({ type: 'Text', text: /^Langues du vault : des codes ISO/ })).toBeTruthy()
+  }
+  await ui.unmount()
+})
+
+test('/vault-setup opens the pane on the console, where a vault is created with its conventions', async ($, on) => {
+  const state = {
+    list: { ...LIST, workspaceBinding: null } as unknown,
+    answers: { plan_vault: { approvedPlanSha256: 'f'.repeat(64) }, provision_vault: { slug: 'notes pro' } },
+  }
+  const calls = wire(on, state)
+  await $.session.start(START)
+  await $.command.run({ command: 'vault-setup', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // No primary: the pane says so, with the way to set one up.
+  expect(await ui.find({ type: 'Button', key: 'primary-setup' })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'create-submit' })).toBeTruthy()
+  await ui.input({ key: 'create-name-field', text: 'Notes Pro', kind: 'change' })
+  await ui.input({ key: 'create-path-field', text: 'C:\\VAULTS\\Notes Pro', kind: 'change' })
+  await ui.press({ key: 'create-mode-code' })
+  await ui.press({ key: 'convention-source-type' })
+  await ui.press({ key: 'create-submit' })
+  const base = {
+    name: 'Notes Pro',
+    path: 'C:\\VAULTS\\Notes Pro',
+    wikiMode: { mode: 'code' },
+    open: true,
+    probe: true,
+    bindToWorkspace: true,
+  }
+  expect(calls.find(c => c.tool === 'plan_vault')?.args).toEqual(base)
+  expect(calls.find(c => c.tool === 'provision_vault')?.args).toEqual({ ...base, approvedPlanSha256: 'f'.repeat(64) })
+  // To the vault by the name the router registered it under.
+  expect(calls.find(c => c.tool === 'install_conventions')?.args).toEqual({ vault: 'notes pro', ids: ['source-type'] })
+  // Plan, creation, conventions: in that order.
+  const order = calls.map(c => c.tool).filter(tool => ['plan_vault', 'provision_vault', 'install_conventions'].includes(tool))
+  expect(order).toEqual(['plan_vault', 'provision_vault', 'install_conventions'])
+  await ui.unmount()
+})
+
+test('conventions that cannot be installed yet are kept, with a retry', async ($, on) => {
+  const state = {
+    list: { ...LIST, workspaceBinding: null } as unknown,
+    answers: { plan_vault: { approvedPlanSha256: 'f'.repeat(64) } },
+    refuse: 'install_conventions',
+    refuseText: 'vault not reachable yet',
+  }
+  const calls = wire(on, state)
+  await $.session.start(START)
+  await $.command.run({ command: 'vault-setup', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.input({ key: 'create-name-field', text: 'N', kind: 'change' })
+  await ui.input({ key: 'create-path-field', text: 'C:\\VAULTS\\N', kind: 'change' })
+  await ui.press({ key: 'convention-languages' })
+  await ui.input({ key: 'create-languages-field', text: 'fr, en', kind: 'change' })
+  await ui.press({ key: 'create-submit' })
+  expect(await ui.find({ type: 'Text', text: /^Les conventions n'ont pas pu être installées dans N/ })).toBeTruthy()
+  state.refuse = ''
+  await ui.press({ key: 'create-conventions-retry' })
+  expect(calls.filter(c => c.tool === 'install_conventions').at(-1)?.args).toEqual({ vault: 'N', ids: ['languages'], languages: ['fr', 'en'] })
+  expect(await ui.find({ type: 'Button', key: 'create-conventions-retry' })).toBeFalsy()
+  await ui.unmount()
+})
+
+test("a name in the band opens its vault: a remote one's web UI in the browser", async ($, on) => {
+  const withExtra = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['extra'] } }
+  const launched: (readonly string[])[] = []
+  wire(on, { list: withExtra, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  on('process.run', (_, e) => {
+    if (e.argv[0] !== 'powershell') {
+      launched.push(e.argv)
+    }
+
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  engineBand(on)
+  await begin($)
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'band-open-extra' })
+  expect(launched).toContainEqual(['rundll32', 'url.dll,FileProtocolHandler', 'https://10.8.0.1:3002/'])
+  await band.unmount()
+})
+
+test('the band chip unfolds, above the line, the secondaries it could not show; a name there opens it', async ($, on) => {
+  const names = ['alpha-vault', 'beta-vault', 'gamma-vault', 'delta-vault', 'epsilon-vault']
+  const toasts: string[] = []
+  wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: names } }, toasts })
+  engineBand(on)
+  await begin($)
+  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 100 }, surface: 'desktop' })
+  expect(await band.find({ key: 'vault-band-list' })).toBeFalsy()
+  await band.press({ key: 'band-more' })
+  const nodes = nodesOf(await band.drawn())
+  const listAt = nodes.findIndex(n => keyOf(n) === 'vault-band-list')
+  const lineAt = nodes.findIndex(n => keyOf(n) === 'vault-band')
+  expect(listAt).toBeGreaterThan(-1)
+  // Drawn before the line: the list opens upward.
+  expect(listAt).toBeLessThan(lineAt)
+  expect(await band.find({ type: 'Button', key: 'band-list-open-epsilon-vault' })).toBeTruthy()
+  await band.press({ key: 'band-list-open-epsilon-vault' })
+  expect(toasts.some(text => /epsilon-vault/.test(text))).toBe(true)
+  await band.press({ key: 'band-more' })
+  expect(await band.find({ key: 'vault-band-list' })).toBeFalsy()
+  await band.unmount()
+})
+
+test('■ pauses a secondary through the router, which keeps it bound with its tier; ▶ resumes it', async ($, on) => {
+  const state = { list: LIST as unknown }
+  const calls = wire(on, state)
+  engineBand(on)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // docs is read-only (locked): the pause is one router write, nothing else.
+  await ui.press({ key: 'pause-docs' })
+  expect(calls.filter(c => c.tool === 'set_secondary_vault_mode').at(-1)?.args).toEqual({ vault: 'docs', paused: true })
+  expect(calls.some(c => c.tool === 'confirm_workspace_binding')).toBe(false)
+  // The router now reports docs paused, still in the binding.
+  state.list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, alsoPaused: ['docs'] } }
+  await ui.press({ key: 'refresh' })
+  expect(await eventually(() => ui.find({ type: 'Button', key: 'resume-docs' }))).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'pause-docs' })).toBeFalsy()
+  expect(await ui.find({ type: 'Button', key: 'add-docs' })).toBeFalsy()
+  // The band counts it, and its list resumes it too.
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await bandTexts(band)).toContain('⏸ 1')
+  await band.unmount()
+  await ui.press({ key: 'resume-docs' })
+  expect(calls.filter(c => c.tool === 'set_secondary_vault_mode').at(-1)?.args).toEqual({ vault: 'docs', paused: false })
+  state.list = LIST
+  await ui.press({ key: 'refresh' })
+  expect(await ui.find({ type: 'Button', key: 'resume-docs' })).toBeFalsy()
+  expect(await ui.find({ type: 'Button', key: 'pause-docs' })).toBeTruthy()
+  await ui.unmount()
+})
+
+test("a paused remote vault, which the router no longer lists, still opens from the band's list", async ($, on) => {
+  const launched: (readonly string[])[] = []
+  const paused = {
+    ...LIST,
+    workspaceBinding: { ...LIST.workspaceBinding, also: [...LIST.workspaceBinding.also, 'extra'], alsoPaused: ['extra'] },
+    vaults: LIST.vaults.filter(v => v.name !== 'extra'),
+    disabled: [{ name: 'extra', type: 'remote', awaitingDeclaration: false }],
+    configPath: 'C:\\cfg\\config.json',
+  }
+  wire(on, { list: paused, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  on('fs.read', (_, e) => {
+    if (e.path === 'C:\\cfg\\config.json') {
+      return { value: JSON.stringify({ remoteVaults: [{ name: 'extra', baseUrl: 'http://10.8.0.1:27181', description: 'Conteneur (UI :3002), fichiers : x' }] }) }
+    }
+    throw new Error(`no such file: ${e.path}`)
+  })
+  on('process.run', (_, e) => {
+    if (e.argv[0] !== 'powershell') {
+      launched.push(e.argv)
+    }
+
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  engineBand(on)
+  await begin($)
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'band-more' })
+  await band.press({ key: 'band-list-open-extra' })
+  expect(launched).toContainEqual(['rundll32', 'url.dll,FileProtocolHandler', 'https://10.8.0.1:3002/'])
+  await band.unmount()
+})
+
+test("a resume this session's router does not apply yet is said, and the vault stays paused here", async ($, on) => {
+  const state = {
+    list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, alsoPaused: ['docs'] } } as unknown,
+    answers: { set_secondary_vault_mode: { paused: false, pausedInForceHere: true } },
+  }
+  wire(on, state)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await eventually(() => ui.find({ type: 'Button', key: 'resume-docs' }))
+  await ui.press({ key: 'resume-docs' })
+  expect(await ui.find({ type: 'Text', text: /^C'est enregistré pour docs, mais le router de cette session/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'resume-docs' })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('the band list shows a few rows, and sends to the pane for the rest', async ($, on) => {
+  const names = Array.from({ length: 12 }, (_, i) => `vault-number-${i + 1}`)
+  wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: names } } })
+  engineBand(on)
+  await begin($)
+  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 80 }, surface: 'desktop' })
+  await band.press({ key: 'band-more' })
+  const rows = nodesOf(await band.drawn()).filter(n => /^band-list-open-/.test(keyOf(n) ?? ''))
+  expect(rows.length).toBe(6)
+  expect(await band.find({ type: 'Button', key: 'band-list-more' })).toBeTruthy()
+  await band.unmount()
 })

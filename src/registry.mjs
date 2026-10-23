@@ -60,7 +60,7 @@ import {
   bindableVaultNames,
   isAbsoluteLocalPath,
 } from './helpers/vault-slug.mjs';
-import { isVaultReachable } from './helpers/vault-reach.mjs';
+import { isVaultReachable, isPausedSecondary } from './helpers/vault-reach.mjs';
 import { buildBindingProposal, declarationRequiredError, canOpenLocally } from './helpers/binding-proposal.mjs';
 import { resolveLocalRestState, describeEndpointDrift } from './helpers/rest-endpoint-state.mjs';
 import { sameUuid, isValidUuid } from './helpers/vault-identity.mjs';
@@ -832,6 +832,15 @@ export async function loadRegistry({ configPath } = {}) {
       // carry never appeared at all. Declaring a vault does not promise it
       // will answer afterwards; that is a different message, at a different
       // moment.
+      // A PAUSED SECONDARY is a decision of this workspace, not a missing
+      // declaration: no binding proposal, and the way back named.
+      if (isPausedSecondary(v.name, this)) {
+        throw new Error(
+          `Vault "${v.name}" is PAUSED for this workspace: it stays a secondary of the binding, with its write `
+          + 'tier, but nothing reads or writes it from here until it is resumed — '
+          + `set_secondary_vault_mode({ vault: ${JSON.stringify(v.name)}, paused: false }), on the user's say-so.`,
+        );
+      }
       if (!isVaultReachable(v.name, this)) {
         const preamble = `Vault "${v.name}" is registered but not reachable from this workspace `
           + '(vaultReach: "declared" is active, and this workspace\'s binding does not name it, '

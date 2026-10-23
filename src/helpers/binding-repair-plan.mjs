@@ -81,6 +81,7 @@ import {
 } from './workspace-bindings.mjs';
 import { readBindingWriteContext, planBindingWrite, BINDING_WRITE_MODE } from './binding-write.mjs';
 import {
+  isPromotionOfPausedSecondaryOnDisk,
   isPromotionOfLockedSecondaryOnDisk,
   lockedSecondaryTierSource,
   alsoWriteTierFor,
@@ -92,7 +93,7 @@ export const BINDING_REPAIR_OP = 'repair-binding';
 
 /** The fields `withBinding` writes from the normalised record; everything else is "unknown". */
 const KNOWN_ENTRY_FIELDS = new Set([
-  'vault', 'also', 'locked', 'confirmedAt', 'confirmedVia', 'alsoLocked', 'alsoWritable',
+  'vault', 'also', 'locked', 'confirmedAt', 'confirmedVia', 'alsoLocked', 'alsoWritable', 'alsoPaused',
 ]);
 
 /**
@@ -268,6 +269,7 @@ export function planBindingRepair(cfg, cwd, {
     also: [],
     alsoLocked: [],
     alsoWritable: [],
+    alsoPaused: [],
     locked: false,
     dropped: [],
     lockMovesTo: null,
@@ -325,6 +327,13 @@ export function planBindingRepair(cfg, cwd, {
     };
   }
 
+  // A PAUSED SECONDARY IS NOT PROMOTED either: that would resume it unasked.
+  if (isPromotionOfPausedSecondaryOnDisk(primary, ctx.source)) {
+    return blocked('promotion-refused',
+      `"${primary}" is a secondary this workspace has PAUSED (alsoPaused), and making it the primary would `
+      + 'resume it in one command');
+  }
+
   const plan = planBindingWrite(ctx, {
     // A repair keeps what the entry holds whether or not the call named it —
     // that is the mode the decision asks for, and the reason this lot exists.
@@ -359,6 +368,11 @@ export function planBindingRepair(cfg, cwd, {
     also: plan.entry.also,
     alsoLocked: plan.entry.alsoLocked,
     alsoWritable: plan.entry.alsoWritable,
+    // What `withBinding` keeps of the stored pause: the listed secondaries
+    // that stay; a malformed value is dropped (it pauses nothing).
+    alsoPaused: Array.isArray(rawObject?.alsoPaused)
+      ? [...new Set(rawObject.alsoPaused.filter((n) => typeof n === 'string' && plan.entry.also.includes(n)))]
+      : [],
     locked: plan.entry.locked,
     // A repair drops nothing by construction; the field is here so the shape
     // is the same on both branches and a façade can read it without a guard.
@@ -511,6 +525,7 @@ export function bindingRepairPlanCore(plan) {
     also: [...(p.also ?? [])].map(String),
     alsoLocked: [...(p.alsoLocked ?? [])].map(String),
     alsoWritable: [...(p.alsoWritable ?? [])].map(String),
+    alsoPaused: [...(p.alsoPaused ?? [])].map(String),
     locked: Boolean(p.locked),
     dropped: [...(p.dropped ?? [])].map(String),
     lockMovesTo: p.lockMovesTo ?? null,

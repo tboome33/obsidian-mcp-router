@@ -89,6 +89,8 @@ import { pathBasename, _internals as registryInternals } from '../registry.mjs';
 import {
   isVaultReachable,
   isPromotionOfLockedSecondaryOnDisk,
+  isPromotionOfPausedSecondaryOnDisk,
+  pausedSecondaryPromotionError,
   lockedSecondaryPromotionError,
 } from '../helpers/vault-reach.mjs';
 import { resolveProposalId, canOpenLocally, sameSecondarySet } from '../helpers/binding-proposal.mjs';
@@ -898,6 +900,10 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       // round 11.)
       adoptRefusals(refusedBefore);
       throw lockedSecondaryPromotionError(promotionRefusal(primary));
+    }
+    if (isPromotionOfPausedSecondaryOnDisk(primary, source)) {
+      adoptRefusals(refusedBefore);
+      throw pausedSecondaryPromotionError('confirm_workspace_binding', primary);
     }
     },
     // THE ACCEPTANCE IS RE-RESOLVED AGAINST THE FILE, and this is the call that

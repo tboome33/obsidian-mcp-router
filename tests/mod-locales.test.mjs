@@ -47,3 +47,16 @@ describe('vault panel translations', () => {
     assert.equal(compiled, renderLocaleModule(fr), 'run `node scripts/build-mod-locales.mjs`');
   });
 });
+
+test('the panel checks a vault\'s languages with the router\'s own list of ISO 639-1 codes', async () => {
+  const { isIso6391 } = await import('../src/helpers/convention-languages.mjs');
+  const mod = fs.readFileSync(new URL('../hooks/vault-panel/register.tsx', import.meta.url), 'utf8');
+  const block = /const ISO_639_1 = new Set\(\s*\(([\s\S]*?)\)\.split/.exec(mod);
+  assert.ok(block, 'the panel carries its list');
+  const panel = [...block[1].matchAll(/'([^']*)'/g)].map((m) => m[1]).join('').trim().split(/\s+/);
+  const router = fs.readFileSync(new URL('../src/helpers/convention-languages.mjs', import.meta.url), 'utf8');
+  const routerBlock = /const ISO_639_1_CODES = new Set\(\(([\s\S]*?)\)\.split/.exec(router);
+  const routerCodes = [...routerBlock[1].matchAll(/'([^']*)'/g)].map((m) => m[1]).join('').trim().split(/\s+/);
+  assert.deepEqual(panel, routerCodes);
+  for (const code of panel) assert.ok(isIso6391(code), code);
+});

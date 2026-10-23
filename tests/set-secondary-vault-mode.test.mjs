@@ -14,7 +14,7 @@ import path from 'node:path';
 import { setSecondaryVaultMode, SECONDARY_MODES, TOOL_DEFINITION } from '../src/tools/set-secondary-vault-mode.mjs';
 import { confirmWorkspaceBinding } from '../src/tools/workspace-binding.mjs';
 import { canonicalWorkspaceKey, readBinding, readRefusals, withBinding, withRefusal } from '../src/helpers/workspace-bindings.mjs';
-import { alsoWriteTierFor } from '../src/helpers/vault-reach.mjs';
+import { alsoWriteTierFor, isPausedSecondary, isVaultReachable } from '../src/helpers/vault-reach.mjs';
 
 const CWD = process.cwd();
 
@@ -55,10 +55,11 @@ function seams({ config = onDisk() } = {}) {
 }
 
 describe('set_secondary_vault_mode — the tool definition', () => {
-  test('names the three modes as an enum, requires vault + mode, and admits nothing else', () => {
+  test('names the three modes as an enum, requires vault (and mode or paused), and admits nothing else', () => {
     assert.equal(TOOL_DEFINITION.name, 'set_secondary_vault_mode');
     assert.deepEqual(TOOL_DEFINITION.inputSchema.properties.mode.enum, [...SECONDARY_MODES]);
-    assert.deepEqual(TOOL_DEFINITION.inputSchema.required, ['vault', 'mode']);
+    assert.equal(TOOL_DEFINITION.inputSchema.properties.paused.type, 'boolean');
+    assert.deepEqual(TOOL_DEFINITION.inputSchema.required, ['vault']);
     assert.equal(TOOL_DEFINITION.inputSchema.additionalProperties, false);
   });
 });
@@ -393,5 +394,102 @@ describe('the tiers survive the OTHER writers of the binding', () => {
         if (had) process.env[gate] = prev; else delete process.env[gate];
       }
     }
+  });
+});
+
+describe('set_secondary_vault_mode — pausing a secondary (v0.107.0)', () => {
+  test('paused: the vault stays in also with its tier, and no route reaches it — vaultReach unset, openVaults or not', async () => {
+    const { written, seam } = seams();
+    const reg = registryOf({ openVaults: ['ref'] });
+    await setSecondaryVaultMode(reg, { vault: 'ref', mode: 'locked' }, seam);
+    const r = await setSecondaryVaultMode(reg, { vault: 'ref', paused: true }, seam);
+    assert.equal(r.paused, true);
+    assert.equal(r.previousPaused, false);
+    assert.equal(r.mode, 'locked', 'the tier is kept, not asked again');
+    const onFile = readBinding(written.at(-1).config, CWD);
+    assert.deepEqual(onFile.also, ['ref', 'scratch']);
+    assert.deepEqual(onFile.alsoLocked, ['ref']);
+    assert.deepEqual(onFile.alsoPaused, ['ref']);
+    assert.equal(isPausedSecondary('ref', reg), true);
+    assert.equal(isVaultReachable('ref', reg), false, 'paused wins over an inactive vaultReach and over openVaults');
+    assert.equal(isVaultReachable('scratch', reg), true);
+  });
+
+  test('resumed: reachable again with the very tier it had, in one write', async () => {
+    const { written, seam } = seams();
+    const reg = registryOf();
+    await setSecondaryVaultMode(reg, { vault: 'ref', mode: 'locked', paused: true }, seam);
+    assert.equal(written.length, 1, 'tier and pause are one write');
+    const r = await setSecondaryVaultMode(reg, { vault: 'ref', paused: false }, seam);
+    assert.equal(r.paused, false);
+    assert.equal(r.previousPaused, true);
+    assert.equal(isVaultReachable('ref', reg), true);
+    assert.equal(alsoWriteTierFor('ref', reg), 'locked');
+    assert.equal(readBinding(written.at(-1).config, CWD).alsoPaused, undefined, 'an empty pause list leaves the record');
+  });
+
+  test('a re-binding that keeps the secondary keeps its pause; one that drops it drops the pause too', async () => {
+    const { seam, current } = seams();
+    const reg = registryOf();
+    await setSecondaryVaultMode(reg, { vault: 'ref', paused: true }, seam);
+    const kept = withBinding(current(), CWD, { vault: 'notes', also: ['ref', 'scratch'] });
+    assert.deepEqual(readBinding(kept, CWD).alsoPaused, ['ref']);
+    const dropped = withBinding(current(), CWD, { vault: 'notes', also: ['scratch'] });
+    assert.equal(readBinding(dropped, CWD).alsoPaused, undefined);
+    const back = withBinding(dropped, CWD, { vault: 'notes', also: ['scratch', 'ref'] });
+    assert.equal(readBinding(back, CWD).alsoPaused, undefined, 'bound again, it does not come back paused');
+  });
+
+  test('asking for the same pause twice writes nothing; neither mode nor paused is refused', async () => {
+    const { written, seam } = seams();
+    const reg = registryOf();
+    await setSecondaryVaultMode(reg, { vault: 'ref', paused: true }, seam);
+    await setSecondaryVaultMode(reg, { vault: 'ref', paused: true }, seam);
+    assert.equal(written.length, 1);
+    await assert.rejects(setSecondaryVaultMode(reg, { vault: 'ref' }, seam), /give `mode`/);
+    await assert.rejects(setSecondaryVaultMode(reg, { vault: 'ref', paused: 'yes' }, seam), /`paused` must be true or false/);
+    await assert.rejects(setSecondaryVaultMode(reg, { vault: 'notes', paused: true }, seam), /PRIMARY/);
+  });
+});
+
+describe('a pause is not lifted by another door (v0.107.0)', () => {
+  const binder = (seam) => ({
+    ...seam,
+    launch: () => ({ launched: false, uri: null, reason: 'test' }),
+    ping: async () => ({ online: true }),
+  });
+
+  test('confirm_workspace_binding refuses to make a paused secondary the primary, and writes nothing', async () => {
+    const { written, seam } = seams();
+    const reg = registryOf();
+    await setSecondaryVaultMode(reg, { vault: 'ref', mode: 'writable', paused: true }, seam);
+    const before = written.length;
+    await assert.rejects(
+      confirmWorkspaceBinding(reg, { vault: 'ref', also: ['notes'], open: false }, binder(seam)),
+      /PAUSED secondary/,
+    );
+    assert.equal(written.length, before);
+    assert.equal(isVaultReachable('ref', reg), false);
+  });
+
+  test('a pause the file already holds is applied to this session too, without re-routing it', async () => {
+    const { seam } = seams({ config: onDisk({ vault: 'notes', also: ['ref', 'scratch'], alsoPaused: ['ref'] }) });
+    // This session started before the pause: its binding has none.
+    const reg = registryOf();
+    assert.equal(isVaultReachable('ref', reg), true);
+    const r = await setSecondaryVaultMode(reg, { vault: 'ref', paused: true }, seam);
+    assert.equal(r.pausedInForceHere, true);
+    assert.equal(isVaultReachable('ref', reg), false);
+    assert.equal(reg.workspaceBinding.vault, 'notes');
+  });
+
+  test('a resume the file already holds is reported as not in force here', async () => {
+    const { seam } = seams();
+    const reg = registryOf({
+      workspaceBinding: { vault: 'notes', also: ['ref', 'scratch'], locked: false, alsoLocked: [], alsoWritable: [], alsoPaused: ['ref'] },
+    });
+    const r = await setSecondaryVaultMode(reg, { vault: 'ref', paused: false }, seam);
+    assert.equal(r.pausedInForceHere, true);
+    assert.match(r.message, /THIS session still applies the pause/);
   });
 });

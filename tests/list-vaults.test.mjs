@@ -192,3 +192,19 @@ describe('listVaults — the refusals of this workspace reach the caller (decisi
     }
   });
 });
+
+describe('listVaults — a paused secondary (v0.107.0)', () => {
+  test('is not pinged, is listed as paused (not as awaiting a declaration), and the binding says it is paused', async () => {
+    const registry = {
+      vaults: [vault('main'), vault('ref')], skipped: [], configPath: '/c',
+      workspaceBinding: { vault: 'main', also: ['ref'], locked: false, alsoLocked: ['ref'], alsoWritable: [], alsoPaused: ['ref'] },
+    };
+    const out = await listVaults(registry);
+    assert.deepEqual(out.vaults.map((v) => v.name), ['main']);
+    const ref = out.disabled.find((d) => d.name === 'ref');
+    assert.match(ref.reason, /^paused for this workspace/);
+    assert.equal(ref.awaitingDeclaration, false);
+    assert.deepEqual(out.workspaceBinding.alsoPaused, ['ref']);
+    assert.deepEqual(out.workspaceBinding.alsoLocked, ['ref'], 'its tier is kept');
+  });
+});
