@@ -43,6 +43,9 @@ const language = atom({ plugin: 'obsidian-router', key: 'language' } as const, '
 // The administration console: folded by default; its form; the vault whose
 // removal waits for a second press; WireGuard as last detected.
 const showAdmin = atom({ plugin: 'obsidian-router', key: 'showAdmin' } as const, false)
+// The administration's accordion: the one section unfolded (its name, as in
+// `admin-sec-<name>`), or none. "Général" at first.
+const adminSection = atom({ plugin: 'obsidian-router', key: 'adminSection' } as const, 'general' as string | null)
 // The pane's menu folded into "☰" on a narrow pane: whether its list is open.
 const navOpen = atom({ plugin: 'obsidian-router', key: 'navOpen' } as const, false)
 // The tiles turned over to their last files (the vaults' names).
@@ -1964,6 +1967,12 @@ const isBandOn = () => isEnvKnown && !isOptedOut && !isBandOptedOut
 // its view and brings it into the window: the top, or the adding bar. The
 // console folded drops a key typed but not sent; opened, it reads WireGuard.
 type PaneView = 'vaults' | 'add' | 'admin'
+// The administration shown, unfolded on one of its sections: what a flow that
+// leads there (no primary yet → creating a vault, an update → the general) does.
+async function showAdminSection($: EngineInterface, section: string) {
+  await update($, adminSection, () => section)
+  await update($, showAdmin, () => true)
+}
 // Each press of the menu: a later one supersedes it, whose scroll then stands.
 let navGeneration = 0
 async function showView($: EngineInterface, view: PaneView) {
@@ -2153,7 +2162,7 @@ export const register: Register = on => {
   // registering a vault — not a conversation with the model.
   on('command.run', { command: 'vault-setup' }, async $ => {
     isStartupCancelled = false
-    await update($, showAdmin, () => true)
+    await showAdminSection($, 'create')
     await openPane($)
     await refresh($)
     void checkWireguard($).catch(() => undefined)
@@ -2229,6 +2238,7 @@ export const register: Register = on => {
     // Read so that a change of language draws the pane again.
     const languageCode = await read($, language)
     const isAdminShown = await read($, showAdmin)
+    const openSection = await read($, adminSection)
     const isNavOpen = await read($, navOpen)
     const open = await read($, openers)
     let turned = await read($, flipped)
@@ -2492,7 +2502,12 @@ export const register: Register = on => {
           </Text>
         )}
         {upd?.isAvailable && (
-          <Button key={`${prefix}update-badge`} label={t('update.badge')} plain onPress={() => void showView($, 'admin')} />
+          <Button
+            key={`${prefix}update-badge`}
+            label={t('update.badge')}
+            plain
+            onPress={() => void update($, adminSection, () => 'general').then(() => showView($, 'admin'))}
+          />
         )}
         {repository(prefix)}
       </Box>
@@ -2645,29 +2660,46 @@ export const register: Register = on => {
               ? t('wg.absent')
               : t('wg.unknown')
     const removable = snap ? snap.available : []
-    // The console's sections (the redesign): each a framed card under its grey
-    // title; side by side, three to a line, in a wide pane.
+    // The console's sections: an accordion, one under the other, the whole
+    // width. Each has a header (a chevron, its title) that unfolds it and
+    // folds the others; the open one's title lit, its body indented two
+    // cells with a line of air above and below; a thin dim rule between two.
+    // The body's keys are the section's own, unchanged by the folding.
     const cardColumns = e.props.bodyColumns ?? 60
-    const cardWidth = (() => {
-      for (let n = 3; n > 1; n -= 1) {
-        const width = Math.floor((cardColumns - (n - 1)) / n)
-        if (width >= 40) {
-          return width
-        }
-      }
-
-      return Math.max(40, cardColumns)
-    })()
-    const card = (key: string, title: string, body: unknown) => (
-      <Box key={key} flexDirection="column" width={cardWidth} minWidth={Math.min(cardWidth, 30)}>
-        <Text size="footnote" weight="semibold" dimColor>
-          {title}
+    const sectionRule = (key: string) => (
+      <Box key={`${key}-rule`}>
+        <Text dimColor wrap="truncate-end">
+          {'─'.repeat(Math.max(1, cardColumns))}
         </Text>
-        <Box key={`${key}-card`} flexDirection="column" gap={1} borderStyle="bold" borderColor="inactive" paddingX={1}>
-          {body as never}
-        </Box>
       </Box>
     )
+    const card = (key: string, title: string, body: unknown) => {
+      const name = key.replace(/^admin-/, '')
+      const isOpen = openSection === name
+      const chevron = isOpen ? '▾' : '▸'
+
+      return (
+        <Box key={key} flexDirection="column">
+          <Box key={`${key}-head`} flexDirection="row" alignItems="center">
+            {/* The chevron is part of the Button (a Text child, which a Button
+                may hold; an Svg it may not): a press on it folds or unfolds
+                too. Dim, so that the title carries the eye. */}
+            <Button key={`admin-sec-${name}`} plain dimColor={!isOpen} onPress={() => void update($, adminSection, now => (now === name ? null : name))}>
+              <Text dimColor>{chevron} </Text>
+              <Text weight="semibold" color={isOpen ? 'claude' : undefined} dimColor={!isOpen}>
+                {title}
+              </Text>
+            </Button>
+          </Box>
+          {isOpen && (
+            <Box key={`${key}-panel`} flexDirection="column" gap={1} paddingLeft={2} paddingY={1}>
+              {body as never}
+            </Box>
+          )}
+          {sectionRule(key)}
+        </Box>
+      )
+    }
     // Two or more choices side by side, the one in force framed and lit.
     const toggle = <V extends string>(key: string, options: { value: V; label: string; mark?: string }[], value: V, pick: (v: V) => void) => (
       <Box key={key} flexDirection="row" flexWrap="wrap" gap={1}>
@@ -2690,7 +2722,7 @@ export const register: Register = on => {
     )
     const isUpToDate = !!upd?.installed && !!upd.latest && !upd.isAvailable
     const admin = (
-      <Box key="admin" flexDirection="row" flexWrap="wrap" gap={1}>
+      <Box key="admin" flexDirection="column">
         {isAdminShown && [
           card(
             'admin-general',
@@ -3328,7 +3360,7 @@ export const register: Register = on => {
         ) : (
           <Box key="primary-none" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
             <Text color="warning">{t('primary.none')}</Text>
-            <Button key="primary-setup" label={t('primary.setup')} variant="primary" onPress={() => void update($, showAdmin, () => true)} />
+            <Button key="primary-setup" label={t('primary.setup')} variant="primary" onPress={() => void showAdminSection($, 'create')} />
           </Box>
         )}
         {snap.isImported && snap.primary && (
