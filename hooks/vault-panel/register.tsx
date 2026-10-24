@@ -3349,13 +3349,13 @@ export const register: Register = on => {
     const chip = chipText(fit.hidden, entries.slice(fit.shown).filter(entry => entry.isPaused).length)
     // The band's width and what fitted, in the trace (see `traceScroll`): what
     // `bandFit` counts, beside what a surface draws, sets the count right.
-    const bandLine = [
+    const bandLine = JSON.stringify([
       e.surface,
       e.props.bodyColumns,
       fit.shown,
       snap.primary?.name ?? '',
-      ...entries.map(entry => `${entry.isPaused ? '-' : '+'}${entry.row.name}`),
-    ].join(' ')
+      entries.map(entry => [entry.row.name, entry.isPaused]),
+    ])
     if (bandLine !== lastTracedBand) {
       lastTracedBand = bandLine
       void traceScroll($, {
