@@ -130,6 +130,8 @@ Ce qu'il montre, dans un panneau **Vaults** et via la commande `/vaults` :
 
 **Le bandeau cliquable** (v0.107.0). Un appui sur un nom ouvre le vault : dans Obsidian s'il est local, son interface web dans le navigateur s'il est distant. La pastille « … +3 » (et « ⏸ 1 » parmi eux s'il y a des secondaires en pause) déplie sur la ligne même les secondaires qui n'y tenaient pas, avec retour à la ligne si besoin (v0.108.2) : chacun s'y ouvre d'un appui, ■ le met en pause, ▶ le reprend.
 
+**Barre du haut fixe** (v0.111.0). Quand le panneau défile, la barre d'état (« 3 liés · tous ouverts », « Rafraîchir ») reste en haut : une copie est dessinée par-dessus le contenu, sur un fond opaque, à la première ligne visible. Elle n'apparaît pas tant que le panneau est en haut, ni dans la console d'administration.
+
 **« + Ajouter » en bas à droite** (v0.110.4). Dans les tuiles « Ajouter un vault », le bouton est sur sa propre ligne, en bas à droite de la tuile ; le bouton du filtre des secondaires s'écrit « Filtrer ».
 
 **Lisibilité et icônes** (v0.110.1). Les tuiles et les cartes de la console ont un cadre épais (celui du principal à la couleur de Claude). Chaque façon d'ouvrir un vault a sa marque : le logo violet d'Obsidian, une planète pour le navigateur, le logo de Claude pour son navigateur interne ; les tuiles « Ajouter un vault » les montrent aussi. Sur le bandeau, chaque nom qui s'ouvre porte sa marque, et chaque secondaire n'a qu'une touche : ▶ sur fond vert tant qu'il tourne (un appui le met en pause), ❚❚ sur fond rouge en pause (un appui le reprend). « ⚙ Administration › » est un vrai bouton ; l'ajout réunit onglets, recherche (« Filtrer ») et tri sur une barre, et « + Ajouter » est en bas à droite de chaque tuile.
