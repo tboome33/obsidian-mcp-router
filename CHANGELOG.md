@@ -10,6 +10,22 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.115.2] — 2026-10-25 — a turned tile comes back on its own, says it is at the back
+
+Three ideas taken from a web flip box (Nicolas's Zipoulou FlipBox for Divi 5), the way a
+pane of Box and Text can hold them — no CSS, no 3D turn, so the back replaces the front:
+
+- **A tile turned over comes back on its own** after eight seconds, a peek: opening one of
+  its notes restarts the wait; turning it back by hand ends it. One pending return per vault.
+- **The round key is drawn held down** (a grey ground; on the terminal its glyph lit instead
+  of dim) while the tile shows its back.
+- **The tile's frame changes colour** while it is turned, so that one sees one is at the back.
+- Adversarial review by Codex: three findings fixed — a tile left turned when a session
+  ended stayed turned for ever (it comes back at the first drawing: a peek is no setting); the
+  return started or ended on the drawn state rather than the one the update found; the test
+  proved too little. Tests: `tests/vault-panel.test.tsx` 119 (an untouched return, its
+  restart, a cancelled one crossing its deadline, a tile left turned, on the mock clock).
+
 ## [0.115.1] — 2026-10-24 — a secondary's tile centred, a rule between its halves
 
 Asked from two screenshots of a tile (v0.115.0, the user's mockup beside it):

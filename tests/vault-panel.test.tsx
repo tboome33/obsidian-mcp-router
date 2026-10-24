@@ -2981,7 +2981,8 @@ test('a tile says when its vault was last written through the router; its round 
       notes: { lastWriteAt: '2026-10-24T18:00:00.000Z', recent: [{ path: 'x y.md', at: '2026-10-24T18:00:00.000Z' }] },
     },
   }
-  const calls = wire(on, { list, answers: { get_view_link: { url: 'http://10.8.0.1:27200/go?v=docs&n=wiki%2Fa.md&s=sig' } }, env: { APPDATA: 'C:\Users\me\AppData\Roaming' } })
+  const wired = { list, answers: { get_view_link: { url: 'http://10.8.0.1:27200/go?v=docs&n=wiki%2Fa.md&s=sig' } }, env: { APPDATA: 'C:\Users\me\AppData\Roaming' } } as Parameters<typeof wire>[1]
+  const calls = wire(on, wired)
   on('process.run', (_, e) => {
     if (e.argv[0] !== 'powershell') {
       launched.push(e.argv)
@@ -3000,17 +3001,72 @@ test('a tile says when its vault was last written through the router; its round 
   const back = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'recent-docs') as never)
   expect(back.filter(n => n.type === 'Button' && /^note-/.test(keyOf(n) ?? '')).map(n => n.props?.label)).toEqual(['wiki/a.md', 'b.md'])
   expect(await ui.find({ key: 'front-docs' })).toBeFalsy()
+  // At the back: the frame in another colour, the round key held down.
+  const turnedTile = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'sec-docs')
+  expect(turnedTile?.props?.borderColor).toBe('permission')
+  expect(back.find(n => keyOf(n) === 'icon-flip-docs')?.props?.backgroundColor).toBe('inactive')
   await ui.press({ key: 'note-0-docs' })
   expect(calls.find(c => c.tool === 'get_view_link')?.args).toEqual({ vault: 'docs', note: 'wiki/a.md' })
   expect(calls.find(c => c.tool === 'preview_start')?.args).toEqual({ url: 'http://10.8.0.1:27200/go?v=docs&n=wiki%2Fa.md&s=sig' })
-  // The same key turns it back.
+  // The same key turns it back; the frame and the key as before.
   await ui.press({ key: 'flip-docs' })
+  expect(await ui.find({ key: 'front-docs' })).toBeTruthy()
+  const frontTile = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'sec-docs')
+  expect(frontTile?.props?.borderColor).toBe('inactive')
+  expect(nodesOf(frontTile as never).find(n => keyOf(n) === 'icon-flip-docs')?.props?.backgroundColor).toBeUndefined()
+  // Left turned and untouched, a tile comes back on its own after eight seconds.
+  await ui.press({ key: 'flip-docs' })
+  await wired.clock!.advance(7_900)
+  expect(await ui.find({ key: 'front-docs' })).toBeFalsy()
+  await wired.clock!.advance(100)
+  await eventually(async () => !!(await ui.find({ key: 'front-docs' })))
+  expect(await ui.find({ key: 'front-docs' })).toBeTruthy()
+  // A note opened meanwhile restarts the wait.
+  await ui.press({ key: 'flip-docs' })
+  await wired.clock!.advance(6_000)
+  await ui.press({ key: 'note-1-docs' })
+  await wired.clock!.advance(6_000)
+  expect(await ui.find({ key: 'front-docs' })).toBeFalsy()
+  await wired.clock!.advance(2_000)
+  await eventually(async () => !!(await ui.find({ key: 'front-docs' })))
+  expect(await ui.find({ key: 'front-docs' })).toBeTruthy()
+  // Turned back by hand, then over again: the first return, cancelled, does
+  // not fire at its deadline; the second runs its own eight seconds.
+  await ui.press({ key: 'flip-docs' })
+  await wired.clock!.advance(5_000)
+  await ui.press({ key: 'flip-docs' })
+  expect(await ui.find({ key: 'front-docs' })).toBeTruthy()
+  await ui.press({ key: 'flip-docs' })
+  await wired.clock!.advance(4_000)
+  expect(await ui.find({ key: 'front-docs' })).toBeFalsy()
+  await wired.clock!.advance(4_000)
+  await eventually(async () => !!(await ui.find({ key: 'front-docs' })))
   expect(await ui.find({ key: 'front-docs' })).toBeTruthy()
   // A local one's note: Obsidian at that file, the address handed over whole.
   await ui.press({ key: 'flip-notes' })
   await ui.press({ key: 'note-0-notes' })
   expect(launched.at(-1)?.[0]).toBe('rundll32')
   expect(launched.at(-1)?.[2]).toMatch(/^obsidian:\/\/open\?vault=.+&file=x%20y\.md$/)
+  await ui.unmount()
+})
+
+test('a tile left turned when a session ended is drawn on its front at the next', async ($, on) => {
+  wire(on, { list: { ...LIST, vaultActivity: { docs: { lastWriteAt: '2026-10-24T10:00:00.000Z', recent: [{ path: 'a.md', at: '2026-10-24T10:00:00.000Z' }] } } } })
+  // What the last session left: 'docs' turned, read once, then the host's own.
+  let left = true
+  on('state.get', { plugin: 'obsidian-router', key: 'flipped' } as never, (_, e, next) => {
+    if (left) {
+      left = false
+
+      return { value: { value: ['docs'], version: 1 } } as never
+    }
+
+    return next(e)
+  })
+  await begin($)
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  expect(await ui.find({ key: 'front-docs' })).toBeTruthy()
+  expect(await ui.find({ key: 'recent-docs' })).toBeFalsy()
   await ui.unmount()
 })
 
