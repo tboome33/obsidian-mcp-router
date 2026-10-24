@@ -10,6 +10,29 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.114.0] — 2026-10-24 — the router's mark, a legend, marks as links, the tier as radios
+
+Asked after v0.113.0 ("elle se charge bien dans la session, good job"):
+
+- **The menu bar**: the router's mark at its left (cut from the repository's logo,
+  `docs/assets/logo.png`); the version, the update badge and GitHub's mark (the repository) at
+  its right. Folded into "☰" on a narrow pane, it keeps the router's mark and GitHub only. The
+  footer keeps the console's fold alone.
+- **"PRINCIPAL :" and "SECONDAIRES : N"** as the sections' titles.
+- **A legend under the menu**: Obsidian's mark — local, opens in Obsidian | Claude's mark —
+  remote, opens in the built-in browser | the planet — remote, opens in Chrome (debug mode).
+- **The planet opens Chrome through Claude in Chrome** (`tabs_context_mcp` with
+  `createIfEmpty`, the fresh group's empty tab or a new one read from "Tab ID: N", then
+  `navigate`), one open at a time. It is drawn — in the pane and on the band — only while
+  Claude in Chrome answers (probed beside every read, one call at a time, 3 s at most); when it
+  does not, the legend says so and offers to turn it on, from a new "Claude in Chrome" card in
+  the console.
+- **Marks alone in the tiles**, each a link: no "Distant · navigateur", "Dans Claude", "Local".
+- **The tier as radio buttons** under "Droits de lecture/écriture :" — 🔒 Lecture seule, ✋
+  Écriture sur accord, ✏️ Lecture/écriture automatique — on every surface, in place of the menu.
+- Adversarial review by Codex, three passes: one P1 (a Chrome that never answered held the
+  whole refresh) and eight P2 fixed. Tests: `tests/vault-panel.test.tsx` 118.
+
 ## [0.113.0] — 2026-10-24 — a menu at the top of the pane, pinned while it scrolls
 
 Asked after v0.112.1: the bar that stays at the top must be a menu, flush at the top, no panel

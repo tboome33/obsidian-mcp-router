@@ -13,7 +13,7 @@
 
   "mode.locked": "Lecture seule",
   "mode.soft": "Écriture sur accord",
-  "mode.writable": "Lecture/écriture",
+  "mode.writable": "Lecture/écriture automatique",
 
   "band.primary": "Principal :",
   "band.secondaries": "Secondaires :",
@@ -104,6 +104,18 @@
   "add.localOpen": "Local · ouvert",
   "footer.github": "GitHub ↗",
   "footer.admin": "⚙ Administration ›",
+  "mode.radioTitle": "Droits de lecture/écriture :",
+  "legend.obsidian": "Local : ouvre dans Obsidian",
+  "legend.claude": "Distant : ouvre dans le navigateur interne",
+  "legend.chrome": "Distant : ouvre dans Chrome (mode debug)",
+  "legend.chromeOff": "Chrome : Claude in Chrome n'est pas activé",
+  "legend.chromeEnable": "L'activer ›",
+  "admin.chrome": "Claude in Chrome",
+  "admin.chromeOn": "Activé : la planète ouvre un vault distant dans Chrome (mode debug).",
+  "admin.chromeOff": "Pas activé. Installez l'extension Claude in Chrome dans Chrome, activez-la dans Claude (Paramètres › Connecteurs, ou la commande /chrome), puis revérifiez.",
+  "admin.chromeCheck": "↻ Revérifier",
+  "error.chrome": "Chrome n'a pas pu ouvrir la page : {error}",
+  "error.chromeNoTab": "Claude in Chrome n'a pas donné d'onglet",
   "nav.vaults": "Vaults",
   "nav.admin": "⚙ Administration",
   "admin.general": "Général",
@@ -131,7 +143,7 @@
   "place.remote": "distant",
   "place.local": "local",
 
-  "primary.title": "Principal",
+  "primary.title": "PRINCIPAL :",
   "primary.definition": "Le vault par défaut de ce projet : Claude y lit et y écrit sans rien demander.",
   "primary.none": "Aucun vault principal : choisis-en un ci-dessous.",
   "primary.locked": "verrouillé",
@@ -143,7 +155,7 @@
 
   "obsidian.openOnce": "à ouvrir une fois dans Obsidian",
 
-  "secondaries.title": "Secondaires · {count}",
+  "secondaries.title": "SECONDAIRES : {count}",
   "secondaries.definition": "Des vaults consultables en plus du principal, chacun avec son droit d'écriture : 🔒 lecture seule · ✋ écriture si tu l'acceptes · ✏️ lecture et écriture.",
   "secondaries.none": "Aucun secondaire : ajoute-en un ci-dessous.",
   "secondaries.noMatch": "Aucun secondaire ne correspond au filtre.",

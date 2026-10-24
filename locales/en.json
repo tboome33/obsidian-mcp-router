@@ -13,7 +13,7 @@
 
   "mode.locked": "Read-only",
   "mode.soft": "Write on request",
-  "mode.writable": "Read/write",
+  "mode.writable": "Read/write, automatic",
 
   "band.primary": "Primary:",
   "band.secondaries": "Secondaries:",
@@ -104,6 +104,18 @@
   "add.localOpen": "Local · open",
   "footer.github": "GitHub ↗",
   "footer.admin": "⚙ Administration ›",
+  "mode.radioTitle": "Read/write rights:",
+  "legend.obsidian": "Local: opens in Obsidian",
+  "legend.claude": "Remote: opens in the built-in browser",
+  "legend.chrome": "Remote: opens in Chrome (debug mode)",
+  "legend.chromeOff": "Chrome: Claude in Chrome is not on",
+  "legend.chromeEnable": "Turn it on ›",
+  "admin.chrome": "Claude in Chrome",
+  "admin.chromeOn": "On: the planet opens a remote vault in Chrome (debug mode).",
+  "admin.chromeOff": "Not on. Install the Claude in Chrome extension in Chrome, turn it on in Claude (Settings › Connectors, or the /chrome command), then check again.",
+  "admin.chromeCheck": "↻ Check again",
+  "error.chrome": "Chrome could not open the page: {error}",
+  "error.chromeNoTab": "Claude in Chrome gave no tab",
   "nav.vaults": "Vaults",
   "nav.admin": "⚙ Administration",
   "admin.general": "General",
@@ -131,7 +143,7 @@
   "place.remote": "remote",
   "place.local": "local",
 
-  "primary.title": "Primary",
+  "primary.title": "PRIMARY:",
   "primary.definition": "This project's default vault: Claude reads and writes it without asking.",
   "primary.none": "No primary vault: choose one below.",
   "primary.locked": "locked",
@@ -143,7 +155,7 @@
 
   "obsidian.openOnce": "open it once in Obsidian",
 
-  "secondaries.title": "Secondaries · {count}",
+  "secondaries.title": "SECONDARIES: {count}",
   "secondaries.definition": "Vaults Claude can consult on top of the primary, each with its own write right: 🔒 read-only · ✋ write if you agree · ✏️ read and write.",
   "secondaries.none": "No secondary: add one below.",
   "secondaries.noMatch": "No secondary matches the filter.",

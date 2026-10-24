@@ -16,6 +16,9 @@ const PANE = {
   },
 } as const
 
+// A pane wide enough for the menu on one line, its version and badge with it.
+const WIDE = { ...PANE, props: { ...PANE.props, bodyColumns: 140 } } as const
+
 const LIST = {
   workspaceBinding: {
     vault: 'main',
@@ -65,8 +68,8 @@ test('the panel lists the binding and changes it through the router', async ($, 
     const ui = await $.ui.mount({ ...PANE, surface })
 
     // Both sections are always drawn; the closed local secondary offers to open.
-    expect(await ui.find({ type: 'Text', text: /^Principal$/ })).toBeTruthy()
-    expect(await ui.find({ type: 'Text', text: /^Secondaires · 2$/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /^SECONDAIRES : 2$/ })).toBeTruthy()
     expect(await ui.find({ type: 'Button', key: 'open-closed' })).toBeTruthy()
     // The add list holds the unbound vaults only, by tab; the
     // operator-disabled vault is left out.
@@ -85,7 +88,7 @@ test('the panel lists the binding and changes it through the router', async ($, 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
 
   await openClosed(ui)
-  await ui.select({ key: 'mode-notes', value: 'writable' })
+  await ui.press({ key: 'tier-writable-notes' })
   expect(calls.find(c => c.tool === 'set_secondary_vault_mode')?.args).toEqual({ vault: 'notes', mode: 'writable' })
 
   await openAdd(ui)
@@ -171,8 +174,11 @@ function wire(on: On, state: { list: unknown; answers?: Record<string, unknown>;
     calls.push(e)
     // What this answer says is read now; when it lands is the hold's call.
     const list = JSON.stringify(state.list)
+    // The hold is list_vaults' alone: another call (Claude in Chrome's probe) leaves it.
     const held = e.tool === 'list_vaults' ? state.held : undefined
-    state.held = undefined
+    if (e.tool === 'list_vaults') {
+      state.held = undefined
+    }
     await held
     // A server the session does not run: the call itself rejects.
     if (e.tool === state.unreachable) {
@@ -192,6 +198,9 @@ function wire(on: On, state: { list: unknown; answers?: Record<string, unknown>;
       const text = state.refuseText ?? `${e.tool} refused: binding changed meanwhile`
 
       return { value: { content: [{ type: 'text', text }], isError: true } }
+    }
+    if (e.tool === 'tabs_create_mcp' && !state.answers?.tabs_create_mcp) {
+      return { value: { content: [{ type: 'text', text: 'Created new tab. Tab ID: 123' }], isError: false } }
     }
     const answer = state.answers?.[e.tool]
     const answered = typeof answer === 'function' ? answer(e.args) : answer
@@ -375,7 +384,7 @@ test('a refused change keeps its error on screen after the read-back', async ($,
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await openClosed(ui)
-  await ui.select({ key: 'mode-notes', value: 'writable' })
+  await ui.press({ key: 'tier-writable-notes' })
   expect(await ui.find({ type: 'Text', text: /binding changed meanwhile/ })).toBeTruthy()
   // A later read of the router, the timer's or the button's, keeps it too.
   await ui.press({ key: 'refresh' })
@@ -432,19 +441,19 @@ test('an open pane redraws after the model binding calls, and after no other too
   const lists = () => calls.filter(c => c.tool === 'list_vaults').length
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /^Secondaires · 2$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^SECONDAIRES : 2$/ })).toBeTruthy()
   // The model drops a secondary: the pane shows it once the call is back.
   state.list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['notes'] } }
   const before = lists()
   await $.tool.call({ tool: 'mcp__plugin_obsidian-router_router__lock_vault', vault: 'main' })
   // The redraw runs detached from the tool's result: wait for it, boundedly,
   // then count — the read is done once the pane shows its answer.
-  expect(await eventually(() => ui.find({ type: 'Text', text: /^Secondaires · 1$/ }))).toBeTruthy()
+  expect(await eventually(() => ui.find({ type: 'Text', text: /^SECONDAIRES : 1$/ }))).toBeTruthy()
   expect(lists()).toBe(before + 1)
   await $.tool.call({ tool: 'mcp__plugin_obsidian-router_router__get_file', path: 'a.md' })
   // A read it started would also run detached: give it the same round trips.
   for (let i = 0; i < 50; i += 1) {
-    await ui.find({ type: 'Text', text: /^Principal$/ })
+    await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })
   }
   expect(lists()).toBe(before + 1)
   await ui.unmount()
@@ -480,17 +489,17 @@ test('an older read of the router landing last never overwrites a newer one', as
   // A must have read the OLD list before it changes: wait for its call.
   expect(
     await eventually(async () => {
-      await ui.find({ type: 'Text', text: /^Principal$/ })
+      await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })
 
       return calls.length > sent || undefined
     }),
   ).toBe(true)
   state.list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['notes'] } }
   await ui.press({ key: 'refresh' })
-  expect(await ui.find({ type: 'Text', text: /^Secondaires · 1$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^SECONDAIRES : 1$/ })).toBeTruthy()
   release()
   await older
-  expect(await ui.find({ type: 'Text', text: /^Secondaires · 1$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^SECONDAIRES : 1$/ })).toBeTruthy()
   await ui.unmount()
 })
 
@@ -553,7 +562,7 @@ test('a binding answer without `also` draws, and a click still sends a list', as
   const calls = wire(on, state)
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /^Secondaires · 0$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^SECONDAIRES : 0$/ })).toBeTruthy()
   await openAdd(ui)
   await ui.press({ key: 'tab-distants' })
   await ui.press({ key: 'add-extra' })
@@ -588,7 +597,7 @@ test("a read the previous session left running writes nothing into the next one"
 
   // The opted-out session never read the router: its pane state is empty.
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /^Principal$/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
   expect(await ui.find({ type: 'Text', text: /lecture du router/i })).toBeTruthy()
   await ui.unmount()
 })
@@ -604,6 +613,9 @@ test('the router is reached under the name mcp.connect gives for the plugin serv
     return { value: { isConnected: true, server: 'router-as-the-session-names-it' } }
   })
   on('mcp.call', (_, e) => {
+    if (e.server === 'claude-in-chrome') {
+      return { value: { content: [{ type: 'text', text: '{}' }], isError: false } }
+    }
     servers.push(e.server)
 
     return { value: { content: [{ type: 'text', text: JSON.stringify(LIST) }], isError: false } }
@@ -689,7 +701,10 @@ test('a router call that never answers at start is given up, and the next try fi
   let opens = 0
   mock.env(on, {})
   const clock = mock.clock(on)
-  on('mcp.call', async () => {
+  on('mcp.call', async (_, e) => {
+    if (e.server === 'claude-in-chrome') {
+      return { value: { content: [{ type: 'text', text: '{}' }], isError: false } }
+    }
     calls += 1
     if (calls === 1) {
       // The first read hangs, as a call made while the server connects can.
@@ -717,7 +732,7 @@ test('a router call that never answers at start is given up, and the next try fi
   expect(calls).toBe(2)
   expect(opens).toBe(1)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /^Principal$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeTruthy()
   // Drawn with data: the pane starts no read of its own.
   expect(calls).toBe(2)
   await ui.unmount()
@@ -733,12 +748,12 @@ test('a pane the app drew on its own gets the redraws after the model binding ca
   await $.session.start(START)
   // The app draws the pane anyway (restored layout): it shows the failed read.
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /^Principal$/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
   // The router is up now, and the model changes the binding.
   state.list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['notes'] } }
   const before = calls.filter(c => c.tool === 'list_vaults').length
   await $.tool.call({ tool: 'mcp__plugin_obsidian-router_router__lock_vault', vault: 'main' })
-  expect(await eventually(() => ui.find({ type: 'Text', text: /^Secondaires · 1$/ }))).toBeTruthy()
+  expect(await eventually(() => ui.find({ type: 'Text', text: /^SECONDAIRES : 1$/ }))).toBeTruthy()
   expect(calls.filter(c => c.tool === 'list_vaults').length).toBe(before + 1)
   await ui.unmount()
 })
@@ -789,8 +804,8 @@ test('on the phone (no menu, no field): the tier keeps its three buttons, and a 
   await desk.unmount()
   // …does not hide the phone's rows, and the tier is still changeable there.
   const phone = await $.ui.mount({ ...PANE, surface: 'mobile' })
-  expect(await phone.find({ type: 'Button', key: 'mode-docs-writable' })).toBeTruthy()
-  await phone.press({ key: 'mode-docs-writable' })
+  expect(await phone.find({ type: 'Button', key: 'tier-writable-docs' })).toBeTruthy()
+  await phone.press({ key: 'tier-writable-docs' })
   expect(calls.find(c => c.tool === 'set_secondary_vault_mode')?.args).toEqual({ vault: 'docs', mode: 'writable' })
   await phone.unmount()
 })
@@ -917,15 +932,16 @@ test("a closed local vault shows Obsidian's purple mark, \"Obsidian fermé\" and
   await openClosed(desktop)
   // The folder is matched to Obsidian's list after the read: waited for.
   await eventually(() => desktop.find({ type: 'Button', key: 'obsidian-notes' }))
-  const box = nodesOf(await desktop.drawn()).find(n => keyOf(n) === 'obsidian-box-notes')
+  // Its mark is the key (a blank Button laid over it), nothing written beside it: the legend says what it does.
+  const box = nodesOf(await desktop.drawn()).find(n => keyOf(n) === 'icon-obsidian-notes')
   const mark = nodesOf(box as never).find(n => n.type === 'Svg')
   expect(String(mark?.props?.source)).toContain('#A88BFA')
-  expect(await desktop.find({ type: 'Text', text: /^Local · Obsidian fermé$/ })).toBeTruthy()
-  expect(await desktop.find({ type: 'Button', key: 'obsidian-notes' })).toMatchObject({ props: { label: 'Ouvrir Obsidian ↗' } })
+  expect(nodesOf(box as never).some(n => n.type === 'Button' && keyOf(n) === 'obsidian-notes')).toBe(true)
+  expect(await desktop.find({ type: 'Text', text: /^Local · Obsidian fermé$/ })).toBeFalsy()
   await desktop.unmount()
   const terminal = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await openClosed(terminal)
-  expect(await eventually(() => terminal.find({ type: 'Button', key: 'obsidian-notes' }))).toMatchObject({ props: { label: 'Ouvrir Obsidian ↗' } })
+  expect(await eventually(() => terminal.find({ type: 'Button', key: 'obsidian-notes' }))).toMatchObject({ props: { label: '💎' } })
   await terminal.unmount()
 })
 
@@ -999,7 +1015,9 @@ test('a remote vault with a web UI, no view agent: 🌐 and 🪟 open its own ad
   await openAdd(ui)
   await ui.press({ key: 'tab-distants' })
   await ui.press({ key: 'web-extra' })
-  expect(launched).toEqual([['rundll32', 'url.dll,FileProtocolHandler', 'https://10.8.0.1:3002/']])
+  // The planet: Chrome, through Claude in Chrome, in a tab of its own; nothing launched.
+  expect(calls.find(c => c.tool === 'navigate')?.args).toEqual({ url: 'https://10.8.0.1:3002/', tabId: 123 })
+  expect(launched).toEqual([])
   await ui.press({ key: 'ui-extra' })
   expect(calls.find(c => c.tool === 'preview_start')?.args).toEqual({ url: 'https://10.8.0.1:3002/' })
   await ui.unmount()
@@ -1023,23 +1041,21 @@ test('with a view agent, 🌐 and 🪟 go through its link to a note of the vaul
   await ui.press({ key: 'tab-distants' })
   await ui.press({ key: 'web-extra' })
   expect(calls.find(c => c.tool === 'get_view_link')?.args).toEqual({ vault: 'extra', note: 'wiki/index.md' })
-  expect(launched).toEqual([['rundll32', 'url.dll,FileProtocolHandler', GO]])
+  expect(calls.find(c => c.tool === 'navigate')?.args).toEqual({ url: GO, tabId: 123 })
+  expect(launched).toEqual([])
   await ui.press({ key: 'ui-extra' })
   expect(calls.find(c => c.tool === 'preview_start')?.args).toEqual({ url: GO })
   await ui.unmount()
 })
 
-test('a 🌐 launch that exits non-zero says so', async ($, on) => {
-  wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
-  on('process.run', () => ({
-    value: { exitCode: 1, stdout: '', stderr: 'no browser', isStdoutTruncated: false, isStderrTruncated: false },
-  }))
+test('a 🌐 Chrome refuses says so', async ($, on) => {
+  wire(on, { list: LIST, refuse: 'navigate', refuseText: 'no chrome window', env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await openAdd(ui)
   await ui.press({ key: 'tab-distants' })
   await ui.press({ key: 'web-extra' })
-  expect(await ui.find({ type: 'Text', text: /Navigateur : no browser/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Chrome n'a pas pu ouvrir la page : no chrome window/ })).toBeTruthy()
   await ui.unmount()
 })
 
@@ -1104,16 +1120,21 @@ test('every remote vault silent: a WireGuard banner; one answering: none', async
   await ui.unmount()
 })
 
-test('every tier menu sits in a box of one fixed width, whatever tier it shows', async ($, on) => {
+test('every tier is three radio buttons under a title, the one in force marked', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await openClosed(ui)
-  const tree = JSON.stringify(await ui.drawn())
-  // docs is read-only (locked), notes write-on-request: two tiers, one width.
-  const widths = [...tree.matchAll(/"width":(\d+),"minWidth":\d+,"flexShrink":0},"children":\[\{"type":"Select"/g)].map(m => m[1])
-  expect(widths.length).toBe(2)
-  expect(new Set(widths).size).toBe(1)
+  const nodes = nodesOf(await ui.drawn())
+  // docs is read-only (locked), notes write-on-request.
+  for (const [name, mode] of [['docs', 'locked'], ['notes', 'soft']] as const) {
+    const box = nodes.find(n => keyOf(n) === `mode-${name}`)
+    expect(nodesOf(box as never).some(n => n.type === 'Text' && textOf(n) === 'Droits de lecture/écriture :')).toBe(true)
+    const radios = nodesOf(box as never).filter(n => n.type === 'Button')
+    expect(radios.map(n => keyOf(n))).toEqual(['locked', 'soft', 'writable'].map(m => `tier-${m}-${name}`))
+    expect(radios.filter(n => String(n.props?.label).startsWith('◉')).map(n => keyOf(n))).toEqual([`tier-${mode}-${name}`])
+  }
+  expect(nodes.some(n => n.type === 'Select' && /^mode-/.test(keyOf(n) ?? ''))).toBe(false)
   await ui.unmount()
 })
 
@@ -1145,6 +1166,9 @@ test('a server not connected is no refusal: the next name is tried, and the pane
   mock.env(on, {})
   mock.clock(on)
   on('mcp.call', (_, e) => {
+    if (e.server === 'claude-in-chrome') {
+      return { value: { content: [{ type: 'text', text: '{}' }], isError: false } }
+    }
     servers.push(e.server)
     // A router declared by hand: no plugin server under the first name.
     if (e.server === 'plugin:obsidian-router:router') {
@@ -1160,7 +1184,7 @@ test('a server not connected is no refusal: the next name is tried, and the pane
   await begin($)
   expect(servers).toContain('obsidian-router')
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /^Principal$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /bloqué/ })).toBeFalsy()
   await ui.unmount()
 })
@@ -1227,7 +1251,7 @@ test('a click refused by auto mode says nothing changed and names the two write 
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await openClosed(ui)
-  await ui.select({ key: 'mode-notes', value: 'writable' })
+  await ui.press({ key: 'tier-writable-notes' })
   expect(
     await ui.find({
       type: 'Text',
@@ -1246,6 +1270,9 @@ test('a startup read refused by auto mode is not retried: no pane, one toast poi
   mock.env(on, {})
   const clock = mock.clock(on)
   on('mcp.call', (_, e) => {
+    if (e.server === 'claude-in-chrome') {
+      return { value: { content: [{ type: 'text', text: '{}' }], isError: false } }
+    }
     reads += 1
 
     return { value: { content: [{ type: 'text', text: refusal(e.server, e.tool) }], isError: true } }
@@ -1321,12 +1348,12 @@ test('the primary, the secondaries and the vaults to add are the same tile, in g
     for (const key of ['sec-tiles', 'av-tiles']) {
       expect(nodes.find(n => keyOf(n) === key)?.props?.flexWrap).toBe('wrap')
     }
-    // The phone has no menu: its three tier buttons wrap too.
-    const modes = nodes.filter(n => /^modes-/.test(keyOf(n) ?? ''))
-    expect(modes.length).toBe(surface === 'mobile' ? 2 : 0)
+    // Every surface: the tier as three radio buttons, under its title.
+    const modes = nodes.filter(n => /^mode-/.test(keyOf(n) ?? '') && n.type === 'Box')
+    expect(modes.length).toBe(2)
     for (const m of modes) {
-      expect(m.props?.flexWrap).toBe('wrap')
-      // Without shrinking, a wrapping box keeps its one-line width: no wrap.
+      // A column that may shrink with its tile.
+      expect(m.props?.flexDirection).toBe('column')
       expect(m.props?.flexShrink).toBe(1)
     }
     await ui.unmount()
@@ -1339,7 +1366,7 @@ test('section titles are bold and in the body colour; the pane title is not repe
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
     const texts = nodesOf(await ui.drawn()).filter(n => n.type === 'Text')
-    for (const title of [/^Principal$/, /^Secondaires · 2$/]) {
+    for (const title of [/^PRINCIPAL :$/, /^SECONDAIRES : 2$/]) {
       const t = texts.find(n => title.test(textOf(n)))
       expect(t).toBeTruthy()
       expect(t?.props?.weight).toBe('semibold')
@@ -1369,7 +1396,7 @@ test('no legend: the status line says how many are bound and whether they all an
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(await ui.find({ type: 'Text', text: /^3 liés · tous ouverts$/ })).toBeTruthy()
     expect(await ui.find({ type: 'Text', text: /^local fermé$/ })).toBeFalsy()
-    expect(await ui.find({ type: 'Text', text: /^Principal$/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeTruthy()
     expect(await ui.find({ type: 'Text', text: /^Par défaut$/ })).toBeTruthy()
     await ui.unmount()
   }
@@ -1505,7 +1532,7 @@ test('the band yields to an unread router, to OBSIDIAN_ROUTER_NO_VAULT_BAND and 
   expect(await off.find({ type: 'Text', text: /^engine band$/ })).toBeTruthy()
   await off.unmount()
   const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await pane.find({ type: 'Text', text: /^Principal$/ })).toBeTruthy()
+  expect(await pane.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeTruthy()
   await pane.unmount()
 
   // Opted in again: drawn, but a survey up makes it yield.
@@ -1519,15 +1546,15 @@ test('the band yields to an unread router, to OBSIDIAN_ROUTER_NO_VAULT_BAND and 
   await survey.unmount()
 })
 
-test('the tier menu shows each tier with the badge the band uses', async ($, on) => {
+test('the tier radios show each tier with the badge the band uses', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  const menu = nodesOf(await ui.drawn()).find(n => n.type === 'Select' && keyOf(n) === 'mode-docs')
-  expect((menu?.props?.options as { label: string }[] | undefined)?.map(o => o.label)).toEqual([
-    '🔒 Lecture seule',
-    '✋ Écriture sur accord',
-    '✏️ Lecture/écriture',
+  const box = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'mode-docs')
+  expect(nodesOf(box as never).filter(n => n.type === 'Button').map(n => n.props?.label)).toEqual([
+    '◉ 🔒 Lecture seule',
+    '○ ✋ Écriture sur accord',
+    '○ ✏️ Lecture/écriture automatique',
   ])
   await ui.unmount()
 })
@@ -2049,7 +2076,7 @@ function versions(on: On, installed: string, latest: string, extra: (path: strin
   })
 }
 
-test('the footer holds the version, the repository and, when GitHub has a newer one, the badge', async ($, on) => {
+test('the menu holds the router mark, the version, the repository and, when GitHub has a newer one, the badge', async ($, on) => {
   const launched: (readonly string[])[] = []
   wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
   versions(on, '0.107.0', '0.108.0')
@@ -2061,12 +2088,19 @@ test('the footer holds the version, the repository and, when GitHub has a newer 
     return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   await begin($)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   expect(await eventually(() => ui.find({ type: 'Text', text: /^v0\.107\.0$/ }))).toBeTruthy()
   expect(await eventually(() => ui.find({ type: 'Button', key: 'update-badge' }))).toBeTruthy()
   const nodes = nodesOf(await ui.drawn())
+  const menu = nodes.find(n => keyOf(n) === 'nav')
+  // The router's mark at the left, the version, the badge and GitHub's mark at the right.
+  expect(nodesOf(menu as never).some(n => n.type === 'Svg' && n.props?.alt === 'obsidian-mcp-router')).toBe(true)
+  const end = nodesOf(menu as never).find(n => keyOf(n) === 'nav-end')
+  expect(['update-badge', 'github'].every(key => nodesOf(end as never).some(n => keyOf(n) === key))).toBe(true)
+  expect(nodesOf(end as never).some(n => n.type === 'Svg' && n.props?.alt === 'GitHub')).toBe(true)
+  // The footer keeps the console's fold alone.
   const footer = nodes.find(n => keyOf(n) === 'pane-footer')
-  expect(nodesOf(footer as never).some(n => keyOf(n) === 'github')).toBe(true)
+  expect(nodesOf(footer as never).some(n => keyOf(n) === 'github')).toBe(false)
   expect(nodesOf(footer as never).some(n => keyOf(n) === 'toggle-admin')).toBe(true)
   await ui.press({ key: 'github' })
   expect(launched).toContainEqual(['rundll32', 'url.dll,FileProtocolHandler', 'https://github.com/tboome33/obsidian-mcp-router'])
@@ -2081,7 +2115,7 @@ test('no badge when GitHub has the installed version', async ($, on) => {
   wire(on, { list: LIST })
   versions(on, '0.107.0', '0.107.0')
   await begin($)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   await eventually(() => ui.find({ type: 'Text', text: /^v0\.107\.0$/ }))
   expect(await ui.find({ type: 'Button', key: 'update-badge' })).toBeFalsy()
   await ui.unmount()
@@ -2123,7 +2157,7 @@ test('the console updates the plugin through Claude Code: the marketplace, then 
   versions(on, '0.107.0', '0.108.0')
   claudeCli(on, runs, '0.108.0')
   await begin($)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   await eventually(() => ui.find({ type: 'Button', key: 'update-badge' }))
   await ui.press({ key: 'update-badge' })
   await ui.press({ key: 'update-run' })
@@ -2145,7 +2179,7 @@ test('an update that installs nothing new says so, and keeps the badge', async (
   versions(on, '0.107.0', '0.108.0')
   claudeCli(on, runs, '0.107.0')
   await begin($)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   await eventually(() => ui.find({ type: 'Button', key: 'update-badge' }))
   await ui.press({ key: 'update-badge' })
   await ui.press({ key: 'update-run' })
@@ -2160,7 +2194,7 @@ test('a project left behind is not "updated": the lowest install is said, and th
   versions(on, '0.107.0', '0.108.0')
   claudeCli(on, runs, '0.108.0', '0.107.0', 'project')
   await begin($)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   await eventually(() => ui.find({ type: 'Button', key: 'update-badge' }))
   await ui.press({ key: 'update-badge' })
   await ui.press({ key: 'update-run' })
@@ -2174,7 +2208,7 @@ test('a prerelease is older than its release: the badge shows for 0.108.0-rc.1 �
   wire(on, { list: LIST })
   versions(on, '0.108.0-rc.1', '0.108.0')
   await begin($)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   expect(await eventually(() => ui.find({ type: 'Button', key: 'update-badge' }))).toBeTruthy()
   await ui.unmount()
 })
@@ -2210,7 +2244,7 @@ test('/vault-setup opens the pane on the console, where a vault is created with 
   // The console holds the pane, the vaults behind "‹ Retour aux vaults".
   expect(await ui.find({ type: 'Button', key: 'create-submit' })).toBeTruthy()
   expect(await ui.find({ type: 'Button', key: 'toggle-admin' })).toMatchObject({ props: { label: '‹ Retour aux vaults' } })
-  expect(await ui.find({ type: 'Text', text: /^Principal$/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
   await ui.input({ key: 'create-name-field', text: 'Notes Pro', kind: 'change' })
   await ui.input({ key: 'create-path-field', text: 'C:\\VAULTS\\Notes Pro', kind: 'change' })
   await ui.press({ key: 'create-mode-code' })
@@ -2261,7 +2295,7 @@ test('conventions that cannot be installed yet are kept, with a retry', async ($
 test("a name in the band opens its vault: a remote one's web UI in the browser", async ($, on) => {
   const withExtra = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['extra'] } }
   const launched: (readonly string[])[] = []
-  wire(on, { list: withExtra, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  const chrome = wire(on, { list: withExtra, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
   on('process.run', (_, e) => {
     if (e.argv[0] !== 'powershell') {
       launched.push(e.argv)
@@ -2272,10 +2306,10 @@ test("a name in the band opens its vault: a remote one's web UI in the browser",
   engineBand(on)
   await begin($)
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  // The planet after its name: the default browser. The name itself opens nothing.
+  // The planet after its name: Chrome, through Claude in Chrome. The name itself opens nothing.
   expect(await band.find({ type: 'Button', key: 'band-open-extra' })).toBeFalsy()
   await band.press({ key: 'band-web-extra' })
-  expect(launched).toContainEqual(['rundll32', 'url.dll,FileProtocolHandler', 'https://10.8.0.1:3002/'])
+  expect(chrome.find(c => c.tool === 'navigate')?.args).toEqual({ url: 'https://10.8.0.1:3002/', tabId: 123 })
   await band.unmount()
 })
 
@@ -2328,7 +2362,7 @@ test("a paused remote vault, which the router no longer lists, still opens from 
     disabled: [{ name: 'extra', type: 'remote', awaitingDeclaration: false }],
     configPath: 'C:\\cfg\\config.json',
   }
-  wire(on, { list: paused, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  const chrome = wire(on, { list: paused, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
   on('fs.read', (_, e) => {
     if (e.path === 'C:\\cfg\\config.json') {
       return { value: JSON.stringify({ remoteVaults: [{ name: 'extra', baseUrl: 'http://10.8.0.1:27181', description: 'Conteneur (UI :3002), fichiers : x' }] }) }
@@ -2347,7 +2381,7 @@ test("a paused remote vault, which the router no longer lists, still opens from 
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
   // On the band's line, where a paused vault is named too: its planet.
   await band.press({ key: 'band-web-extra' })
-  expect(launched).toContainEqual(['rundll32', 'url.dll,FileProtocolHandler', 'https://10.8.0.1:3002/'])
+  expect(chrome.find(c => c.tool === 'navigate')?.args).toEqual({ url: 'https://10.8.0.1:3002/', tabId: 123 })
   await band.unmount()
 })
 
@@ -2506,7 +2540,8 @@ test('adding: all, local or remote ones, a search, and A → Z or Z → A regard
   await ui.input({ key: 'add-search', text: 'TA', kind: 'change' })
   expect(await addedNames(ui)).toEqual(['Zeta'])
   // An open local one can be looked at in Obsidian before it is added, "+ Ajouter" beside it.
-  expect(await ui.find({ type: 'Button', key: 'obsidian-Zeta' })).toMatchObject({ props: { label: 'Local · Obsidian ↗' } })
+  expect(await ui.find({ type: 'Button', key: 'obsidian-Zeta' })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Local · Obsidian/ })).toBeFalsy()
   expect(await ui.find({ type: 'Button', key: 'add-Zeta' })).toMatchObject({ props: { label: '+ Ajouter', variant: 'secondary' } })
   // "+ Ajouter" sits on the tile's last line, pushed to its right, under a spacer that takes the height left.
   const tileNodes = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'av-Zeta') as never)
@@ -2568,9 +2603,9 @@ test('a tier set on a paused secondary shows at once', async ($, on) => {
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   // The read-back after the change fails: what shows is the change itself.
   state.refuse = 'list_vaults'
-  await ui.select({ key: 'mode-notes', value: 'writable' })
+  await ui.press({ key: 'tier-writable-notes' })
   expect(calls.filter(c => c.tool === 'set_secondary_vault_mode').at(-1)?.args).toEqual({ vault: 'notes', mode: 'writable' })
-  expect(await ui.find({ key: 'mode-notes' })).toMatchObject({ props: { value: 'writable' } })
+  expect(String((await ui.find({ type: 'Button', key: 'tier-writable-notes' }))?.props?.label)).toMatch(/^◉/)
   await ui.unmount()
 })
 
@@ -2594,7 +2629,7 @@ test('the console holds the pane while open: its cards, wiki types and conventio
   expect(await ui.find({ type: 'Button', key: 'toggle-admin' })).toMatchObject({ props: { label: '⚙ Administration ›', variant: 'secondary' } })
   await ui.press({ key: 'toggle-admin' })
   // The vaults hidden, the five cards drawn, three to a line.
-  expect(await ui.find({ type: 'Text', text: /^Principal$/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
   const nodes = nodesOf(await ui.drawn())
   for (const key of ['admin-general', 'admin-create', 'admin-wireguard', 'admin-register', 'admin-unregister']) {
     expect(nodes.find(n => keyOf(n) === key)?.props?.width).toBe(42)
@@ -2612,7 +2647,7 @@ test('the console holds the pane while open: its cards, wiki types and conventio
   expect(await ui.find({ type: 'Text', text: /^0 sur \d+$/ })).toBeTruthy()
   // Back to the vaults.
   await ui.press({ key: 'toggle-admin' })
-  expect(await ui.find({ type: 'Text', text: /^Principal$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeTruthy()
   await ui.unmount()
 })
 
@@ -2827,4 +2862,102 @@ test('a pane too narrow for the menu folds it into "☰" and the view in sight; 
   expect(await wide.find({ type: 'Button', key: 'nav-burger' })).toBeFalsy()
   expect(await wide.find({ type: 'Button', key: 'nav-admin' })).toBeTruthy()
   await wide.unmount()
+})
+
+test('under the menu, a legend says what each mark does; the planet only while Claude in Chrome answers', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const nodes = nodesOf(await ui.drawn())
+  const legend = nodes.find(n => keyOf(n) === 'legend')
+  const texts = nodesOf(legend as never).filter(n => n.type === 'Text').map(textOf)
+  expect(texts).toEqual(expect.arrayContaining(['Local : ouvre dans Obsidian', 'Distant : ouvre dans le navigateur interne', 'Distant : ouvre dans Chrome (mode debug)']))
+  expect(nodesOf(legend as never).filter(n => n.type === 'Svg').map(n => n.props?.alt)).toEqual(['Obsidian', 'Claude', 'Navigateur'])
+  // The legend comes right under the menu.
+  expect(nodes.findIndex(n => keyOf(n) === 'nav')).toBeLessThan(nodes.findIndex(n => keyOf(n) === 'legend'))
+  await openAdd(ui)
+  await ui.press({ key: 'tab-distants' })
+  expect(await ui.find({ type: 'Button', key: 'web-extra' })).toBeTruthy()
+  // Marks alone in the tiles: no "Distant · navigateur", no "Dans Claude".
+  expect(await ui.find({ type: 'Text', text: /Distant · navigateur|Dans Claude/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('Claude in Chrome off: no planet, and the legend offers to turn it on from the console', async ($, on) => {
+  wire(on, { list: LIST, unreachable: 'tabs_context_mcp' })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Chrome : Claude in Chrome n'est pas activé$/ })).toBeTruthy()
+  await openAdd(ui)
+  await ui.press({ key: 'tab-distants' })
+  expect(await ui.find({ type: 'Button', key: 'web-extra' })).toBeFalsy()
+  expect(await ui.find({ type: 'Button', key: 'ui-extra' })).toBeTruthy()
+  await ui.press({ key: 'legend-chrome-enable' })
+  expect(await ui.find({ key: 'admin-chrome' })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Pas activé\./ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('folded into "☰", the menu keeps the router mark at the left and GitHub at the right, no version', async ($, on) => {
+  wire(on, { list: LIST })
+  versions(on, '0.107.0', '0.108.0')
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 40 }, surface: 'desktop' })
+  const menu = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'nav')
+  expect(nodesOf(menu as never).some(n => keyOf(n) === 'nav-burger')).toBe(true)
+  expect(nodesOf(menu as never).some(n => n.type === 'Svg' && n.props?.alt === 'obsidian-mcp-router')).toBe(true)
+  expect(nodesOf(menu as never).some(n => keyOf(n) === 'github')).toBe(true)
+  expect(nodesOf(menu as never).some(n => n.type === 'Text' && /^v\d/.test(textOf(n)))).toBe(false)
+  await ui.unmount()
+})
+
+test('a tab Claude in Chrome does not create opens nothing: no navigate, the refusal said', async ($, on) => {
+  const calls = wire(on, { list: LIST, refuse: 'tabs_create_mcp', refuseText: 'no Chrome window' })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdd(ui)
+  await ui.press({ key: 'tab-distants' })
+  await ui.press({ key: 'web-extra' })
+  expect(calls.some(c => c.tool === 'navigate')).toBe(false)
+  expect(await ui.find({ type: 'Text', text: /Chrome n'a pas pu ouvrir la page : no Chrome window/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('Claude in Chrome: the empty tab of a group it just made is used; a number that is no tab id is never taken', async ($, on) => {
+  // A fresh group with its one empty tab: navigated there, no tab created.
+  const fresh = wire(on, {
+    list: LIST,
+    answers: { tabs_context_mcp: { availableTabs: [{ tabId: 77, title: 'New Tab', url: 'chrome://newtab/' }], tabGroupId: 1 } },
+  })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdd(ui)
+  await ui.press({ key: 'tab-distants' })
+  await ui.press({ key: 'web-extra' })
+  expect(fresh.some(c => c.tool === 'tabs_create_mcp')).toBe(false)
+  expect(fresh.find(c => c.tool === 'navigate')?.args).toEqual({ url: 'https://10.8.0.1:3002/', tabId: 77 })
+  await ui.unmount()
+})
+
+test('Claude in Chrome: a created tab answered without a "Tab ID" opens nothing', async ($, on) => {
+  const calls = wire(on, {
+    list: LIST,
+    answers: { tabs_context_mcp: { availableTabs: [{ tabId: 5, url: 'https://example.org/' }] }, tabs_create_mcp: 'Created tab in window 7' },
+  })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdd(ui)
+  await ui.press({ key: 'tab-distants' })
+  await ui.press({ key: 'web-extra' })
+  expect(calls.some(c => c.tool === 'navigate')).toBe(false)
+  expect(await ui.find({ type: 'Text', text: /Claude in Chrome n'a pas donné d'onglet/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('Claude in Chrome refusing as disconnected counts as off, even when it speaks of tabs', async ($, on) => {
+  wire(on, { list: LIST, refuse: 'tabs_context_mcp', refuseText: 'Cannot list tabs: extension disconnected' })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Chrome : Claude in Chrome n'est pas activé$/ })).toBeTruthy()
+  await ui.unmount()
 })
