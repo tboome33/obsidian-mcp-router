@@ -43,6 +43,8 @@ const language = atom({ plugin: 'obsidian-router', key: 'language' } as const, '
 // The administration console: folded by default; its form; the vault whose
 // removal waits for a second press; WireGuard as last detected.
 const showAdmin = atom({ plugin: 'obsidian-router', key: 'showAdmin' } as const, false)
+// The pane's menu folded into "☰" on a narrow pane: whether its list is open.
+const navOpen = atom({ plugin: 'obsidian-router', key: 'navOpen' } as const, false)
 const EMPTY_FORM: AdminForm = { kind: 'local', name: '', host: '127.0.0.1', port: '', uiPort: '', apiKey: '', scheme: 'https' }
 const adminForm = atom({ plugin: 'obsidian-router', key: 'adminForm' } as const, EMPTY_FORM)
 const confirmRemove = atom({ plugin: 'obsidian-router', key: 'confirmRemove' } as const, null)
@@ -1832,6 +1834,51 @@ async function togglePane($: EngineInterface) {
 // The band is drawn in this session: neither the panel nor the band is off.
 const isBandOn = () => isEnvKnown && !isOptedOut && !isBandOptedOut
 
+// The pane's menu: the vaults, the adding list, the console. Each key shows
+// its view and brings it into the window: the top, or the adding bar. The
+// console folded drops a key typed but not sent; opened, it reads WireGuard.
+type PaneView = 'vaults' | 'add' | 'admin'
+// Each press of the menu: a later one supersedes it, whose scroll then stands.
+let navGeneration = 0
+async function showView($: EngineInterface, view: PaneView) {
+  navGeneration += 1
+  const generation = navGeneration
+  await update($, navOpen, () => false)
+  const wasAdmin = await read($, showAdmin)
+  await update($, showAdmin, () => view === 'admin')
+  if (view !== 'admin') {
+    await update($, showAdd, () => view === 'add')
+  }
+  if (view === 'admin' && !wasAdmin) {
+    void checkWireguard($).catch(() => undefined)
+  }
+  if (view !== 'admin' && wasAdmin) {
+    await update($, adminForm, now => (now.apiKey ? { ...now, apiKey: '' } : now))
+  }
+  // The adding list (and a folded menu) is drawn at the next redraw, not when
+  // the atom is set: each try waits a redraw first, then asks for the head
+  // until it is there (a refusal is an answer, not a throw), and stops as
+  // soon as a later press has taken over. The head, not the bar: the pinned
+  // menu covers the window's first rows, the tabs come just under the head.
+  // An unload (the pane closed, the session over) ends the asking quietly.
+  try {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await $.clock.sleep(50)
+      if (generation !== navGeneration) {
+        return
+      }
+      const moved = await $.ui
+        .scroll(view === 'add' ? { in: PANE, to: { key: 'add-head' }, block: 'start' } : { in: PANE, to: 'start' })
+        .catch(() => ({ deny: 'failed' }))
+      if (!moved.deny) {
+        return
+      }
+    }
+  } catch {
+    // Nothing left to scroll.
+  }
+}
+
 // What the pane's window does, as this module sees it: each `ui.scroll` for
 // the pane and each drawing's `scroll`, the last 60, in a file of the
 // temporary directory (obsidian-router-pane-scroll.json). The sticky status
@@ -2055,6 +2102,7 @@ export const register: Register = on => {
     // Read so that a change of language draws the pane again.
     const languageCode = await read($, language)
     const isAdminShown = await read($, showAdmin)
+    const isNavOpen = await read($, navOpen)
     const form = await read($, adminForm)
     const removing = await read($, confirmRemove)
     const picked = await read($, removePick)
@@ -2127,11 +2175,8 @@ export const register: Register = on => {
           : t('summary.reading')
 
     // The panel's state in one line: how many vaults, whether they all answer,
-    // when it was read; the refresh beside it. Drawn twice once the body
-    // scrolls (see `sticky`): the copy's keys carry `prefix`. The bar in the
-    // flow keeps its controls, so nothing under it moves as the window leaves
-    // the top and Tab walks them where they were; the copy's are the ones on
-    // screen.
+    // when it was read; the refresh beside it. `prefix` keys a second copy
+    // apart (none is drawn today).
     const statusBar = (prefix: string) => (
       <Box key={`${prefix}status`} flexDirection="row" justifyContent="space-between" alignItems="center" gap={1} flexWrap="wrap">
         <Box flexDirection="column" flexShrink={1}>
@@ -2177,13 +2222,13 @@ export const register: Register = on => {
         </Box>
       </Box>
     )
-    // The status bar stays at the top while the body scrolls: a copy, drawn
-    // over the content at the first row the window shows, on an opaque
-    // ground, the bar in the flow scrolling away under it. No `position:
-    // sticky` exists; the engine asks again at every move of the window, so
-    // the copy follows it (a move the terminal's engine makes on its own, a
-    // clamp or a focus kept in view, waits for the next drawing). Nothing
-    // while the window is at the top.
+    // The menu stays at the top while the body scrolls: a copy, drawn over the
+    // content at the first row the window shows, on an opaque ground, the menu
+    // in the flow scrolling away under it. No `position: sticky` exists; the
+    // engine asks again at every move of the window, so the copy follows it
+    // (a move the terminal's engine makes on its own, a clamp or a focus kept
+    // in view, waits for the next drawing). Nothing while the window is at the
+    // top.
     const scrolled = Math.max(0, Math.floor(e.props.scroll?.offset ?? 0))
     if (scrolled !== lastTracedOffset) {
       lastTracedOffset = scrolled
@@ -2192,21 +2237,61 @@ export const register: Register = on => {
       )
     }
     const statusLine = statusBar('')
+    // The menu at the top of the pane: Vaults, + Ajouter un vault, ⚙
+    // Administration, the one in view marked, a rule under it. The copy pinned
+    // at the first row the window shows (`sticky`) is the same line, its keys
+    // under `sticky-`, on an opaque ground and no frame.
+    const view: PaneView = isAdminShown ? 'admin' : isAddShown ? 'add' : 'vaults'
+    const menuItem = (prefix: string, id: PaneView, label: string) =>
+      id === view ? (
+        <Button key={`${prefix}nav-${id}`} label={label} variant="primary" onPress={() => void showView($, id)} />
+      ) : (
+        <Button key={`${prefix}nav-${id}`} label={label} plain dimColor onPress={() => void showView($, id)} />
+      )
+    // A pane too narrow for the three on one line folds them into "☰" and the
+    // view in sight; a press unfolds them one under the other. Counted as the
+    // terminal draws them: each label in "[ ]" (4 cells), a 2-cell gap between.
+    // Nothing to add before the router is read: no "+ Ajouter un vault" then.
+    const menuLabels: [PaneView, string][] = [
+      ['vaults', t('nav.vaults')],
+      ...(snap ? [['add', t('add.open')] as [PaneView, string]] : []),
+      ['admin', t('nav.admin')],
+    ]
+    const menuColumns = e.props.bodyColumns ?? 60
+    const isBurger = menuLabels.reduce((sum, [, label]) => sum + cells(label) + 4, 0) + 2 * 2 > menuColumns
+    const rule = (
+      <Text dimColor wrap="truncate-end">
+        {'─'.repeat(Math.max(1, menuColumns))}
+      </Text>
+    )
+    const navMenu = (prefix: string) =>
+      isBurger ? (
+        <Box key={`${prefix}nav`} flexDirection="column">
+          <Button
+            key={`${prefix}nav-burger`}
+            label={`☰ ${menuLabels.find(([id]) => id === view)?.[1] ?? ''}`}
+            plain
+            onPress={() => void update($, navOpen, open => !open)}
+          />
+          {isNavOpen && (
+            <Box key={`${prefix}nav-list`} flexDirection="column" paddingLeft={2}>
+              {menuLabels.map(([id, label]) => menuItem(prefix, id, label))}
+            </Box>
+          )}
+          {rule}
+        </Box>
+      ) : (
+        <Box key={`${prefix}nav`} flexDirection="column">
+          <Box flexDirection="row" gap={2} alignItems="center">
+            {menuLabels.map(([id, label]) => menuItem(prefix, id, label))}
+          </Box>
+          {rule}
+        </Box>
+      )
     const sticky =
       scrolled > 0 ? (
-        <Box
-          key="sticky-bar"
-          position="absolute"
-          top={scrolled}
-          left={0}
-          right={0}
-          flexDirection="column"
-          backgroundColor="inverseText"
-          borderStyle="bold"
-          borderColor="inactive"
-          paddingX={1}
-        >
-          {statusBar('sticky-')}
+        <Box key="sticky-bar" position="absolute" top={scrolled} left={0} right={0} flexDirection="column" backgroundColor="inverseText">
+          {navMenu('sticky-')}
         </Box>
       ) : null
 
@@ -2700,6 +2785,7 @@ export const register: Register = on => {
 
       return (
         <Box flexDirection="column" gap={1}>
+          {navMenu('')}
           {working && (
             <Text size="caption" color="warning">
               {working}…
@@ -2713,12 +2799,14 @@ export const register: Register = on => {
           {problems}
           {admin}
           {footer}
+          {sticky}
         </Box>
       )
     }
     if (!snap) {
       return (
         <Box flexDirection="column" gap={1}>
+          {navMenu('')}
           {statusLine}
           {problems}
           {footer}
@@ -3250,6 +3338,7 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column" gap={1}>
+        {navMenu('')}
         {statusLine}
         {problems}
         {isTunnelDown && (
