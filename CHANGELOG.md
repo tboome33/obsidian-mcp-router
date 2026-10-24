@@ -32,6 +32,18 @@ workspace at a time.
   aside so it never runs twice, and the console says so (`setup-vault.mjs --uninstall-hooks`
   removes those entries).
 
+## [0.114.1] — 2026-10-24 — the marks right of the vault's name
+
+Asked from two screenshots of a tile (v0.114.0):
+
+- **The marks in the tile's head**, right of the vault's name — the planet and Claude's mark
+  for a remote vault, Obsidian's for a local one — on every tile (primary, secondaries, to
+  add). What the marks cannot say ("injoignable" and its retry, "à ouvrir une fois dans
+  Obsidian") stays on a line under the head.
+- **"▶ Actif / ❚❚ Pause" level with the last radio button.**
+- Adversarial review by Codex: one P2 (the marks' key could be a vault's tile key) and one P3
+  (a vacuous test) fixed. Tests: `tests/vault-panel.test.tsx` 119.
+
 ## [0.114.0] — 2026-10-24 — the router's mark, a legend, marks as links, the tier as radios
 
 Asked after v0.113.0 ("elle se charge bien dans la session, good job"):
