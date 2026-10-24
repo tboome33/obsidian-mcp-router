@@ -1641,9 +1641,11 @@ test('the band counts a name\'s mark where it is drawn: on the desktop, for a va
 
     return -1
   }
-  // The terminal draws no mark and counts none; the desktop, three cells a name.
+  // The terminal draws no mark and counts none. The desktop: notes (local) its
+  // Obsidian mark, 3 cells; extra (remote) the planet, 3, and Claude's mark with
+  // its "↗", 5 more.
   expect([await firstShowing('extra', 'terminal'), await firstShowing('notes', 'terminal')]).toEqual([75, 83])
-  expect([await firstShowing('extra', 'desktop'), await firstShowing('notes', 'desktop')]).toEqual([78, 89])
+  expect([await firstShowing('extra', 'desktop'), await firstShowing('notes', 'desktop')]).toEqual([83, 94])
 })
 
 // Two cells per CJK character: "資料庫一" is 8 cells, not 4. With main + two
@@ -2420,7 +2422,11 @@ test('a paused secondary keeps its place on the band: ▶ on green while it runs
   expect(at('band-pause-docs')).toBe(-1)
   expect(at('band-resume-notes')).toBe(-1)
   // A name that opens has its mark and a button named for where; one that opens nowhere is its name alone.
-  expect(nodesOf(nodes.find(n => keyOf(n) === 'band-open-extra-box') as never).some(n => n.type === 'Svg')).toBe(true)
+  // A remote vault: the planet (the default browser) before its name, then Claude's
+  // mark and its own key (Claude's browser). Every mark says what it shows.
+  const marks = nodesOf(nodes.find(n => keyOf(n) === 'band-open-extra-box') as never).filter(n => n.type === 'Svg')
+  expect(marks.map(n => n.props?.alt)).toEqual(['Navigateur', 'Claude'])
+  expect(prop('band-ui-extra', 'label')).toBe('↗')
   // Its name is the button's text, never a sentence: the desktop draws a label in its place.
   expect(textOf(nodes.find(n => keyOf(n) === 'band-open-extra')!)).toBe('extra')
   expect(['extra', undefined]).toContain(prop('band-open-extra', 'label'))
@@ -2589,4 +2595,39 @@ test('the console says what the vaults view would: every remote vault silent, an
   await ui.press({ key: 'toggle-admin' })
   expect(nodesOf(await ui.drawn()).some(n => n.type === 'Text' && textOf(n) === "WireGuard semble inactif : les vaults distants ne sont pas disponibles.")).toBe(true)
   await ui.unmount()
+})
+
+test("on the band, a local vault's name has Obsidian's mark, and a remote one's \"↗\" opens it in Claude's browser", async ($, on) => {
+  const list = {
+    ...LIST,
+    workspaceBinding: { ...LIST.workspaceBinding, also: ['extra', 'notes'] },
+    vaults: [...LIST.vaults.filter(v => v.name !== 'notes'), { name: 'notes', type: 'local', online: false, path: 'C:\VAULTS\Notes' }],
+  }
+  const calls = wire(on, { list, env: { APPDATA: 'C:\Users\me\AppData\Roaming' } })
+  engineBand(on)
+  await begin($)
+  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 160 }, surface: 'desktop' })
+  const nodes = nodesOf(await band.drawn())
+  const local = nodesOf(nodes.find(n => keyOf(n) === 'band-open-notes-box') as never).filter(n => n.type === 'Svg')
+  expect(local.map(n => n.props?.alt)).toEqual(['Obsidian'])
+  expect(String(local[0]?.props?.source)).toContain('#A88BFA')
+  await band.press({ key: 'band-ui-extra' })
+  expect(calls.find(c => c.tool === 'preview_start')?.args).toEqual({ url: 'https://10.8.0.1:3002/' })
+  await band.unmount()
+})
+
+test('the band keys each Claude key by its vault name: a vault named "x-ui" collides with nothing', async ($, on) => {
+  const list = {
+    ...LIST,
+    workspaceBinding: { ...LIST.workspaceBinding, also: ['extra', 'extra-ui'] },
+    vaults: [...LIST.vaults, { name: 'extra-ui', type: 'remote', online: true, baseUrl: 'http://10.8.0.1:27190', description: 'Conteneur (UI :3009)' }],
+  }
+  wire(on, { list })
+  engineBand(on)
+  await begin($)
+  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 200 }, surface: 'desktop' })
+  const keys = nodesOf(await band.drawn()).map(n => keyOf(n)).filter((k): k is string => !!k)
+  expect(keys.length).toBe(new Set(keys).size)
+  expect(keys).toEqual(expect.arrayContaining(['band-open-extra', 'band-ui-extra', 'band-open-extra-ui', 'band-ui-extra-ui']))
+  await band.unmount()
 })
