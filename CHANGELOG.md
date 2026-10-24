@@ -10,6 +10,28 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.110.0] — 2026-10-24 — the administration console redrawn
+
+From Roland's design (Claude Design canvas "obsidian-mcp-router — console d'administration"):
+
+- **The console holds the pane while open**: the vaults wait behind "‹ Retour aux vaults" in the
+  footer ("Administration ›" opens it, as the update badge and `/vault-setup` do). What the vaults
+  view would say on top is said here too: the operation under way, and every remote vault silent.
+- **Five framed sections**, under their grey titles: **Général** (the language; the plugin's
+  version, "● À jour" or the versions, "↻ Vérifier", "Mettre à jour"), **Créer un vault Obsidian**,
+  **Connexion WireGuard**, **Enregistrer un vault existant**, **Retirer un vault du router**.
+  Three to a line in a wide pane.
+- **Choices as framed keys**, the one in force on a tinted ground: the wiki type (Personnel,
+  Recherche, Entreprise, Code), Local / Distant (with Obsidian's mark and the globe), HTTPS / HTTP.
+- **Conventions** with ✓ and "n sur N", "Tout" and "Aucun".
+- **Registering**: a line says what each kind is ("Obsidian sur ce PC, via le plugin Local REST
+  API." / "Serveur joint par le tunnel WireGuard pc-rolan-wg."); the IP address and the port on one
+  line.
+- Not done from the design, for the engine's sake: the API key cannot be masked (its field has no
+  such option — it is still sent straight to the router config and wiped from the panel), and
+  each field keeps its quiet "↵".
+- Checked by Codex (no P0/P1; its two P2 fixed). Tests: `tests/vault-panel.test.tsx` 101.
+
 ## [0.109.0] — 2026-10-24 — the vault panel redrawn
 
 From Roland's design (Claude Design canvas "obsidian-mcp-router — refonte du panneau"):

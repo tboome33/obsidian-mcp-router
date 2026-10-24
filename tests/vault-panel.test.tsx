@@ -1666,6 +1666,7 @@ const EN = {
   'band.show': '◧ Show the pane',
   'band.hide': '◧ Hide the pane',
   'primary.title': 'Primary',
+  'admin.general': 'General',
 }
 function localeFiles(on: On, extra: (path: string) => string | undefined = () => undefined) {
   on('fs.read', (_, e) => {
@@ -1721,6 +1722,9 @@ test('the console lists the language files and switches the language', async ($,
     'Français',
   ])
   await pane.select({ key: 'admin-language-select', value: 'en' })
+  // The console, in English, holds the pane; back to the vaults, they are in English too.
+  expect(await pane.find({ type: 'Text', text: /^General$/ })).toBeTruthy()
+  await pane.press({ key: 'toggle-admin' })
   expect(await pane.find({ type: 'Text', text: /^Primary$/ })).toBeTruthy()
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
   expect(await bandTexts(band)).toContain('Primary:')
@@ -1763,6 +1767,8 @@ test('WireGuard installed but off, remote vaults silent: the banner says so and 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await openAdmin(ui)
   expect(await ui.find({ type: 'Text', text: /^installé, mais aucun tunnel actif/ })).toBeTruthy()
+  // The banner is the vaults' own: back to them, it opens the client.
+  await ui.press({ key: 'toggle-admin' })
   await ui.press({ key: 'tunnel-open' })
   expect(wg.launched).toContainEqual(['cmd', '/c', 'start', '', 'C:\\Program Files\\WireGuard\\wireguard.exe'])
   await ui.unmount()
@@ -2140,9 +2146,10 @@ test('/vault-setup opens the pane on the console, where a vault is created with 
   await $.session.start(START)
   await $.command.run({ command: 'vault-setup', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  // No primary: the pane says so, with the way to set one up.
-  expect(await ui.find({ type: 'Button', key: 'primary-setup' })).toBeTruthy()
+  // The console holds the pane, the vaults behind "‹ Retour aux vaults".
   expect(await ui.find({ type: 'Button', key: 'create-submit' })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'toggle-admin' })).toMatchObject({ props: { label: '‹ Retour aux vaults' } })
+  expect(await ui.find({ type: 'Text', text: /^Principal$/ })).toBeFalsy()
   await ui.input({ key: 'create-name-field', text: 'Notes Pro', kind: 'change' })
   await ui.input({ key: 'create-path-field', text: 'C:\\VAULTS\\Notes Pro', kind: 'change' })
   await ui.press({ key: 'create-mode-code' })
@@ -2469,5 +2476,43 @@ test('a remote vault that does not answer says so on its tile, with a retry that
   await ui.press({ key: 'retry-docs' })
   await eventually(async () => calls.filter(c => c.tool === 'list_vaults').length > before)
   expect(calls.filter(c => c.tool === 'list_vaults').length).toBeGreaterThan(before)
+  await ui.unmount()
+})
+
+test('the console holds the pane while open: its cards, wiki types and conventions counter; three cards to a line when wide', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 130 }, surface: 'desktop' })
+  expect(await ui.find({ type: 'Button', key: 'toggle-admin' })).toMatchObject({ props: { label: 'Administration ›' } })
+  await ui.press({ key: 'toggle-admin' })
+  // The vaults hidden, the five cards drawn, three to a line.
+  expect(await ui.find({ type: 'Text', text: /^Principal$/ })).toBeFalsy()
+  const nodes = nodesOf(await ui.drawn())
+  for (const key of ['admin-general', 'admin-create', 'admin-wireguard', 'admin-register', 'admin-unregister']) {
+    expect(nodes.find(n => keyOf(n) === key)?.props?.width).toBe(42)
+    expect(nodes.find(n => keyOf(n) === `${key}-card`)?.props?.borderStyle).toBe('round')
+  }
+  // The wiki type: the one in force framed and lit.
+  await ui.press({ key: 'create-mode-research' })
+  const after = nodesOf(await ui.drawn())
+  expect(after.find(n => keyOf(n) === 'create-mode-box-research')?.props?.backgroundColor).toBe('diffAddedDimmed')
+  expect(after.find(n => keyOf(n) === 'create-mode-box-personal')?.props?.backgroundColor).toBeUndefined()
+  // The conventions: a counter, all, none.
+  await ui.press({ key: 'conventions-all' })
+  expect(await ui.find({ type: 'Text', text: /^[1-9]\d* sur \d+$/ })).toBeTruthy()
+  await ui.press({ key: 'conventions-none' })
+  expect(await ui.find({ type: 'Text', text: /^0 sur \d+$/ })).toBeTruthy()
+  // Back to the vaults.
+  await ui.press({ key: 'toggle-admin' })
+  expect(await ui.find({ type: 'Text', text: /^Principal$/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('the console says what the vaults view would: every remote vault silent, and the operation under way', async ($, on) => {
+  wire(on, { list: SILENT_REMOTES })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'toggle-admin' })
+  expect(nodesOf(await ui.drawn()).some(n => n.type === 'Text' && textOf(n) === "WireGuard semble inactif : les vaults distants ne sont pas disponibles.")).toBe(true)
   await ui.unmount()
 })
