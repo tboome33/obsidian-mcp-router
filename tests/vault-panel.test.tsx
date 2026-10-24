@@ -1695,7 +1695,7 @@ test('the band counts a name\'s mark where it is drawn: on the desktop, for a va
   // The terminal draws no mark: a remote vault's 🌐 and ✳ keys (5 cells), a
   // local one nothing. The desktop: notes (local) its Obsidian mark, 3 cells;
   // extra (remote) the planet and Claude's mark, 6.
-  expect([await firstShowing('extra', 'terminal'), await firstShowing('notes', 'terminal')]).toEqual([82, 90])
+  expect([await firstShowing('extra', 'terminal'), await firstShowing('notes', 'terminal')]).toEqual([81, 90])
   expect([await firstShowing('extra', 'desktop'), await firstShowing('notes', 'desktop')]).toEqual([83, 94])
 })
 
@@ -1725,8 +1725,8 @@ test('the band counts a wide character as two cells', async ($, on) => {
     }
   }
   expect(first).toBeGreaterThan(-1)
-  // "文書庫二三" is 10 cells, not 5: its entry less the counter it frees ("1▶", five cells with its gap).
-  expect(second - first).toBe(1 + 2 + 10 + 1 + 2 + 1 + 1 - 5)
+  // "文書庫二三" is 10 cells, not 5: its entry less the counter it frees ("1▶" as the terminal draws it, four cells with its gap).
+  expect(second - first).toBe(1 + 2 + 10 + 1 + 2 + 1 + 1 - 4)
 })
 
 test('a pane the app draws on its own is told to the band', async ($, on) => {
@@ -3252,12 +3252,12 @@ test('the wide menu draws its keys as tabs on a shelf: round frames cut short of
       const tab = tabOf(tree, `${prefix}navtab-${id}`) as Drawn & { children?: Drawn[] }
       const isOpen = id === inSight
       // A cut: two rows of the frame for a closed tab, three for the open one.
-      expect(tab?.props).toMatchObject({ height: isOpen ? 3 : 2, overflow: 'hidden', flexShrink: 0 })
+      expect(tab?.props).toMatchObject({ height: isOpen ? 3 : 2, overflow: 'hidden', flexShrink: 0, flexDirection: 'column' })
       // A round frame, dim unless in sight, opaque when in sight, the key then a row of blanks
       // as wide as the terminal draws the key, a padding row under them: its bottom edge well
       // past the cut on every surface.
       const frame = (tab.children ?? [])[0] as Drawn & { children?: Drawn[] }
-      expect(frame?.props).toMatchObject({ borderStyle: 'round', borderDimColor: !isOpen, flexDirection: 'column', paddingBottom: 1 })
+      expect(frame?.props).toMatchObject({ borderStyle: 'round', borderDimColor: !isOpen, flexDirection: 'column', paddingBottom: 1, flexShrink: 0, minHeight: 5 })
       expect(frame?.props?.backgroundColor).toBe(isOpen ? 'inverseText' : undefined)
       const parts = (frame.children ?? []).filter((c): c is Drawn => !!c && typeof c === 'object')
       expect(parts.map(c => c.type)).toEqual(['Button', 'Text'])
@@ -3373,7 +3373,7 @@ test('the band\'s page keys are black arrows with the count inside: "◀N" befor
   const more = mark(first, 'band-more')
   expect(more.svg?.props).toMatchObject({ alt: `${hidden}▶`, width: 18 + 7 * String(hidden).length, height: 16 })
   const source = String(more.svg?.props?.source)
-  expect(source).toContain('fill="#1f1f1f"')
+  expect(source).toContain('fill="#1f1f1f" stroke="#ffffff"')
   expect(source).toMatch(new RegExp(`>${hidden}</text>`))
   expect(source).toContain('fill="#ffffff"')
   // Pointing right: the shape ends on a point at the right edge, the left edge straight.
@@ -3403,4 +3403,20 @@ test('the band\'s page keys are black arrows with the count inside: "◀N" befor
   const backKey = nodesOf(await term.drawn()).find(n => keyOf(n) === 'band-back')
   expect(backKey?.props?.label).toMatch(/^◀\d+$/)
   await term.unmount()
+  // The terminal counts a key as its text and a gap, a cell less than the mark: the first
+  // secondary shows one column sooner there than on the desktop (whose mark takes a cell more).
+  const firstAt = async (surface: 'terminal' | 'desktop') => {
+    for (let columns = 40; columns < 160; columns += 1) {
+      const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: columns }, surface })
+      const rows = nodesOf(await ui.drawn()).filter(n => /^band-row-/.test(keyOf(n) ?? '')).length
+      await ui.unmount()
+      if (rows > 0) {
+        return columns
+      }
+    }
+    return -1
+  }
+  const [onDesktop, onTerminal] = [await firstAt('desktop'), await firstAt('terminal')]
+  expect(onTerminal).toBeGreaterThan(40)
+  expect(onDesktop - onTerminal).toBe(1)
 })

@@ -256,11 +256,12 @@ function moreText(hidden: number) {
 function backText(before: number) {
   return before > 0 ? `◀${before}` : ''
 }
-// The cells a page key takes, with its gap, as the wider surface draws it:
-// the pentagon is 18 + 7 px a digit, a cell being 7 px (a 14 px mark counts
-// 2 cells and a gap), so 3 cells and one a digit, and the gap.
-function pageKeyCells(count: number) {
-  return 4 + String(count).length
+// The cells a page key takes, with its gap. Drawn as a mark: the pentagon is
+// 18 + 7 px a digit, a cell being 7 px (a 14 px mark counts 2 cells and a
+// gap), so 3 cells and one a digit, and the gap. Drawn as its text ("◀N",
+// "N▶"): the arrow, the digits and the gap.
+function pageKeyCells(count: number, asMark: boolean) {
+  return (asMark ? 4 : 3) + String(count).length
 }
 function pageKeyWidth(count: number) {
   return 18 + 7 * String(count).length
@@ -270,7 +271,8 @@ function pageKeyMark(direction: 'back' | 'more', count: number) {
   const shape = direction === 'back' ? `M7 0H${w}V16H7L0 8Z` : `M0 0H${w - 7}L${w} 8L${w - 7} 16H0Z`
   const x = direction === 'back' ? (w + 7) / 2 : (w - 7) / 2
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} 16"><path d="${shape}" fill="#1f1f1f"/><text x="${x}" y="8.5" font-family="system-ui, sans-serif" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle" dominant-baseline="central">${count}</text></svg>`
+  // A thin light outline, so the shape stands out on a dark ground too.
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} 16"><path d="${shape}" fill="#1f1f1f" stroke="#ffffff" stroke-width="0.75"/><text x="${x}" y="8.5" font-family="system-ui, sans-serif" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle" dominant-baseline="central">${count}</text></svg>`
 }
 // The secondaries the band's line shows from `start` on, in the binding's
 // order, each as its name, its marks, its badge and its ▶, a "·" between two
@@ -278,13 +280,13 @@ function pageKeyMark(direction: 'back' | 'more', count: number) {
 // width either way). `marks[i]` (and `primaryMark`): the cells that name's
 // marks take beside it. Past the first page the line starts with "◀N" (the
 // key and its gap); what does not fit ends it as "N▶".
-function bandFit(primary: string | null, secondaries: string[], columns: number, paused: boolean[] = [], marks: number[] = [], primaryMark = 0, start = 0) {
+function bandFit(primary: string | null, secondaries: string[], columns: number, paused: boolean[] = [], marks: number[] = [], primaryMark = 0, start = 0, keysAsMarks = false) {
   void paused
   const toggle = 2 + Math.max(cells(t('band.show')), cells(t('band.hide'))) + 4
   // "Principal :", a gap, "● " and the name with its marks; two gaps and
   // "Secondaires :"; the pane's toggle at the right.
   const base =
-    cells(t('band.primary')) + 1 + 2 + primaryMark + cells(primary ?? t('band.none')) + 1 + 1 + 1 + cells(t('band.secondaries')) + toggle + (start > 0 ? pageKeyCells(start) : 0)
+    cells(t('band.primary')) + 1 + 2 + primaryMark + cells(primary ?? t('band.none')) + 1 + 1 + 1 + cells(t('band.secondaries')) + toggle + (start > 0 ? pageKeyCells(start, keysAsMarks) : 0)
   const rest = secondaries.slice(start)
   // A gap, "· " after the first, the marks and the name, a gap and its badge,
   // a gap and its control (▶, dimmed while paused).
@@ -294,7 +296,7 @@ function bandFit(primary: string | null, secondaries: string[], columns: number,
   // with nothing on it would be a page "N▶" leads nowhere from.
   for (let shown = rest.length; shown > 0; shown -= 1) {
     const hidden = rest.length - shown
-    const room = hidden > 0 ? pageKeyCells(hidden) : 0
+    const room = hidden > 0 ? pageKeyCells(hidden, keysAsMarks) : 0
     const used = base + widths.slice(0, shown).reduce((a, b) => a + b, 0) + room
     if (used <= columns) {
       return { shown, hidden: rest.length - shown }
@@ -307,11 +309,11 @@ function bandFit(primary: string | null, secondaries: string[], columns: number,
 // Where each page of the band's line starts: the first at 0, each next where
 // the one before stopped. A line too short for even one secondary has one
 // page, which shows none and counts them all.
-function bandPages(primary: string | null, secondaries: string[], columns: number, paused: boolean[], marks: number[], primaryMark: number) {
+function bandPages(primary: string | null, secondaries: string[], columns: number, paused: boolean[], marks: number[], primaryMark: number, keysAsMarks = false) {
   const starts = [0]
   for (;;) {
     const start = starts[starts.length - 1] ?? 0
-    const { shown } = bandFit(primary, secondaries, columns, paused, marks, primaryMark, start)
+    const { shown } = bandFit(primary, secondaries, columns, paused, marks, primaryMark, start, keysAsMarks)
     if (shown === 0 || start + shown >= secondaries.length) {
       return starts
     }
@@ -2433,13 +2435,17 @@ export const register: Register = on => {
     const menuTab = (prefix: string, id: PaneView, label: string) => {
       const isOpen = id === view
       return (
-        <Box key={`${prefix}navtab-${id}`} height={isOpen ? 3 : 2} overflow="hidden" flexShrink={0}>
+        // A column that neither shrinks nor stretches its frame: the frame
+        // keeps its own height (five rows at least) and the cut is a cut.
+        <Box key={`${prefix}navtab-${id}`} height={isOpen ? 3 : 2} overflow="hidden" flexShrink={0} flexDirection="column">
           <Box
             borderStyle="round"
             borderDimColor={!isOpen}
             backgroundColor={isOpen ? 'inverseText' : undefined}
             flexDirection="column"
             paddingBottom={1}
+            flexShrink={0}
+            minHeight={5}
           >
             {menuItem(prefix, id, label)}
             <Text>{' '.repeat(cells(label) + 4)}</Text>
@@ -3858,6 +3864,7 @@ export const register: Register = on => {
       entries.map(entry => entry.isPaused),
       entries.map(entry => markCells(entry.row)),
       snap.primary ? markCells(snap.primary) : 0,
+      !!BandSvg,
     )
     // The page shown: the one kept, within the pages the width now allows.
     const pageAt = Math.min(Math.max(0, page), pages.length - 1)
@@ -3870,6 +3877,7 @@ export const register: Register = on => {
       entries.map(entry => markCells(entry.row)),
       snap.primary ? markCells(snap.primary) : 0,
       start,
+      !!BandSvg,
     )
     const more = moreText(fit.hidden)
     // The band's width and what fitted, in the trace (see `traceScroll`): what
