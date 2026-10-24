@@ -2363,6 +2363,44 @@ export const register: Register = on => {
       ) : (
         <Button key={`${prefix}nav-${id}`} label={label} plain dimColor onPress={() => void showView($, id)} />
       )
+    // A key of the wide menu drawn as a tab on a shelf: a round frame round
+    // the key, whose bottom row (its "╰──╯") is painted over with the two
+    // sides going on down, so the frame has rounded corners at the top and
+    // meets the rule under the menu square. The Box API has one border style
+    // for the four sides and no corner of its own, hence the cover: a Box
+    // laid absolute on the frame's bottom row, the ground's colour, a "│" at
+    // each end. The frame sizes itself to the key, so the cover fits it on
+    // every surface without a cell being counted. The tab in sight is open
+    // onto the page: a second cover, one row lower, hides the rule over the
+    // tab's width and turns it up at each end ("╯" and "╰"), so the tab and
+    // the page below are one. The others stay closed by the rule under them.
+    // The rule is drawn first and the tabs after it, so the covers paint over
+    // the rule (what comes later in the tree paints over what came before).
+    const tabEnds = (left: string, right: string, dim: boolean, bottom: number) => (
+      <Box
+        position="absolute"
+        bottom={bottom}
+        left={-1}
+        right={-1}
+        height={1}
+        flexDirection="row"
+        justifyContent="space-between"
+        backgroundColor="inverseText"
+      >
+        <Text dimColor={dim}>{left}</Text>
+        <Text dimColor={dim}>{right}</Text>
+      </Box>
+    )
+    const menuTab = (prefix: string, id: PaneView, label: string) => {
+      const isOpen = id === view
+      return (
+        <Box key={`${prefix}navtab-${id}`} borderStyle="round" borderDimColor={!isOpen} flexShrink={0}>
+          {menuItem(prefix, id, label)}
+          {tabEnds('│', '│', !isOpen, -1)}
+          {isOpen && tabEnds('╯', '╰', true, -2)}
+        </Box>
+      )
+    }
     // A mark that is a control: a Button holds text only and a mark is no
     // button, so the mark is drawn and a blank Button laid over it, the one
     // the click lands on; a surface with no SVG has a glyph key instead.
@@ -2391,9 +2429,10 @@ export const register: Register = on => {
     // the repository at its right. On a pane too narrow for the three on one
     // line, they fold into "☰" and the view in sight (a press unfolds them one
     // under the other), with only the mark and the repository beside it.
-    // Counted as the terminal draws them: each label in "[ ]" (4 cells), 2-cell
-    // gaps, the mark (3) and what stands at the right. Nothing to add before
-    // the router is read: no "+ Ajouter un vault" then.
+    // Counted as the terminal draws them: each label in "[ ]" (4 cells) in
+    // its tab's frame (2), 2-cell gaps, the mark (3) and what stands at the
+    // right. Nothing to add before the router is read: no "+ Ajouter un
+    // vault" then.
     const menuLabels: [PaneView, string][] = [
       ['vaults', t('nav.vaults')],
       ...(snap ? [['add', t('add.open')] as [PaneView, string]] : []),
@@ -2403,7 +2442,7 @@ export const register: Register = on => {
     const version = upd?.installed ? `v${upd.installed}` : ''
     const endCells =
       (version ? cells(version) + 2 : 0) + (upd?.isAvailable ? cells(t('update.badge')) + 2 : 0) + (Mark ? 3 : cells(t('footer.github')) + 1)
-    const isBurger = menuLabels.reduce((sum, [, label]) => sum + cells(label) + 4 + 2, 0) + (Mark ? 3 : 0) + endCells > menuColumns
+    const isBurger = menuLabels.reduce((sum, [, label]) => sum + cells(label) + 4 + 2 + 2, 0) + (Mark ? 3 : 0) + endCells > menuColumns
     const rule = (
       <Text dimColor wrap="truncate-end">
         {'─'.repeat(Math.max(1, menuColumns))}
@@ -2448,15 +2487,19 @@ export const register: Register = on => {
           {rule}
         </Box>
       ) : (
-        <Box key={`${prefix}nav`} flexDirection="column">
+        // The rule sits on the column's last row (the padding), drawn before
+        // the tabs so the tab in sight paints its opening over it.
+        <Box key={`${prefix}nav`} flexDirection="column" paddingBottom={1}>
+          <Box key={`${prefix}nav-rule`} position="absolute" bottom={0} left={0} right={0} height={1}>
+            {rule}
+          </Box>
           <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={2}>
             <Box flexDirection="row" gap={2} alignItems="center">
               {brand}
-              {menuLabels.map(([id, label]) => menuItem(prefix, id, label))}
+              {menuLabels.map(([id, label]) => menuTab(prefix, id, label))}
             </Box>
             {menuEnd(prefix)}
           </Box>
-          {rule}
         </Box>
       )
     // What each mark does, under the menu: Obsidian's, Claude's, the planet —
