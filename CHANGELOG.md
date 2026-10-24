@@ -32,6 +32,18 @@ workspace at a time.
   aside so it never runs twice, and the console says so (`setup-vault.mjs --uninstall-hooks`
   removes those entries).
 
+## [0.115.1] — 2026-10-24 — a secondary's tile centred, a rule between its halves
+
+Asked from two screenshots of a tile (v0.115.0, the user's mockup beside it):
+
+- **The tile's two halves at mid-height**, with a line of air above and below: at the left
+  the ▶ Actif / ❚❚ Pause switch over "Dernière mise à jour", centred in the room the rights
+  leave; a dim vertical rule between, as tall as the framed rights; the rights framed at the
+  right, a cell from the edge. Narrower, the rights (their rule with them) wrap under the
+  state.
+- Adversarial review by Codex: three findings fixed (keys a vault name could forge, the rights
+  group unable to shrink, a test that pinned too little). Tests: `tests/vault-panel.test.tsx` 118.
+
 ## [0.115.0] — 2026-10-24 — vault activity, the ways to open a vault, tiles as the mockup
 
 Asked after v0.114.1 (the planet no longer opened anything):

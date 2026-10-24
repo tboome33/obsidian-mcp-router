@@ -3412,6 +3412,20 @@ export const register: Register = on => {
         </Box>
       </Box>
     )
+    // A vertical rule of `rows` cells, dim: the parting between a tile's state
+    // and its rights (the desktop draws no border on one side only).
+    // Keys: one word before the name, no word a prefix of another's ("half",
+    // "aside", "rule", "rulecell-N"), so that no vault's name can forge a
+    // sibling's key.
+    const divider = (key: string, rows: number) => (
+      <Box key={`rule-${key}`} flexDirection="column" flexShrink={0}>
+        {Array.from({ length: rows }, (_, i) => (
+          <Text key={`rulecell-${i}-${key}`} dimColor>
+            │
+          </Text>
+        ))}
+      </Box>
+    )
     // Its write tier as three radio buttons under a title, the one in force
     // marked ◉ and lit, the others ○ and dim; a press sets it.
     const tierMenu = (s: Secondary) => (
@@ -3462,20 +3476,37 @@ export const register: Register = on => {
           isTurned(s) ? (
             recentFiles(s)
           ) : (
-            <Box key={`front-${s.name}`} flexDirection="row" flexWrap="wrap" gap={2} alignItems="flex-start" flexGrow={1}>
-              <Box flexDirection="column" gap={1} alignItems="center">
+            // The user's mockup: at the left, its state over its last update,
+            // centred in the room the rights leave; a rule between; the rights
+            // framed at the right. Both halves sit at mid-height, with a line
+            // of air above and below. Narrower, the rights (their rule with
+            // them) wrap under the state.
+            <Box
+              key={`front-${s.name}`}
+              flexDirection="row"
+              flexWrap="wrap"
+              gap={2}
+              alignItems="center"
+              flexGrow={1}
+              paddingY={1}
+              paddingRight={1}
+            >
+              <Box key={`half-${s.name}`} flexDirection="column" gap={1} alignItems="center" flexGrow={1}>
                 {stateSwitch(s, isPaused)}
                 {lastUpdate(s)}
               </Box>
-              <Box
-                key={`rights-${s.name}`}
-                flexDirection="column"
-                borderStyle="round"
-                borderColor="success"
-                borderDimColor
-                paddingX={1}
-              >
-                {tierMenu(s)}
+              <Box key={`aside-${s.name}`} flexDirection="row" gap={2} alignItems="center" flexShrink={1}>
+                {divider(s.name, MODES.length + 3)}
+                <Box
+                  key={`rights-${s.name}`}
+                  flexDirection="column"
+                  borderStyle="round"
+                  borderColor="success"
+                  borderDimColor
+                  paddingX={1}
+                >
+                  {tierMenu(s)}
+                </Box>
               </Box>
             </Box>
           ),
