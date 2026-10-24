@@ -128,6 +128,9 @@ declare module 'claude-code' {
       language: string
       /** The administration console is unfolded. */
       showAdmin: boolean
+      /** The administration's section unfolded (`general`, `open`, `create`,
+       * `wireguard`, `register`, `unregister`), or null: all folded. */
+      adminSection: string | null
       navOpen: boolean
       flipped: string[]
       openers: { obsidian: boolean; browser: boolean; claude: boolean }
