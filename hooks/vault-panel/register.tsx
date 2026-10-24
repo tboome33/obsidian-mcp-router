@@ -3247,13 +3247,10 @@ export const register: Register = on => {
       return (
         <Box key={`${key}-box`} flexDirection="row" gap={1} alignItems="center">
           {BandSvg && <BandSvg source={target === 'browser' ? GLOBE_MARK : OBSIDIAN_MARK} alt="" width={12} height={12} />}
-          {/* The label names the control for a screen reader; the name is what shows. */}
-          <Button
-            key={key}
-            label={t(target === 'browser' ? 'band.openBrowser' : 'band.openObsidian', { name: row.name })}
-            plain
-            onPress={() => void openVault($, row)}
-          >
+          {/* No label: the desktop draws a Button's label in place of its
+              children, and a sentence pushed the band's names off its line
+              (seen on screen in v0.110.1). The name is the control's text. */}
+          <Button key={key} plain onPress={() => void openVault($, row)}>
             <Text dimColor={isDim} wrap="truncate-end">
               {row.name}
             </Text>
@@ -3273,25 +3270,11 @@ export const register: Register = on => {
     const control = (row: Secondary, isPaused: boolean) =>
       isPaused ? (
         <Box key={`band-state-${row.name}`} backgroundColor="diffRemovedDimmed">
-          <Button
-            key={`band-resume-${row.name}`}
-            label={t('band.resumeOne', { name: row.name })}
-            plain
-            onPress={() => void setPaused($, row, false)}
-          >
-            ❚❚
-          </Button>
+          <Button key={`band-resume-${row.name}`} label="❚❚" plain onPress={() => void setPaused($, row, false)} />
         </Box>
       ) : (
         <Box key={`band-state-${row.name}`} backgroundColor="diffAddedDimmed">
-          <Button
-            key={`band-pause-${row.name}`}
-            label={t('band.pauseOne', { name: row.name })}
-            plain
-            onPress={() => void setPaused($, row, true)}
-          >
-            ▶
-          </Button>
+          <Button key={`band-pause-${row.name}`} label="▶" plain onPress={() => void setPaused($, row, true)} />
         </Box>
       )
     const caption = (text: string) => (
