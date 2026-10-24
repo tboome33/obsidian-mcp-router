@@ -1015,9 +1015,8 @@ test('a remote vault with a web UI, no view agent: 🌐 and 🪟 open its own ad
   await openAdd(ui)
   await ui.press({ key: 'tab-distants' })
   await ui.press({ key: 'web-extra' })
-  // The planet: Chrome, through Claude in Chrome, in a tab of its own; nothing launched.
-  expect(calls.find(c => c.tool === 'navigate')?.args).toEqual({ url: 'https://10.8.0.1:3002/', tabId: 123 })
-  expect(launched).toEqual([])
+  // The planet: the default browser.
+  expect(launched).toEqual([['rundll32', 'url.dll,FileProtocolHandler', 'https://10.8.0.1:3002/']])
   await ui.press({ key: 'ui-extra' })
   expect(calls.find(c => c.tool === 'preview_start')?.args).toEqual({ url: 'https://10.8.0.1:3002/' })
   await ui.unmount()
@@ -1041,21 +1040,23 @@ test('with a view agent, 🌐 and 🪟 go through its link to a note of the vaul
   await ui.press({ key: 'tab-distants' })
   await ui.press({ key: 'web-extra' })
   expect(calls.find(c => c.tool === 'get_view_link')?.args).toEqual({ vault: 'extra', note: 'wiki/index.md' })
-  expect(calls.find(c => c.tool === 'navigate')?.args).toEqual({ url: GO, tabId: 123 })
-  expect(launched).toEqual([])
+  expect(launched).toEqual([['rundll32', 'url.dll,FileProtocolHandler', GO]])
   await ui.press({ key: 'ui-extra' })
   expect(calls.find(c => c.tool === 'preview_start')?.args).toEqual({ url: GO })
   await ui.unmount()
 })
 
-test('a 🌐 Chrome refuses says so', async ($, on) => {
-  wire(on, { list: LIST, refuse: 'navigate', refuseText: 'no chrome window', env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+test('a 🌐 launch that exits non-zero says so', async ($, on) => {
+  wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  on('process.run', () => ({
+    value: { exitCode: 1, stdout: '', stderr: 'no browser', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await openAdd(ui)
   await ui.press({ key: 'tab-distants' })
   await ui.press({ key: 'web-extra' })
-  expect(await ui.find({ type: 'Text', text: /Chrome n'a pas pu ouvrir la page : no chrome window/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Navigateur : no browser/ })).toBeTruthy()
   await ui.unmount()
 })
 
@@ -2298,7 +2299,7 @@ test('conventions that cannot be installed yet are kept, with a retry', async ($
 test("a name in the band opens its vault: a remote one's web UI in the browser", async ($, on) => {
   const withExtra = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['extra'] } }
   const launched: (readonly string[])[] = []
-  const chrome = wire(on, { list: withExtra, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  wire(on, { list: withExtra, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
   on('process.run', (_, e) => {
     if (e.argv[0] !== 'powershell') {
       launched.push(e.argv)
@@ -2309,10 +2310,10 @@ test("a name in the band opens its vault: a remote one's web UI in the browser",
   engineBand(on)
   await begin($)
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  // The planet after its name: Chrome, through Claude in Chrome. The name itself opens nothing.
+  // The planet after its name: the default browser. The name itself opens nothing.
   expect(await band.find({ type: 'Button', key: 'band-open-extra' })).toBeFalsy()
   await band.press({ key: 'band-web-extra' })
-  expect(chrome.find(c => c.tool === 'navigate')?.args).toEqual({ url: 'https://10.8.0.1:3002/', tabId: 123 })
+  expect(launched).toContainEqual(['rundll32', 'url.dll,FileProtocolHandler', 'https://10.8.0.1:3002/'])
   await band.unmount()
 })
 
@@ -2365,7 +2366,7 @@ test("a paused remote vault, which the router no longer lists, still opens from 
     disabled: [{ name: 'extra', type: 'remote', awaitingDeclaration: false }],
     configPath: 'C:\\cfg\\config.json',
   }
-  const chrome = wire(on, { list: paused, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  wire(on, { list: paused, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
   on('fs.read', (_, e) => {
     if (e.path === 'C:\\cfg\\config.json') {
       return { value: JSON.stringify({ remoteVaults: [{ name: 'extra', baseUrl: 'http://10.8.0.1:27181', description: 'Conteneur (UI :3002), fichiers : x' }] }) }
@@ -2384,7 +2385,7 @@ test("a paused remote vault, which the router no longer lists, still opens from 
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
   // On the band's line, where a paused vault is named too: its planet.
   await band.press({ key: 'band-web-extra' })
-  expect(chrome.find(c => c.tool === 'navigate')?.args).toEqual({ url: 'https://10.8.0.1:3002/', tabId: 123 })
+  expect(launched).toContainEqual(['rundll32', 'url.dll,FileProtocolHandler', 'https://10.8.0.1:3002/'])
   await band.unmount()
 })
 
@@ -2870,14 +2871,14 @@ test('a pane too narrow for the menu folds it into "☰" and the view in sight; 
   await wide.unmount()
 })
 
-test('under the menu, a legend says what each mark does; the planet only while Claude in Chrome answers', async ($, on) => {
+test('under the menu, a legend says what each mark does', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const nodes = nodesOf(await ui.drawn())
   const legend = nodes.find(n => keyOf(n) === 'legend')
   const texts = nodesOf(legend as never).filter(n => n.type === 'Text').map(textOf)
-  expect(texts).toEqual(expect.arrayContaining(['Local : ouvre dans Obsidian', 'Distant : ouvre dans le navigateur interne', 'Distant : ouvre dans Chrome (mode debug)']))
+  expect(texts).toEqual(expect.arrayContaining(['Local : ouvre dans Obsidian', 'Distant : ouvre dans le navigateur interne', 'Distant : ouvre dans le navigateur par défaut']))
   expect(nodesOf(legend as never).filter(n => n.type === 'Svg').map(n => n.props?.alt)).toEqual(['Obsidian', 'Claude', 'Navigateur'])
   // The legend comes right under the menu.
   expect(nodes.findIndex(n => keyOf(n) === 'nav')).toBeLessThan(nodes.findIndex(n => keyOf(n) === 'legend'))
@@ -2889,18 +2890,33 @@ test('under the menu, a legend says what each mark does; the planet only while C
   await ui.unmount()
 })
 
-test('Claude in Chrome off: no planet, and the legend offers to turn it on from the console', async ($, on) => {
-  wire(on, { list: LIST, unreachable: 'tabs_context_mcp' })
+test('the console turns each way of opening a vault on or off: its mark, its legend and the band follow, kept for the next session', async ($, on) => {
+  const stored: Record<string, unknown> = {}
+  on('store.get', (_, e) => ({ value: stored[e.key] }))
+  on('store.set', (_, e) => {
+    stored[e.key] = e.value
+
+    return { value: undefined }
+  })
+  const list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'extra'] } }
+  wire(on, { list })
+  engineBand(on)
   await begin($)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /^Chrome : Claude in Chrome n'est pas activé$/ })).toBeTruthy()
-  await openAdd(ui)
-  await ui.press({ key: 'tab-distants' })
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  await ui.press({ key: 'nav-admin' })
+  const card = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'admin-open')
+  expect(['obsidian', 'browser', 'claude'].every(way => nodesOf(card as never).some(n => keyOf(n) === `open-${way}-on`))).toBe(true)
+  // The default browser off: no planet in the tiles, the legend or the band.
+  await ui.press({ key: 'open-browser-off' })
+  expect(stored.openers).toEqual({ obsidian: true, browser: false, claude: true })
+  await ui.press({ key: 'nav-vaults' })
   expect(await ui.find({ type: 'Button', key: 'web-extra' })).toBeFalsy()
   expect(await ui.find({ type: 'Button', key: 'ui-extra' })).toBeTruthy()
-  await ui.press({ key: 'legend-chrome-enable' })
-  expect(await ui.find({ key: 'admin-chrome' })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /^Pas activé\./ })).toBeTruthy()
+  expect(await ui.find({ key: 'legend-browser' })).toBeFalsy()
+  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 200 }, surface: 'desktop' })
+  expect(await band.find({ type: 'Button', key: 'band-web-extra' })).toBeFalsy()
+  expect(await band.find({ type: 'Button', key: 'band-ui-extra' })).toBeTruthy()
+  await band.unmount()
   await ui.unmount()
 })
 
@@ -2917,58 +2933,7 @@ test('folded into "☰", the menu keeps the router mark at the left and GitHub a
   await ui.unmount()
 })
 
-test('a tab Claude in Chrome does not create opens nothing: no navigate, the refusal said', async ($, on) => {
-  const calls = wire(on, { list: LIST, refuse: 'tabs_create_mcp', refuseText: 'no Chrome window' })
-  await begin($)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdd(ui)
-  await ui.press({ key: 'tab-distants' })
-  await ui.press({ key: 'web-extra' })
-  expect(calls.some(c => c.tool === 'navigate')).toBe(false)
-  expect(await ui.find({ type: 'Text', text: /Chrome n'a pas pu ouvrir la page : no Chrome window/ })).toBeTruthy()
-  await ui.unmount()
-})
-
-test('Claude in Chrome: the empty tab of a group it just made is used; a number that is no tab id is never taken', async ($, on) => {
-  // A fresh group with its one empty tab: navigated there, no tab created.
-  const fresh = wire(on, {
-    list: LIST,
-    answers: { tabs_context_mcp: { availableTabs: [{ tabId: 77, title: 'New Tab', url: 'chrome://newtab/' }], tabGroupId: 1 } },
-  })
-  await begin($)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdd(ui)
-  await ui.press({ key: 'tab-distants' })
-  await ui.press({ key: 'web-extra' })
-  expect(fresh.some(c => c.tool === 'tabs_create_mcp')).toBe(false)
-  expect(fresh.find(c => c.tool === 'navigate')?.args).toEqual({ url: 'https://10.8.0.1:3002/', tabId: 77 })
-  await ui.unmount()
-})
-
-test('Claude in Chrome: a created tab answered without a "Tab ID" opens nothing', async ($, on) => {
-  const calls = wire(on, {
-    list: LIST,
-    answers: { tabs_context_mcp: { availableTabs: [{ tabId: 5, url: 'https://example.org/' }] }, tabs_create_mcp: 'Created tab in window 7' },
-  })
-  await begin($)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdd(ui)
-  await ui.press({ key: 'tab-distants' })
-  await ui.press({ key: 'web-extra' })
-  expect(calls.some(c => c.tool === 'navigate')).toBe(false)
-  expect(await ui.find({ type: 'Text', text: /Claude in Chrome n'a pas donné d'onglet/ })).toBeTruthy()
-  await ui.unmount()
-})
-
-test('Claude in Chrome refusing as disconnected counts as off, even when it speaks of tabs', async ($, on) => {
-  wire(on, { list: LIST, refuse: 'tabs_context_mcp', refuseText: 'Cannot list tabs: extension disconnected' })
-  await begin($)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /^Chrome : Claude in Chrome n'est pas activé$/ })).toBeTruthy()
-  await ui.unmount()
-})
-
-test("a tile's marks sit in its head, right of its name; the state keys level with the last radio", async ($, on) => {
+test("a tile's marks sit in its head, right of its name; its state at the left, its rights framed at the right", async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
@@ -2980,7 +2945,88 @@ test("a tile's marks sit in its head, right of its name; the state keys level wi
   const at = (key: string) => head.findIndex(n => keyOf(n) === key)
   expect(head.findIndex(n => n.type === 'Text' && textOf(n) === 'extra')).toBeLessThan(at('web-extra'))
   expect(at('web-extra')).toBeLessThan(at('ui-extra'))
-  // A secondary: ▶ Actif / ❚❚ Pause at the bottom of the line its radios stand on.
-  expect(nodes.find(n => keyOf(n) === 'state-docs')?.props?.alignSelf).toBe('flex-end')
+  // A secondary: its state and its last update at the left, its rights framed at the right.
+  const front = nodes.find(n => keyOf(n) === 'front-docs')
+  expect(nodesOf(front as never).some(n => keyOf(n) === 'state-docs')).toBe(true)
+  expect(nodesOf(front as never).some(n => keyOf(n) === 'stamp-docs')).toBe(true)
+  const rights = nodes.find(n => keyOf(n) === 'rights-docs')
+  expect(rights?.props?.borderStyle).toBe('round')
+  expect(nodesOf(rights as never).some(n => keyOf(n) === 'mode-docs')).toBe(true)
+  await ui.unmount()
+})
+
+test('a tile says when its vault was last written through the router; its round key turns it over to its last files, each opening that note', async ($, on) => {
+  const launched: (readonly string[])[] = []
+  const list = {
+    ...LIST,
+    vaults: [...LIST.vaults.filter(v => v.name !== 'notes'), { name: 'notes', type: 'local', online: true, path: 'C:\VAULTS\Notes' }],
+    vaultActivity: {
+      docs: { lastWriteAt: '2026-10-24T20:21:00.000Z', recent: [{ path: 'wiki/a.md', at: '2026-10-24T20:21:00.000Z' }, { path: 'b.md', at: '2026-10-24T19:00:00.000Z' }] },
+      notes: { lastWriteAt: '2026-10-24T18:00:00.000Z', recent: [{ path: 'x y.md', at: '2026-10-24T18:00:00.000Z' }] },
+    },
+  }
+  const calls = wire(on, { list, answers: { get_view_link: { url: 'http://10.8.0.1:27200/go?v=docs&n=wiki%2Fa.md&s=sig' } }, env: { APPDATA: 'C:\Users\me\AppData\Roaming' } })
+  on('process.run', (_, e) => {
+    if (e.argv[0] !== 'powershell') {
+      launched.push(e.argv)
+    }
+
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  await begin($)
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  await openClosed(ui)
+  const stamp = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'stamp-docs') as never)
+  expect(stamp.some(n => n.type === 'Text' && textOf(n) === 'Dernière mise à jour')).toBe(true)
+  expect(stamp.some(n => n.type === 'Text' && /^\d{2}\/\d{2}\/2026 {2}\d{2}:\d{2}$/.test(textOf(n)))).toBe(true)
+  // Turned over: the last files, newest first; a remote one's note through the view agent, in Claude's browser.
+  await ui.press({ key: 'flip-docs' })
+  const back = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'recent-docs') as never)
+  expect(back.filter(n => n.type === 'Button' && /^note-/.test(keyOf(n) ?? '')).map(n => n.props?.label)).toEqual(['wiki/a.md', 'b.md'])
+  expect(await ui.find({ key: 'front-docs' })).toBeFalsy()
+  await ui.press({ key: 'note-0-docs' })
+  expect(calls.find(c => c.tool === 'get_view_link')?.args).toEqual({ vault: 'docs', note: 'wiki/a.md' })
+  expect(calls.find(c => c.tool === 'preview_start')?.args).toEqual({ url: 'http://10.8.0.1:27200/go?v=docs&n=wiki%2Fa.md&s=sig' })
+  // The same key turns it back.
+  await ui.press({ key: 'flip-docs' })
+  expect(await ui.find({ key: 'front-docs' })).toBeTruthy()
+  // A local one's note: Obsidian at that file, the address handed over whole.
+  await ui.press({ key: 'flip-notes' })
+  await ui.press({ key: 'note-0-notes' })
+  expect(launched.at(-1)?.[0]).toBe('rundll32')
+  expect(launched.at(-1)?.[2]).toMatch(/^obsidian:\/\/open\?vault=.+&file=x%20y\.md$/)
+  await ui.unmount()
+})
+
+test('before its first write through the router, a tile says so and has no round key', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  const stamp = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'stamp-docs') as never)
+  expect(stamp.some(n => n.type === 'Text' && textOf(n) === 'aucune via le router')).toBe(true)
+  expect(await ui.find({ type: 'Button', key: 'flip-docs' })).toBeFalsy()
+  await ui.unmount()
+})
+
+test("a recent file the router gives no link to says so, opens nothing; with no way allowed, it is named, not linked", async ($, on) => {
+  const list = {
+    ...LIST,
+    vaultActivity: { docs: { lastWriteAt: '2026-10-24T20:21:00.000Z', recent: [{ path: 'a.md', at: '2026-10-24T20:21:00.000Z' }] } },
+  }
+  const calls = wire(on, { list, refuse: 'get_view_link', refuseText: 'no view agent' })
+  await begin($)
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  await ui.press({ key: 'flip-docs' })
+  await ui.press({ key: 'note-0-docs' })
+  expect(calls.some(c => c.tool === 'preview_start')).toBe(false)
+  expect(await ui.find({ type: 'Text', text: /^Pas de lien vers a\.md : no view agent$/ })).toBeTruthy()
+  // Both remote ways off: the file is named, with no key.
+  await ui.press({ key: 'nav-admin' })
+  await ui.press({ key: 'open-browser-off' })
+  await ui.press({ key: 'open-claude-off' })
+  await ui.press({ key: 'nav-vaults' })
+  expect(await ui.find({ type: 'Button', key: 'note-0-docs' })).toBeFalsy()
+  const back = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'recent-docs') as never)
+  expect(back.some(n => n.type === 'Text' && textOf(n) === 'a.md')).toBe(true)
   await ui.unmount()
 })

@@ -208,3 +208,24 @@ describe('listVaults — a paused secondary (v0.107.0)', () => {
     assert.deepEqual(out.workspaceBinding.alsoLocked, ['ref'], 'its tier is kept');
   });
 });
+
+describe('listVaults — vault activity in scope', () => {
+  test('only the vaults this session reaches or binds are handed out from the shared sidecar', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omr-lv-activity-'));
+    const configPath = path.join(dir, 'config.json');
+    fs.writeFileSync(path.join(dir, 'vault-activity.json'), JSON.stringify({
+      version: 1,
+      vaults: {
+        a: { lastWriteAt: '2026-10-24T10:00:00.000Z', recent: [{ path: 'x.md', at: '2026-10-24T10:00:00.000Z' }] },
+        paused: { lastWriteAt: '2026-10-24T09:00:00.000Z', recent: [] },
+        other: { lastWriteAt: '2026-10-24T08:00:00.000Z', recent: [{ path: 'secret.md', at: '2026-10-24T08:00:00.000Z' }] },
+      },
+    }));
+    const registry = { vaults: [vault('a')], skipped: [], configPath, workspaceBinding: { vault: 'a', also: ['paused'] } };
+    const out = await listVaults(registry);
+    assert.deepEqual(Object.keys(out.vaultActivity).sort(), ['a', 'paused']);
+  });
+});
