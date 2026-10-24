@@ -2537,17 +2537,23 @@ export const register: Register = on => {
     // Counted as the terminal draws them: each label in "[ ]" (4 cells) in
     // its tab's frame (2), 2-cell gaps, the mark (3) and what stands at the
     // right. Nothing to add before the router is read: no "+ Ajouter un
-    // vault" then.
+    // vault" then — but its room, a version's (ten cells, or the version's
+    // own once read and longer) and the update badge's are counted from the
+    // first drawing, so the menu keeps its shape, for a given width and
+    // labels, when the router, the version and the update check answer: a
+    // menu drawn wide and then folded left the frame of its first tab behind
+    // on the terminal, whose painter does not clear a cell nothing draws on
+    // (seen on v0.116.1, a "╮" after "☰ Vaults").
     const menuLabels: [PaneView, string][] = [
       ['vaults', t('nav.vaults')],
       ...(snap ? [['add', t('add.open')] as [PaneView, string]] : []),
       ['admin', t('nav.admin')],
     ]
+    const foldLabels = [t('nav.vaults'), t('add.open'), t('nav.admin')]
     const menuColumns = e.props.bodyColumns ?? 60
     const version = upd?.installed ? `v${upd.installed}` : ''
-    const endCells =
-      (version ? cells(version) + 2 : 0) + (upd?.isAvailable ? cells(t('update.badge')) + 2 : 0) + (Mark ? 3 : cells(t('footer.github')) + 1)
-    const isBurger = menuLabels.reduce((sum, [, label]) => sum + cells(label) + 4 + 2 + 2, 0) + (Mark ? 3 : 0) + endCells > menuColumns
+    const endCells = Math.max(cells(version), 10) + 2 + cells(t('update.badge')) + 2 + (Mark ? 3 : cells(t('footer.github')) + 1)
+    const isBurger = foldLabels.reduce((sum, label) => sum + cells(label) + 4 + 2 + 2, 0) + (Mark ? 3 : 0) + endCells > menuColumns
     const rule = (
       <Text dimColor wrap="truncate-end">
         {'─'.repeat(Math.max(1, menuColumns))}
