@@ -2487,6 +2487,13 @@ test('adding: all, local or remote ones, a search, and A → Z or Z → A regard
   // An open local one can be looked at in Obsidian before it is added, "+ Ajouter" beside it.
   expect(await ui.find({ type: 'Button', key: 'obsidian-Zeta' })).toMatchObject({ props: { label: 'Local · Obsidian ↗' } })
   expect(await ui.find({ type: 'Button', key: 'add-Zeta' })).toMatchObject({ props: { label: '+ Ajouter', variant: 'secondary' } })
+  // "+ Ajouter" sits on the tile's last line, pushed to its right, under a spacer that takes the height left.
+  const tileNodes = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'av-Zeta') as never)
+  const foot = tileNodes.find(n => keyOf(n) === 'foot-av-Zeta')
+  expect(foot?.props?.justifyContent).toBe('flex-end')
+  expect(nodesOf(foot as never).some(n => keyOf(n) === 'add-Zeta')).toBe(true)
+  expect(tileNodes.find(n => keyOf(n) === 'spacer-av-Zeta')?.props?.flexGrow).toBe(1)
+  expect(nodesOf(tileNodes.find(n => keyOf(n) === 'av-where-Zeta') as never).some(n => keyOf(n) === 'add-Zeta')).toBe(false)
   // The tabs, the search and the order share one bar; "Fermer" folds the list back.
   const bar = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'add-bar')
   expect(bar?.props?.flexDirection).toBe('row')
