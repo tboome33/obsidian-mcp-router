@@ -1047,6 +1047,9 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
       // plugin hooks ran. Added here deliberately.
       'routerBuild',
       'sessionHooks',
+      // v0.115.0 — when each vault was last written through the router, and
+      // its last files, from the sidecar beside the config (vault panel tiles).
+      'vaultActivity',
       'vaults',
       // 2026-10-11 — whether this router instance can give READ LINKS for remote
       // vaults: the view agent's configuration and /health, and where to set it

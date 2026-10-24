@@ -25,12 +25,37 @@ workspace at a time.
   stdin and its exit code comes through (exit 2 still blocks).
 - `scripts/workspace-hooks.mjs status|set`: what the console runs.
 - **The console in four cards**: General (language, plugin version and update, WireGuard and
-  Chrome, which were cards of their own), Create an Obsidian vault, Register an existing vault (removing
+  the ways to open a vault, which were cards of their own), Create an Obsidian vault, Register an existing vault (removing
   one from the router now sits at its bottom), and the workspace's hooks.
 - With the plugin installed, a vault's bootstrap no longer wires hooks into
   `~/.claude/settings.json`. A hook still wired there keeps running everywhere: the gate steps
   aside so it never runs twice, and the console says so (`setup-vault.mjs --uninstall-hooks`
   removes those entries).
+
+## [0.115.0] — 2026-10-24 — vault activity, the ways to open a vault, tiles as the mockup
+
+Asked after v0.114.1 (the planet no longer opened anything):
+
+- **The router records each vault's activity**: after every note it writes (write_file,
+  append_to_file, patch_file, set/merge_frontmatter, move_file's destination,
+  execute_template, a bundle's steps that ran and did not end in a delete), the vault's last
+  write time and its last five files, in `vault-activity.json` beside `config.json` — not in
+  `config.json` itself, which is the user's, hand-edited, shared by every session and holds the
+  API keys. Read-modify-written under a lock of its own and atomically, merged by time, not
+  awaited by the write it follows. A call that changed nothing records nothing; an edit made in
+  Obsidian itself never reaches it. `list_vaults` hands it out as `vaultActivity`, for the
+  vaults this session reaches or binds only.
+- **The planet opens the default browser again**; Claude in Chrome is out.
+- **Three settings in the console**, each with its mark: open local vaults in Obsidian, remote
+  ones in the default browser, remote ones in Claude's browser — yes or no, kept for the next
+  sessions. A way turned off draws no mark (tiles, legend, band).
+- **Tiles as the mockup**: a secondary shows its ▶ Actif / ❚❚ Pause and "Dernière mise à jour"
+  at the left, its rights framed at the right. The round key turns a tile over to its last
+  files, each opening that note — in Obsidian at that file, or through the view agent's link
+  in Claude's browser or the default one; a note with no link says so.
+- Adversarial review by Codex, three passes: one P1 (the activity of every vault of the machine
+  was handed out) and twelve P2 fixed. Tests: `tests/vault-panel.test.tsx` 118,
+  `tests/vault-activity.test.mjs` 9.
 
 ## [0.114.1] — 2026-10-24 — the marks right of the vault's name
 

@@ -83,6 +83,9 @@ export type CreateForm = {
   bind: boolean
 }
 
+/** A vault's writes through the router: when, and its last files, newest first. */
+export type VaultActivity = { lastWriteAt?: string; recent?: { path: string; at: string }[] }
+
 export type Snapshot = {
   primary: VaultRow | null
   /** The binding restricts the session to the primary. */
@@ -101,6 +104,8 @@ export type Snapshot = {
   defaultRoot?: string | null
   /** The version the router of this session reports (list_vaults.routerBuild). */
   routerVersion?: string | null
+  /** When each vault was last written through the router, and its last files. */
+  activity?: Record<string, VaultActivity>
   /** The secondaries in the binding's own order, paused ones included. */
   order?: string[]
   fetchedAt: number
@@ -135,7 +140,8 @@ declare module 'claude-code' {
       /** The administration console is unfolded. */
       showAdmin: boolean
       navOpen: boolean
-      chrome: 'unknown' | 'on' | 'off'
+      flipped: string[]
+      openers: { obsidian: boolean; browser: boolean; claude: boolean }
       adminForm: AdminForm
       /** The vault whose removal waits for its confirming press. */
       confirmRemove: string | null
