@@ -35,6 +35,7 @@ import { classifyVaultReachability } from '../helpers/vault-reachability.mjs';
 import { portEntryOf } from '../helpers/port-registry.mjs';
 import { viewAgentStatus, probeViewAgentHealth, VIEW_AGENT_SETUP } from '../helpers/view-link.mjs';
 import { resolveInsecurePort } from '../helpers/click-to-open.mjs';
+import { readActivity } from '../helpers/vault-activity.mjs';
 
 /**
  * Can a session get a READ LINK for this vault from this router instance — said before it
@@ -176,6 +177,20 @@ export function buildDefaultVaultStatus(defaultVaultName, pingedResults) {
     openUri,
     path: defPath || null,
   };
+}
+
+// The vault activity this session may see: the vaults it reaches and the
+// ones its binding names (a paused secondary is bound, not reached).
+function activityInScope(registry, reached) {
+  const binding = registry.workspaceBinding;
+  const names = new Set([
+    ...(reached ?? []).map((v) => v.name),
+    ...(binding?.vault ? [binding.vault] : []),
+    ...(Array.isArray(binding?.also) ? binding.also : []),
+  ]);
+  const all = readActivity(registry.configPath);
+
+  return Object.fromEntries(Object.entries(all).filter(([name]) => names.has(name)));
 }
 
 export async function listVaults(registry, sharedConfig = null) {
@@ -606,6 +621,13 @@ export async function listVaults(registry, sharedConfig = null) {
     // /health, and a hint saying where to configure it when remote vaults exist without one.
     viewAgent: viewAgentReport(agent, health, results),
     configPath: registry.configPath,
+    // When each vault was last written THROUGH THIS ROUTER, and the last
+    // files it created or changed there (newest first, at most five), from
+    // the sidecar beside the config — `{}` before the first write. An edit
+    // made in Obsidian itself never reaches it. The sidecar is shared by every
+    // session of the machine: only the vaults this session reaches, or binds
+    // (a paused secondary included), are handed out.
+    vaultActivity: activityInScope(registry, results),
     vaults: results,
     disabled,
     // Port collisions + registry drift detected when the config was loaded
