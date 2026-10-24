@@ -1805,9 +1805,14 @@ test('OBSIDIAN_ROUTER_LANG=en draws the English file, French where it lacks a ke
   await pane.unmount()
 })
 
-const openAdmin = async (ui: Mounted) => {
-  if (!(await ui.find({ type: 'Button', key: 'admin-register-submit' }))) {
+// The console, unfolded on one of its sections: the console and the section
+// are session state, so each is opened only if it is not open already.
+const openAdmin = async (ui: Mounted, section = 'register') => {
+  if (!(await ui.find({ key: 'admin-general' }))) {
     await ui.press({ key: 'toggle-admin' })
+  }
+  if (!(await ui.find({ key: `admin-${section}-panel` }))) {
+    await ui.press({ key: `admin-sec-${section}` })
   }
 }
 
@@ -1817,7 +1822,7 @@ test('the console lists the language files and switches the language', async ($,
   engineBand(on)
   await begin($)
   const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdmin(pane)
+  await openAdmin(pane, 'general')
   const select = nodesOf(await pane.drawn()).find(n => n.type === 'Select' && keyOf(n) === 'admin-language-select')
   expect((select?.props?.options as { value: string; label: string }[] | undefined)?.map(o => o.label)).toEqual([
     'English',
@@ -1867,7 +1872,7 @@ test('WireGuard installed but off, remote vaults silent: the banner says so and 
   windowsWireguard(on, wg)
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdmin(ui)
+  await openAdmin(ui, 'wireguard')
   expect(await ui.find({ type: 'Text', text: /^installé, mais aucun tunnel actif/ })).toBeTruthy()
   // The banner is the vaults' own: back to them, it opens the client.
   await ui.press({ key: 'toggle-admin' })
@@ -1882,7 +1887,7 @@ test('WireGuard not installed: the console offers the client, the guide and the 
   windowsWireguard(on, wg)
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdmin(ui)
+  await openAdmin(ui, 'wireguard')
   expect(await ui.find({ type: 'Text', text: /^non installé/ })).toBeTruthy()
   await ui.press({ key: 'wg-install' })
   await ui.press({ key: 'wg-guide' })
@@ -1938,10 +1943,12 @@ test('a remote vault needs WireGuard on; with it, its web UI port goes into the 
   await ui.press({ key: 'admin-register-submit' })
   expect(calls.some(c => c.tool === 'register_remote_vault')).toBe(false)
   expect(await ui.find({ type: 'Text', text: /^Active WireGuard pour enregistrer un vault distant/ })).toBeTruthy()
-  // The tunnel comes up; checked again from the console.
+  // The tunnel comes up; checked again from the console's WireGuard section, then back to the form.
   wg.tunnels = ['wg0']
+  await openAdmin(ui, 'wireguard')
   await ui.press({ key: 'wg-check' })
   expect(await ui.find({ type: 'Text', text: /^actif \(wg0\)$/ })).toBeTruthy()
+  await openAdmin(ui, 'register')
   await ui.input({ key: 'admin-apiKey', text: 'KEY-IB', kind: 'change' })
   await ui.press({ key: 'admin-register-submit' })
   expect(calls.find(c => c.tool === 'register_remote_vault')?.args).toEqual({
@@ -1958,7 +1965,7 @@ test('removing a vault from the router: one menu, one button, a confirming secon
   const calls = wire(on, { list: LIST })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdmin(ui)
+  await openAdmin(ui, 'unregister')
   // Bound vaults cannot be removed: the menu lists only the registered, unbound ones.
   const menu = nodesOf(await ui.drawn()).find(n => n.type === 'Select' && keyOf(n) === 'admin-remove-select')
   const values = ((menu?.props?.options as { value: string }[] | undefined) ?? []).map(o => o.value)
@@ -2028,8 +2035,9 @@ test('a WireGuard read that fails is "unknown", and does not block a remote vaul
   }))
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdmin(ui)
+  await openAdmin(ui, 'wireguard')
   expect(await ui.find({ type: 'Text', text: /^état inconnu/ })).toBeTruthy()
+  await openAdmin(ui, 'register')
   await ui.press({ key: 'admin-kind-remote' })
   await ui.input({ key: 'admin-name', text: 'IB', kind: 'change' })
   await ui.input({ key: 'admin-port', text: '27186', kind: 'change' })
@@ -2701,19 +2709,108 @@ test('a remote vault that does not answer says so on its tile, with a retry that
   await ui.unmount()
 })
 
-test('the console holds the pane while open: its cards, wiki types and conventions counter; three cards to a line when wide', async ($, on) => {
+const ADMIN_SECTIONS = ['general', 'open', 'create', 'wireguard', 'register', 'unregister'] as const
+const ADMIN_TITLES = ['Général', 'Ouverture des vaults', 'Créer un vault Obsidian', 'WireGuard', 'Enregistrer un vault', 'Retirer un vault du router']
+
+// The accordion as drawn: each section's header in order, and which one is unfolded.
+const accordionOf = (tree: unknown) => {
+  const nodes = nodesOf(tree)
+  const headers = nodes.filter(n => n.type === 'Button' && String(keyOf(n)).startsWith('admin-sec-')).map(n => String(keyOf(n)).slice('admin-sec-'.length))
+  const open = ADMIN_SECTIONS.filter(name => nodes.some(n => keyOf(n) === `admin-${name}-panel`))
+
+  return { headers, open }
+}
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`the console is an accordion on the ${surface}: six headers in order, Général unfolded first, one section open at a time`, async ($, on) => {
+    wire(on, { list: LIST })
+    await begin($)
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'toggle-admin' })
+    expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
+    // Six headers, in order, each with its title; Général open, the others folded, their bodies not drawn.
+    const first = await ui.drawn()
+    expect(accordionOf(first)).toEqual({ headers: [...ADMIN_SECTIONS], open: ['general'] })
+    const nodes = nodesOf(first)
+    for (const [i, name] of ADMIN_SECTIONS.entries()) {
+      const header = nodes.find(n => n.type === 'Button' && keyOf(n) === `admin-sec-${name}`) as Drawn
+      expect(nodesOf(header as never).some(n => n.type === 'Text' && textOf(n) === ADMIN_TITLES[i])).toBe(true)
+      // The open header lit, the folded ones dim.
+      expect(header.props?.dimColor).toBe(name !== 'general')
+    }
+    expect(nodes.some(n => keyOf(n) === 'admin-language-select')).toBe(true)
+    expect(nodes.some(n => keyOf(n) === 'create-submit')).toBe(false)
+    expect(nodes.some(n => keyOf(n) === 'admin-register-submit')).toBe(false)
+    // The chevron, inside the header (a press on it folds too): pointing down on the open section, right on a folded one.
+    const chevrons = ADMIN_SECTIONS.map(name => {
+      const header = nodes.find(n => n.type === 'Button' && keyOf(n) === `admin-sec-${name}`) as Drawn
+      const parts = nodesOf(header as never).filter(n => n.type === 'Text').map(n => textOf(n).trim())
+
+      return parts.find(p => ['▸', '▾'].includes(p))
+    })
+    expect(chevrons).toEqual(['▾', '▸', '▸', '▸', '▸', '▸'])
+    // A press on another header unfolds it and folds Général; its body is indented, with air above and below.
+    await ui.press({ key: 'admin-sec-create' })
+    const second = await ui.drawn()
+    expect(accordionOf(second)).toEqual({ headers: [...ADMIN_SECTIONS], open: ['create'] })
+    const panel = nodesOf(second).find(n => keyOf(n) === 'admin-create-panel')
+    expect(panel?.props).toMatchObject({ paddingLeft: 2, paddingY: 1 })
+    expect(nodesOf(second).some(n => keyOf(n) === 'admin-language-select')).toBe(false)
+    // A second press on the open header folds it: none open.
+    await ui.press({ key: 'admin-sec-create' })
+    expect(accordionOf(await ui.drawn())).toEqual({ headers: [...ADMIN_SECTIONS], open: [] })
+    // The section kept across a redraw: the console folded and unfolded, the pane mounted again.
+    await ui.press({ key: 'admin-sec-unregister' })
+    await ui.press({ key: 'toggle-admin' })
+    expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeTruthy()
+    await ui.press({ key: 'toggle-admin' })
+    expect(accordionOf(await ui.drawn()).open).toEqual(['unregister'])
+    await ui.unmount()
+    const again = await $.ui.mount({ ...PANE, surface })
+    expect(accordionOf(await again.drawn()).open).toEqual(['unregister'])
+    await again.unmount()
+  })
+}
+
+test('a flow that leads to the console unfolds its section: no primary → Créer un vault; the update badge → Général', async ($, on) => {
+  const state = { list: { ...LIST, workspaceBinding: null } as unknown }
+  wire(on, state)
+  versions(on, '0.107.0', '0.108.0')
+  await begin($)
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  // Another section was left open earlier in the session.
+  await ui.press({ key: 'toggle-admin' })
+  await ui.press({ key: 'admin-sec-wireguard' })
+  await ui.press({ key: 'toggle-admin' })
+  await ui.press({ key: 'primary-setup' })
+  expect(accordionOf(await ui.drawn()).open).toEqual(['create'])
+  expect(await ui.find({ type: 'Button', key: 'create-submit' })).toBeTruthy()
+  await ui.press({ key: 'nav-vaults' })
+  await eventually(() => ui.find({ type: 'Button', key: 'update-badge' }))
+  await ui.press({ key: 'update-badge' })
+  expect(accordionOf(await ui.drawn()).open).toEqual(['general'])
+  expect(await ui.find({ type: 'Button', key: 'update-run' })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('the console holds the pane while open: its sections one under the other, the full width, a rule between two; wiki types and conventions counter', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 130 }, surface: 'desktop' })
   expect(await ui.find({ type: 'Button', key: 'toggle-admin' })).toMatchObject({ props: { label: '⚙ Administration ›', variant: 'secondary' } })
   await ui.press({ key: 'toggle-admin' })
-  // The vaults hidden, the five cards drawn, three to a line.
+  // The vaults hidden, the six sections drawn in one column, no frame, a rule under each.
   expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
   const nodes = nodesOf(await ui.drawn())
-  for (const key of ['admin-general', 'admin-create', 'admin-wireguard', 'admin-register', 'admin-unregister']) {
-    expect(nodes.find(n => keyOf(n) === key)?.props?.width).toBe(42)
-    expect(nodes.find(n => keyOf(n) === `${key}-card`)?.props?.borderStyle).toBe('bold')
+  expect(nodes.find(n => keyOf(n) === 'admin')?.props?.flexDirection).toBe('column')
+  for (const name of ADMIN_SECTIONS) {
+    expect(nodes.find(n => keyOf(n) === `admin-${name}`)?.props?.width).toBeUndefined()
+    expect(nodes.some(n => n.props?.borderStyle === 'bold')).toBe(false)
+    const rule = nodesOf(nodes.find(n => keyOf(n) === `admin-${name}-rule`) as never).find(n => n.type === 'Text')
+    expect(textOf(rule as Drawn)).toBe('─'.repeat(130))
+    expect(rule?.props?.dimColor).toBe(true)
   }
+  await ui.press({ key: 'admin-sec-create' })
   // The wiki type: the one in force framed and lit.
   await ui.press({ key: 'create-mode-research' })
   const after = nodesOf(await ui.drawn())
@@ -2934,6 +3031,7 @@ test('the console turns each way of opening a vault on or off: its mark, its leg
   await begin($)
   const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   await ui.press({ key: 'nav-admin' })
+  await ui.press({ key: 'admin-sec-open' })
   const card = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'admin-open')
   expect(['obsidian', 'browser', 'claude'].every(way => nodesOf(card as never).some(n => keyOf(n) === `open-${way}-on`))).toBe(true)
   // The default browser off: no planet in the tiles, the legend or the band.
@@ -3124,6 +3222,7 @@ test("a recent file the router gives no link to says so, opens nothing; with no 
   expect(await ui.find({ type: 'Text', text: /^Pas de lien vers a\.md : no view agent$/ })).toBeTruthy()
   // Both remote ways off: the file is named, with no key.
   await ui.press({ key: 'nav-admin' })
+  await ui.press({ key: 'admin-sec-open' })
   await ui.press({ key: 'open-browser-off' })
   await ui.press({ key: 'open-claude-off' })
   await ui.press({ key: 'nav-vaults' })
