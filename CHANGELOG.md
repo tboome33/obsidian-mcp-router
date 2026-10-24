@@ -10,6 +10,26 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.116.2] — 2026-10-25 — the menu keeps its shape while the router is read
+
+Seen on the terminal with v0.116.1 (`claude /vaults` in a 49-column pane): the menu was
+drawn wide before the router answered (two keys, no version), then folded into "☰" once
+"+ Ajouter un vault" and the version were there, and the terminal's painter, which does not
+clear a cell nothing draws on, left the first tab's "╮" behind after "☰ Vaults".
+
+- **The fold counts the add key, a version (ten cells, or the version's own once longer)
+  and the update badge from the first drawing**, read or not, so the menu has one shape per
+  pane width and labels from its first frame: folded or wide, never one then the other on
+  the same pane. A pane has to be some thirty cells wider than before to stay wide (103 on
+  the terminal, 100 on the desktop, with the French labels; the tests' wide panes moved from
+  80 to 120 columns).
+- Adversarial review by Codex: the update badge, which comes last, still folded a menu
+  drawn wide (its room is now counted too); a version one digit longer moved the threshold
+  (ten cells are reserved); the test watched two panes, not one through the answers (it now
+  keeps one narrow and one wide pane mounted across the router's and the version's reads).
+- Tests: `tests/vault-panel.test.tsx` 122, the new one seen red under three mutations (the
+  add key counted only once read, no room for the version, no room for the badge).
+
 ## [0.116.1] — 2026-10-25 — the menu's keys as tabs on a shelf
 
 Asked by Roland: the three keys of the pane's menu (Vaults, + Ajouter un vault,

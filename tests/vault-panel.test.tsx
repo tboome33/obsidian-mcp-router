@@ -2782,7 +2782,7 @@ test('the menu stays at the top while the pane scrolls: a copy, no frame, over t
   await begin($)
   for (const surface of ['terminal', 'desktop'] as const) {
     // At the top: the menu in the flow — Vaults (in view), + Ajouter un vault, ⚙ Administration — and no copy.
-    const top = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80 }, surface })
+    const top = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface })
     const items = ['nav-vaults', 'nav-add', 'nav-admin']
     const at = nodesOf(await top.drawn())
     expect(items.map(key => at.find(n => keyOf(n) === key)?.props?.label)).toEqual(['Vaults', '+ Ajouter un vault', '⚙ Administration'])
@@ -2792,7 +2792,7 @@ test('the menu stays at the top while the pane scrolls: a copy, no frame, over t
     await top.unmount()
 
     // Scrolled down 7 rows: the copy sits at row 7, opaque, with no frame — the menu line and its rule.
-    const down = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80, scroll: { offset: 7, bodyRows: 20 } }, surface })
+    const down = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120, scroll: { offset: 7, bodyRows: 20 } }, surface })
     const nodes = nodesOf(await down.drawn())
     const bar = nodes.find(n => keyOf(n) === 'sticky-bar')
     expect(bar?.props).toMatchObject({ position: 'absolute', top: 7, left: 0, right: 0, backgroundColor: 'inverseText' })
@@ -2809,7 +2809,7 @@ test('the menu stays at the top while the pane scrolls: a copy, no frame, over t
 test('the menu switches the view: + Ajouter un vault opens the list, ⚙ Administration the console, Vaults back', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
-  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80 }, surface: 'desktop' })
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface: 'desktop' })
   const variant = async (key: string) => nodesOf(await ui.drawn()).find(n => keyOf(n) === key)?.props?.variant
   await ui.press({ key: 'nav-add' })
   expect(await ui.find({ type: 'Button', key: 'tab-tous' })).toBeTruthy()
@@ -3170,7 +3170,7 @@ test('the wide menu draws its keys as tabs on a shelf: round frames open at the 
     }
   }
   for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80 }, surface })
+    const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface })
     const tree = await ui.drawn()
     shelf(tree, '', 'vaults')
     // Every key of the tree is its own: no two nodes share one.
@@ -3194,7 +3194,7 @@ test('the wide menu draws its keys as tabs on a shelf: round frames open at the 
     await ui.unmount()
   }
   // The pinned copy draws the same tabs, with the same opening, and its keys switch the view too.
-  const down = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80, scroll: { offset: 7, bodyRows: 20 } }, surface: 'desktop' })
+  const down = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120, scroll: { offset: 7, bodyRows: 20 } }, surface: 'desktop' })
   const bar = tabOf(await down.drawn(), 'sticky-bar')
   shelf(bar, 'sticky-', 'vaults')
   await down.press({ key: 'sticky-nav-admin' })
@@ -3209,4 +3209,31 @@ test('the wide menu draws its keys as tabs on a shelf: round frames open at the 
   expect(tabOf(folded, 'nav-rule')).toBeFalsy()
   expect(tabOf(folded, 'nav-burger')).toBeTruthy()
   await narrow.unmount()
+})
+
+test('the menu keeps its shape when the router, the version and the update check answer: their room is counted from the first drawing', async ($, on) => {
+  wire(on, { list: LIST })
+  // A version behind the installed one: once read, the version and the update badge stand at the right.
+  versions(on, '0.107.0', '0.108.0')
+  const shape = (tree: unknown) => ({
+    burger: nodesOf(tree).some(n => keyOf(n) === 'nav-burger'),
+    tabs: nodesOf(tree).filter(n => (keyOf(n) ?? '').startsWith('navtab-')).map(n => keyOf(n)),
+    badge: nodesOf(tree).some(n => keyOf(n) === 'update-badge'),
+    version: nodesOf(tree).some(n => n.type === 'Text' && /^v\d/.test(textOf(n))),
+  })
+  // Before the router is read: no "+ Ajouter un vault", no version, no badge — a 95-column
+  // terminal pane would hold what is drawn, even with two of the three to come, yet it
+  // folds, as it will once all of them are there (103 cells, as the terminal counts them).
+  const narrow = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 95 }, surface: 'terminal' })
+  const wide = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  expect(shape(await narrow.drawn())).toEqual({ burger: true, tabs: [], badge: false, version: false })
+  expect(shape(await wide.drawn())).toEqual({ burger: false, tabs: ['navtab-vaults', 'navtab-admin'], badge: false, version: false })
+  // Read: the same panes, drawn again with the third key, the version and the badge, keep their shape.
+  await begin($)
+  expect(shape(await narrow.drawn())).toEqual({ burger: true, tabs: [], badge: false, version: false })
+  expect(shape(await wide.drawn())).toEqual({ burger: false, tabs: ['navtab-vaults', 'navtab-add', 'navtab-admin'], badge: true, version: true })
+  await narrow.press({ key: 'nav-burger' })
+  expect(await narrow.find({ type: 'Button', key: 'nav-add' })).toBeTruthy()
+  await narrow.unmount()
+  await wide.unmount()
 })
