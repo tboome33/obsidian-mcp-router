@@ -1889,6 +1889,10 @@ test('WireGuard not installed: the console offers the client, the guide and the 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await openAdmin(ui, 'wireguard')
   expect(await ui.find({ type: 'Text', text: /^non installé/ })).toBeTruthy()
+  // The header's line: the first sentence only, its dot in warning.
+  const wgNote = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'admin-sec-wireguard-note') as never).filter(n => n.type === 'Text')
+  expect(wgNote.map(n => textOf(n))).toEqual(['●', 'non installé'])
+  expect(wgNote[0]?.props?.color).toBe('warning')
   await ui.press({ key: 'wg-install' })
   await ui.press({ key: 'wg-guide' })
   await ui.press({ key: 'wg-prompt' })
@@ -2723,7 +2727,8 @@ const accordionOf = (tree: unknown) => {
 
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`the console is an accordion on the ${surface}: six headers in order, Général unfolded first, one section open at a time`, async ($, on) => {
-    wire(on, { list: LIST })
+    wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+    windowsWireguard(on, { isInstalled: true, tunnels: ['wg0'], launched: [] })
     await begin($)
     const ui = await $.ui.mount({ ...PANE, surface })
     await ui.press({ key: 'toggle-admin' })
@@ -2748,7 +2753,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(noteOf(first, 'general')).toBe('Français')
     expect(noteOf(first, 'open')).toBe('3 sur 3')
     expect(noteOf(first, 'create')).toBe('un vault neuf, ses conventions')
-    expect(noteOf(first, 'wireguard')).toMatch(/^● \S/)
+    expect(noteOf(first, 'wireguard')).toBe('● actif (wg0)')
+    expect(nodesOf(nodesOf(first).find(n => keyOf(n) === 'admin-sec-wireguard-note') as never).find(n => n.type === 'Text')?.props?.color).toBe('success')
+    expect(nodesOf(first).filter(n => String(keyOf(n)).endsWith('-note')).every(n => nodesOf(n as never).filter(t => t.type === 'Text').every(t => t.props?.wrap === 'truncate-end'))).toBe(true)
     expect(noteOf(first, 'register')).toBe('local ou distant')
     expect(noteOf(first, 'unregister')).toBe('2 retirables')
     expect(nodes.some(n => keyOf(n) === 'admin-language-select')).toBe(true)
@@ -2782,6 +2789,12 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const again = await $.ui.mount({ ...PANE, surface })
     expect(accordionOf(await again.drawn()).open).toEqual(['unregister'])
     await again.unmount()
+    // A narrow pane: the headers keep their titles, no line at the right.
+    const narrow = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 36 }, surface })
+    const narrowTree = await narrow.drawn()
+    expect(accordionOf(narrowTree).headers).toEqual([...ADMIN_SECTIONS])
+    expect(nodesOf(narrowTree).some(n => String(keyOf(n)).endsWith('-note'))).toBe(false)
+    await narrow.unmount()
   })
 }
 

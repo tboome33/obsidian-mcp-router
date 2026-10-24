@@ -2680,8 +2680,11 @@ export const register: Register = on => {
     // how many vaults can go — so that a folded console still reads.
     const languageName = languages.find(l => l.code === languageCode)?.name ?? languageCode
     const wgShort = wgLine.split('. ')[0] ?? wgLine
+    // One line, cut with "…" where the header is short of room; no line at
+    // all on a narrow pane (a phone), where the title alone fills the row.
+    const hasHeadNotes = cardColumns >= 40
     const headNote = (key: string, text: string, color?: string) => (
-      <Text key={key} size="caption" dimColor={!color} color={color}>
+      <Text key={key} size="caption" dimColor={!color} color={color} wrap="truncate-end">
         {text}
       </Text>
     )
@@ -2733,9 +2736,11 @@ export const register: Register = on => {
                 {title.toLocaleUpperCase()}
               </Text>
             </Button>
-            <Box key={`admin-sec-${name}-note`} flexDirection="row" gap={1} flexShrink={1} alignItems="center">
-              {(headNotes[name] ?? []) as never}
-            </Box>
+            {hasHeadNotes && (
+              <Box key={`admin-sec-${name}-note`} flexDirection="row" gap={1} flexShrink={1} alignItems="center">
+                {(headNotes[name] ?? []) as never}
+              </Box>
+            )}
           </Box>
           {isOpen && (
             <Box key={`${key}-panel`} flexDirection="column" gap={1} paddingLeft={2} paddingY={1}>
