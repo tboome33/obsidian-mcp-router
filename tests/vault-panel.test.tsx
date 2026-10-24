@@ -1459,23 +1459,30 @@ test('the band shows the primary, each secondary with its write badge, and keeps
     const ui = await $.ui.mount({ ...BAND, surface })
     const texts = await bandTexts(ui)
     expect(texts).toContain('main')
-    // docs is read-only, notes writes on request: one badge each, in order; the
-    // terminal puts a "│" between them, the desktop a frame round each.
-    expect(texts.slice(texts.indexOf('docs'), texts.indexOf('notes') + 2)).toEqual(
-      surface === 'terminal' ? ['docs', '🔒', '│', 'notes', '✋'] : ['docs', '🔒', 'notes', '✋'],
+    // docs is read-only, notes writes on request: one badge each, in order, on
+    // the terminal, with a "│" between the two; the desktop draws the tiers as
+    // marks (named by their alt) and a "·" between the two. No frame anywhere.
+    expect(texts.slice(texts.indexOf('docs'), texts.indexOf('notes') + (surface === 'terminal' ? 2 : 1))).toEqual(
+      surface === 'terminal' ? ['docs', '🔒', '│', 'notes', '✋'] : ['docs', '·', 'notes'],
     )
+    const nodes = nodesOf(await ui.drawn())
+    const slots = nodes.filter(n => /^band-(main-)?row/.test(keyOf(n) ?? ''))
+    expect(slots.map(n => keyOf(n))).toEqual(['band-main-row', 'band-row-docs', 'band-row-notes'])
+    expect(slots.some(n => n.props?.borderStyle)).toBe(false)
     if (surface === 'desktop') {
-      const frames = nodesOf(await ui.drawn()).filter(n => /^band-(main-)?row/.test(keyOf(n) ?? ''))
-      expect(frames.map(n => keyOf(n))).toEqual(['band-main-row', 'band-row-docs', 'band-row-notes'])
-      expect(frames.every(n => n.props?.borderStyle === 'round')).toBe(true)
+      const alts = nodes.filter(n => n.type === 'Svg').map(n => n.props?.alt)
+      expect(alts).toContain('Lecture seule')
+      expect(alts).toContain('Écriture sur accord')
+      // The primary after its orange dot.
+      expect(nodesOf(slots[0] as never).some(n => n.type === 'Text' && textOf(n) === '●' && n.props?.color === 'claude')).toBe(true)
     }
-    expect(texts.some(t => t.startsWith('…'))).toBe(false)
+    expect(texts.some(t => t.startsWith('›'))).toBe(false)
     expect(texts).toContain('engine band')
     await ui.unmount()
   }
 })
 
-test('a band too narrow for every secondary ends with "…" and how many it left out', async ($, on) => {
+test('a band too narrow for every secondary ends with "›+N": how many it left out', async ($, on) => {
   const names = ['alpha-vault', 'beta-vault', 'gamma-vault', 'delta-vault', 'epsilon-vault']
   const many = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: names } }
   wire(on, { list: many })
@@ -1488,14 +1495,14 @@ test('a band too narrow for every secondary ends with "…" and how many it left
   expect(shown.length).toBeLessThan(5)
   // Binding order: the first ones are kept, the tail is counted.
   expect(shown).toEqual(names.slice(0, shown.length))
-  expect(texts).toContain(`… +${5 - shown.length} ▾`)
+  expect(texts).toContain(`›+${5 - shown.length}`)
   await ui.unmount()
 
-  // Wide enough, all of them and no "…".
+  // Wide enough, all of them and no "›".
   const wide = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 200 }, surface: 'desktop' })
   const all = await bandTexts(wide)
   expect(names.every(n => all.includes(n))).toBe(true)
-  expect(all.some(t => t.startsWith('…'))).toBe(false)
+  expect(all.some(t => t.startsWith('›'))).toBe(false)
   await wide.unmount()
 })
 
@@ -1618,15 +1625,18 @@ test('a band too narrow for even one secondary counts them all', async ($, on) =
   const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 40 }, surface: 'desktop' })
   const texts = await bandTexts(ui)
   expect(texts.includes('docs') || texts.includes('notes')).toBe(false)
-  expect(texts).toContain('… +2 ▾')
+  expect(texts).toContain('›+2')
+  // One page, none on it: the count is no key — there is no page to turn to.
+  expect(await ui.find({ key: 'band-more' })).toBeFalsy()
   await ui.unmount()
 })
 
-// The band's line, cell by cell, for main + docs + notes: "Principal : main",
-// spacer, "Secondaires :" and the toggle take 59; "docs 🔒" 8 more; "| notes ✋"
-// 11. At 69, docs would fit alone but not with "… +1" after it: the counter's
-// room is kept, so nothing is shown and both are counted. At 78, both fit.
-test('the band keeps room for "… +N" before it shows a secondary', async ($, on) => {
+// The band's line, cell by cell, for main + docs + notes: "Principal : ● main",
+// spacer, "Secondaires :" and the toggle take 61; " docs 🔒 ▶" 10 more;
+// " · notes ✋ ▶" 13. At 74, docs would fit alone but not with "›+1" after it:
+// the counter's room is kept, so nothing is shown and both are counted. At
+// 84, both fit.
+test('the band keeps room for "›+N" before it shows a secondary', async ($, on) => {
   wire(on, { list: LIST })
   engineBand(on)
   await begin($)
@@ -1648,15 +1658,15 @@ test('the band keeps room for "… +N" before it shows a secondary', async ($, o
   }
   const docsAt = await firstShowing('docs')
   const notesAt = await firstShowing('notes')
-  // Below docs' width, both are counted in the chip; at it, docs and "… +1".
-  expect(await at(docsAt - 1)).toContain('… +2 ▾')
-  expect(await at(docsAt)).toContain('… +1 ▾')
-  // notes, once it fits, takes the chip's room: no "…" any more.
-  expect((await at(notesAt)).some(t => t.startsWith('…'))).toBe(false)
+  // Below docs' width, both are counted; at it, docs and "›+1".
+  expect(await at(docsAt - 1)).toContain('›+2')
+  expect(await at(docsAt)).toContain('›+1')
+  // notes, once it fits, takes the counter's room: no "›" any more.
+  expect((await at(notesAt)).some(t => t.startsWith('›'))).toBe(false)
   // Neither opens anywhere (no folder, no web UI): no mark. notes' own width
-  // (gap, its frame and padding, 5 cells, badge, control) less the chip it frees ("… +1 ▾").
-  expect(notesAt - docsAt).toBe(1 + 4 + 5 + 1 + 2 + 1 + 1 - (1 + 4 + 2))
-  expect([docsAt, notesAt]).toEqual([84, 92])
+  // (gap, "· ", 5 cells, badge, control) less the counter it frees ("›+1").
+  expect(notesAt - docsAt).toBe(1 + 2 + 5 + 1 + 2 + 1 + 1 - (1 + 3))
+  expect([docsAt, notesAt]).toEqual([75, 84])
 })
 
 test('the band counts a name\'s mark where it is drawn: on the desktop, for a vault that opens', async ($, on) => {
@@ -1682,13 +1692,13 @@ test('the band counts a name\'s mark where it is drawn: on the desktop, for a va
   }
   // The terminal draws no mark: a remote vault's 🌐 and ✳ keys (5 cells), a
   // local one nothing. The desktop: notes (local) its Obsidian mark, 3 cells;
-  // extra (remote) the planet and Claude's mark, 6; and a frame round each vault.
-  expect([await firstShowing('extra', 'terminal'), await firstShowing('notes', 'terminal')]).toEqual([82, 88])
-  expect([await firstShowing('extra', 'desktop'), await firstShowing('notes', 'desktop')]).toEqual([91, 102])
+  // extra (remote) the planet and Claude's mark, 6.
+  expect([await firstShowing('extra', 'terminal'), await firstShowing('notes', 'terminal')]).toEqual([81, 90])
+  expect([await firstShowing('extra', 'desktop'), await firstShowing('notes', 'desktop')]).toEqual([82, 94])
 })
 
 // Two cells per CJK character: "資料庫一" is 8 cells, not 4. With main + two
-// such names the line needs 59 + 12 + 16 = 87; at 80 only the first fits.
+// such names the line needs 61 + 14 + 18 = 93; at 85 only the first fits.
 test('the band counts a wide character as two cells', async ($, on) => {
   const wide = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['資料庫一', '文書庫二三'] } }
   wire(on, { list: wide })
@@ -1713,8 +1723,8 @@ test('the band counts a wide character as two cells', async ($, on) => {
     }
   }
   expect(first).toBeGreaterThan(-1)
-  // "文書庫二三" is 10 cells, not 5: its entry less the chip it frees ("… +1 ▾").
-  expect(second - first).toBe(1 + 2 + 10 + 1 + 2 + 1 + 1 - (1 + 4 + 2))
+  // "文書庫二三" is 10 cells, not 5: its entry less the counter it frees ("›+1").
+  expect(second - first).toBe(1 + 2 + 10 + 1 + 2 + 1 + 1 - (1 + 3))
 })
 
 test('a pane the app draws on its own is told to the band', async ($, on) => {
@@ -2414,38 +2424,100 @@ test("a router older than the pause is said, and sent nothing it would refuse", 
   await ui.unmount()
 })
 
-test('"… +N ▾" opens a dropdown under the line: every secondary with its controls; pressed again it folds', async ($, on) => {
+test('"›+N" turns the band\'s page: the next secondaries in place of the first; "‹" before the first shown turns it back', async ($, on) => {
   const names = ['alpha-vault', 'beta-vault', 'gamma-vault', 'delta-vault', 'epsilon-vault']
   const calls = wire(on, { list: { ...LIST, routerBuild: { version: '0.108.0' }, workspaceBinding: { ...LIST.workspaceBinding, also: names } } })
   engineBand(on)
   await begin($)
   const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 100 }, surface: 'desktop' })
   const line = async () => nodesOf(await band.drawn()).find(n => keyOf(n) === 'vault-band-names')
-  // Folded: the line holds what fits, no wrapping, no list.
-  expect((await line())?.props?.flexWrap).toBe('nowrap')
-  expect(await band.find({ key: 'band-list' })).toBeFalsy()
-  await band.press({ key: 'band-more' })
-  // Open: the line is unchanged; under it, a framed list, one row per secondary in
-  // the binding's order, each with its own ▶ — the line's keys are not reused.
-  expect((await line())?.props?.flexWrap).toBe('nowrap')
-  const nodes = nodesOf(await band.drawn())
-  const list = nodes.find(n => keyOf(n) === 'band-list')
-  expect(list?.props?.borderStyle).toBe('round')
-  expect(nodes.findIndex(n => keyOf(n) === 'vault-band')).toBeLessThan(nodes.findIndex(n => keyOf(n) === 'band-list'))
-  const rows = nodesOf(list as never).filter(n => /^band-list-row-/.test(keyOf(n) ?? '')).map(n => keyOf(n))
-  expect(rows).toEqual(names.map(name => `band-list-row-${name}`))
-  for (const name of names) {
-    expect(await band.find({ type: 'Button', key: `band-list-pause-${name}` })).toBeTruthy()
+  const shown = async () => {
+    const drawn = nodesOf(await band.drawn())
+
+    return names.filter(name => drawn.some(n => keyOf(n) === `band-row-${name}`))
   }
+  const texts = async () => await bandTexts(band)
+  // The first page: the first names, no "‹", then "›+N" for the rest; one line, no wrapping.
+  expect((await line())?.props?.flexWrap).toBe('nowrap')
+  const first = await shown()
+  expect(first.length).toBeGreaterThan(0)
+  expect(first.length).toBeLessThan(names.length)
+  expect(first).toEqual(names.slice(0, first.length))
+  expect(await band.find({ key: 'band-back' })).toBeFalsy()
+  expect(await texts()).toContain(`›+${names.length - first.length}`)
+  await band.press({ key: 'band-more' })
+  // The next page: the following names where the first were, "‹" before them.
+  const second = await shown()
+  expect(second.length).toBeGreaterThan(0)
+  expect(second).toEqual(names.slice(first.length, first.length + second.length))
+  expect(await band.find({ type: 'Button', key: 'band-back' })).toBeTruthy()
+  const nodes = nodesOf(await band.drawn())
   const keys = nodes.map(n => keyOf(n)).filter((k): k is string => !!k)
   expect(keys.length).toBe(new Set(keys).size)
-  // The chip says the list is open, at the same width: "… +N ▴".
-  expect((await bandTexts(band)).some(text => /^… \+\d+ ▴$/.test(text))).toBe(true)
-  // A control in the list acts as the line's would.
-  await band.press({ key: 'band-list-pause-epsilon-vault' })
-  expect(calls.filter(c => c.tool === 'set_secondary_vault_mode').at(-1)?.args).toEqual({ vault: 'epsilon-vault', paused: true })
-  await band.press({ key: 'band-more' })
+  expect(keys.indexOf('band-back')).toBeLessThan(keys.indexOf(`band-row-${second[0]}`))
+  // Nothing under the line: the band stays one line high.
   expect(await band.find({ key: 'band-list' })).toBeFalsy()
+  // A control on the page acts as on the first.
+  await band.press({ key: `band-pause-${second[0]}` })
+  expect(calls.filter(c => c.tool === 'set_secondary_vault_mode').at(-1)?.args).toEqual({ vault: second[0], paused: true })
+  // To the end, then back to the first page.
+  for (let i = 0; i < names.length && (await band.find({ key: 'band-more' })); i += 1) {
+    await band.press({ key: 'band-more' })
+  }
+  expect((await shown()).at(-1)).toBe(names[names.length - 1])
+  expect((await texts()).some(text => text.startsWith('›'))).toBe(false)
+  for (let i = 0; i < names.length && (await band.find({ key: 'band-back' })); i += 1) {
+    await band.press({ key: 'band-back' })
+  }
+  expect(await shown()).toEqual(first)
+  await band.unmount()
+})
+
+test("a page kept from a wider band is brought back within the pages the width allows", async ($, on) => {
+  const names = ['alpha-vault', 'beta-vault', 'gamma-vault', 'delta-vault', 'epsilon-vault']
+  wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: names } } })
+  engineBand(on)
+  await begin($)
+  const narrow = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 95 }, surface: 'desktop' })
+  for (let i = 0; i < names.length && (await narrow.find({ key: 'band-more' })); i += 1) {
+    await narrow.press({ key: 'band-more' })
+  }
+  expect(await narrow.find({ key: 'band-back' })).toBeTruthy()
+  await narrow.unmount()
+  // Wider, two pages: the last page shown is the last the width allows, and
+  // one "‹" from it reaches the first — the turn counts from the page shown.
+  const wider = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 120 }, surface: 'desktop' })
+  expect(await wider.find({ key: 'band-back' })).toBeTruthy()
+  expect(await wider.find({ key: 'band-more' })).toBeFalsy()
+  await wider.press({ key: 'band-back' })
+  expect(await wider.find({ key: 'band-back' })).toBeFalsy()
+  expect((await bandTexts(wider))[0]).toBeDefined()
+  expect(nodesOf(await wider.drawn()).some(n => keyOf(n) === 'band-row-alpha-vault')).toBe(true)
+  await wider.unmount()
+  // Wide enough for all: one page, every name, no "‹" and no "›".
+  const wide = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 200 }, surface: 'desktop' })
+  const texts = await bandTexts(wide)
+  expect(names.every(n => texts.includes(n))).toBe(true)
+  expect(await wide.find({ key: 'band-back' })).toBeFalsy()
+  expect(await wide.find({ key: 'band-more' })).toBeFalsy()
+  await wide.unmount()
+})
+
+test('a page turned to shows at least one secondary, cut if too long: "›+N" leads nowhere empty', async ($, on) => {
+  // At 75 the first page holds docs alone; the next, with "‹" before it, has
+  // no room for a whole name — it shows one anyway, cut, then the last.
+  wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'note', 'last'] } } })
+  engineBand(on)
+  await begin($)
+  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 75 }, surface: 'desktop' })
+  const rows = async () => nodesOf(await band.drawn()).filter(n => /^band-row-/.test(keyOf(n) ?? '')).map(n => keyOf(n))
+  expect(await rows()).toEqual(['band-row-docs'])
+  await band.press({ key: 'band-more' })
+  expect(await rows()).toEqual(['band-row-note'])
+  expect(await band.find({ key: 'band-back' })).toBeTruthy()
+  await band.press({ key: 'band-more' })
+  expect(await rows()).toEqual(['band-row-last'])
+  expect(await band.find({ key: 'band-more' })).toBeFalsy()
   await band.unmount()
 })
 
@@ -2786,66 +2858,24 @@ test('a secondary named "primary" collides with nothing on the band: the primary
   await band.unmount()
 })
 
-test('the dropdown lays its rows in columns: each control under the one above, whatever the name', async ($, on) => {
-  // A local vault (Obsidian's mark before its name) and two remote ones of unequal names.
+test("on the band's line, a local vault has Obsidian's mark before its name, a remote one the planet and Claude's mark after; a paused one its dimmed ▶", async ($, on) => {
   const list = {
     ...LIST,
     routerBuild: { version: '0.108.0' },
-    workspaceBinding: { ...LIST.workspaceBinding, also: ['notes', 'extra', 'a-much-longer-remote', 'n1', 'n2', 'n3'], alsoPaused: ['extra'] },
-    vaults: [
-      ...LIST.vaults.filter(v => v.name !== 'notes'),
-      { name: 'notes', type: 'local', online: true, path: 'C:\\VAULTS\\Notes' },
-      { name: 'a-much-longer-remote', type: 'remote', online: true, baseUrl: 'http://10.8.0.1:27192', description: 'Conteneur (UI :3011)' },
-      { name: 'n1', type: 'local', online: true },
-      { name: 'n2', type: 'local', online: true },
-      { name: 'n3', type: 'local', online: true },
-    ],
+    workspaceBinding: { ...LIST.workspaceBinding, also: ['notes', 'extra'], alsoPaused: ['extra'] },
+    vaults: [...LIST.vaults.filter(v => v.name !== 'notes'), { name: 'notes', type: 'local', online: true, path: 'C:\\VAULTS\\Notes' }],
   }
   wire(on, { list })
   engineBand(on)
   await begin($)
-  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 100 }, surface: 'desktop' })
-  await band.press({ key: 'band-more' })
+  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 160 }, surface: 'desktop' })
   const nodes = nodesOf(await band.drawn())
-  const width = (key: string) => nodes.find(n => keyOf(n) === key)?.props?.width
-  // The name column is as wide as the longest name and a gap, on every row.
-  const names = ['notes', 'extra', 'a-much-longer-remote']
-  expect(names.map(name => width(`band-list-label-${name}`))).toEqual(names.map(() => 'a-much-longer-remote'.length + 1))
-  for (const name of names) {
-    for (const cell of ['lead', 'webcell', 'uicell', 'tiercell']) {
-      expect(width(`band-list-${cell}-${name}`)).toBe(2)
-    }
-  }
-  // Each control in its own column: Obsidian's before a local name, the planet and Claude after a remote one.
-  const inCell = (cell: string, key: string) => nodesOf(nodes.find(n => keyOf(n) === cell) as never).some(n => keyOf(n) === key)
-  expect(inCell('band-list-lead-notes', 'band-list-obsidian-notes')).toBe(true)
-  expect(inCell('band-list-webcell-notes', 'band-list-web-notes')).toBe(false)
-  expect(inCell('band-list-webcell-extra', 'band-list-web-extra')).toBe(true)
-  expect(inCell('band-list-uicell-extra', 'band-list-ui-extra')).toBe(true)
-  // A paused one in the list has the dimmed ▶ too.
-  expect(nodes.find(n => keyOf(n) === 'band-list-resume-extra')?.props).toMatchObject({ label: '▶', dimColor: true })
   const keys = nodes.map(n => keyOf(n)).filter((k): k is string => !!k)
+  expect(keys.indexOf('band-obsidian-notes')).toBeLessThan(keys.indexOf('band-open-notes'))
+  expect(keys.indexOf('band-name-extra')).toBeLessThan(keys.indexOf('band-web-extra'))
+  expect(keys.indexOf('band-web-extra')).toBeLessThan(keys.indexOf('band-ui-extra'))
+  expect(nodes.find(n => keyOf(n) === 'band-resume-extra')?.props).toMatchObject({ label: '▶', dimColor: true })
   expect(keys.length).toBe(new Set(keys).size)
-  await band.unmount()
-})
-
-test('a long name in the dropdown is cut to what the band leaves it, never pushing its ▶ off', async ($, on) => {
-  const long = 'a-vault-name-far-too-long-for-a-narrow-band'
-  const list = {
-    ...LIST,
-    workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'notes', long] },
-    vaults: [...LIST.vaults, { name: long, type: 'local', online: true }],
-  }
-  wire(on, { list })
-  engineBand(on)
-  await begin($)
-  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 40 }, surface: 'desktop' })
-  await band.press({ key: 'band-more' })
-  const nodes = nodesOf(await band.drawn())
-  const width = nodes.find(n => keyOf(n) === `band-list-label-${long}`)?.props?.width as number
-  // 40 columns less the frame, its padding, four 2-cell columns, the ▶ and the gaps.
-  expect(width).toBe(40 - (2 + 2 + 4 * 2 + 1 + 5))
-  expect(nodes.some(n => keyOf(n) === `band-list-pause-${long}`)).toBe(true)
   await band.unmount()
 })
 
