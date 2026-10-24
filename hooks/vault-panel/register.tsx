@@ -82,7 +82,10 @@ const removePick = atom({ plugin: 'obsidian-router', key: 'removePick' } as cons
 const updateState = atom({ plugin: 'obsidian-router', key: 'update' } as const, null)
 const EMPTY_CREATE: CreateForm = { name: '', path: '', mode: 'personal', conventions: [], languages: '', bind: true }
 const createForm = atom({ plugin: 'obsidian-router', key: 'createForm' } as const, EMPTY_CREATE)
-const bandListOpen = atom({ plugin: 'obsidian-router', key: 'bandListOpen' } as const, false)
+// The band's page: which run of secondaries its line shows, from the first
+// (0) on. A line too short for them all ends with "›+N" (a press turns the
+// page) and, past the first page, starts with "‹" (a press turns it back).
+const bandPage = atom({ plugin: 'obsidian-router', key: 'bandPage' } as const, 0)
 const pendingConventions = atom({ plugin: 'obsidian-router', key: 'pendingConventions' } as const, null)
 const wireguard = atom({ plugin: 'obsidian-router', key: 'wireguard' } as const, null)
 // This workspace's hooks, read when the console is drawn.
@@ -201,15 +204,25 @@ const MODES: { mode: SecondaryMode; icon: string }[] = [
   { mode: 'writable', icon: '✏️' },
 ]
 const iconOf = (mode: SecondaryMode) => MODES.find(m => m.mode === mode)?.icon ?? '🔒'
+// The same tiers as marks, in the grey of the band's other marks: a graphical
+// surface draws them in place of the badges, so the band's line has one style.
+const LOCK_MARK =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect x="3.5" y="7" width="9" height="6.5" rx="1.2" fill="none" stroke="#6e7781" stroke-width="1.4"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2" fill="none" stroke="#6e7781" stroke-width="1.4"/></svg>'
+const HAND_MARK =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M5 8.5V3.5a1 1 0 012 0V7m0-4.5v-1a1 1 0 012 0V7m0-4a1 1 0 012 0v5m0-3a1 1 0 012 0v4.5c0 2.5-2 4.5-4.5 4.5H8c-1.3 0-2.4-.6-3.1-1.6L3 9.6a1 1 0 011.6-1.2L5 9.5" fill="none" stroke="#6e7781" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+const PEN_MARK =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M11.3 2.2l2.5 2.5-7.6 7.6-3.3.8.8-3.3z" fill="none" stroke="#6e7781" stroke-width="1.4" stroke-linejoin="round"/></svg>'
+const markOf = (mode: SecondaryMode) => (mode === 'writable' ? PEN_MARK : mode === 'soft' ? HAND_MARK : LOCK_MARK)
 const modeLabel = (mode: SecondaryMode) => t(`mode.${mode}`)
 
 // What the band shows of the secondaries in `columns` cells: as many as fit
 // after the primary and the toggle, in binding order, the rest counted as
-// "… +N". The line as the band draws it, cell by cell: "Principal :", a gap,
-// the primary, a gap, a one-cell spacer, a gap, "Secondaires :", then per
-// secondary a gap, "|" and a gap after the first, its name, a gap and its badge
-// (an emoji, two cells); "… +N" after a gap; the toggle after a gap of two,
-// with room for its chrome. In the current language's words. Measured in
+// "›+N" (a page to turn). The line as the band draws it, cell by cell:
+// "Principal :", a gap, "●", a gap, the primary, a gap, a one-cell spacer, a
+// gap, "Secondaires :", "‹" and a gap past the first page, then per secondary
+// a gap, "·" (or "│") and a gap after the first, its name, a gap and its badge
+// (two cells); "›+N" after a gap; the toggle after a gap of two, with room
+// for its chrome. In the current language's words. Measured in
 // cells: the band also cuts any text that still runs over, so a misjudged
 // width costs a cut, never a second line.
 // A character's cells on a terminal line: two for the East Asian wide ranges
@@ -231,53 +244,55 @@ const charCells = (code: number) =>
       ? 2
       : 1
 const cells = (text: string) => [...text].reduce((sum, char) => sum + charCells(char.codePointAt(0) ?? 0), 0)
-// The band's chip: the secondaries the line could not show ("… +3"), of which
-// so many paused ("⏸ 1"); a press unfolds them upward.
-function chipText(hidden: number, paused: number) {
-  return [hidden > 0 ? `… +${hidden}` : '', paused > 0 ? `⏸ ${paused}` : ''].filter(Boolean).join(' ')
+// "›+N": the secondaries the line could not show, a press turns the page.
+function moreText(hidden: number) {
+  return hidden > 0 ? `›+${hidden}` : ''
 }
-// The secondaries on the band's line, in the binding's order, each as its
-// name, its badge and its ▶; `paused[i]` says which are paused (counted in the
-// chip, the ▶ the same width either way).
-// `marks[i]` (and `primaryMark`): the cells that name's marks take beside it.
-// `isChip`: each vault drawn in its own frame (a graphical surface), its frame
-// and padding four cells, in place of the "│ " between secondaries.
-function bandFit(
-  primary: string | null,
-  secondaries: string[],
-  columns: number,
-  paused: boolean[] = [],
-  marks: number[] = [],
-  primaryMark = 0,
-  isChip = false,
-) {
+// The secondaries the band's line shows from `start` on, in the binding's
+// order, each as its name, its marks, its badge and its ▶, a "·" between two
+// (a "│" on the terminal); `paused[i]` says which are paused (the ▶ the same
+// width either way). `marks[i]` (and `primaryMark`): the cells that name's
+// marks take beside it. Past the first page the line starts with "‹" (two
+// cells); what does not fit ends it as "›+N".
+function bandFit(primary: string | null, secondaries: string[], columns: number, paused: boolean[] = [], marks: number[] = [], primaryMark = 0, start = 0) {
+  void paused
   const toggle = 2 + Math.max(cells(t('band.show')), cells(t('band.hide'))) + 4
+  // "Principal :", a gap, "● " and the name with its marks; two gaps and
+  // "Secondaires :"; the pane's toggle at the right.
   const base =
-    cells(t('band.primary')) +
-    1 +
-    primaryMark +
-    (isChip && primary ? 4 : 0) +
-    cells(primary ?? t('band.none')) +
-    1 +
-    1 +
-    1 +
-    cells(t('band.secondaries')) +
-    toggle
-  // A gap, its frame (or "│ " after the first), the marks and the name, a gap
-  // and its badge, a gap and its control (▶, dimmed while paused).
-  const widths = secondaries.map((name, i) => 1 + (isChip ? 4 : i > 0 ? 2 : 0) + (marks[i] ?? 0) + cells(name) + 1 + 2 + 1 + 1)
-  // The most secondaries that fit with the chip their remainder needs.
-  for (let shown = secondaries.length; shown > 0; shown -= 1) {
-    const chip = chipText(secondaries.length - shown, paused.slice(shown).filter(Boolean).length)
-    // The chip's room: "… +N ▾", the same width open ("… +N ▴").
-    const room = chip ? 1 + cells(chip) + 2 : 0
+    cells(t('band.primary')) + 1 + 2 + primaryMark + cells(primary ?? t('band.none')) + 1 + 1 + 1 + cells(t('band.secondaries')) + toggle + (start > 0 ? 2 : 0)
+  const rest = secondaries.slice(start)
+  // A gap, "· " after the first, the marks and the name, a gap and its badge,
+  // a gap and its control (▶, dimmed while paused).
+  const widths = rest.map((name, i) => 1 + (i > 0 ? 2 : 0) + (marks[start + i] ?? 0) + cells(name) + 1 + 2 + 1 + 1)
+  // The most secondaries that fit with the "›+N" their remainder needs. A
+  // page one turned to shows at least one, cut where it runs over: a page
+  // with nothing on it would be a page "›+N" leads nowhere from.
+  for (let shown = rest.length; shown > 0; shown -= 1) {
+    const more = moreText(rest.length - shown)
+    const room = more ? 1 + cells(more) : 0
     const used = base + widths.slice(0, shown).reduce((a, b) => a + b, 0) + room
     if (used <= columns) {
-      return { shown, hidden: secondaries.length - shown }
+      return { shown, hidden: rest.length - shown }
     }
   }
+  const shown = start > 0 && rest.length > 0 ? 1 : 0
 
-  return { shown: 0, hidden: secondaries.length }
+  return { shown, hidden: rest.length - shown }
+}
+// Where each page of the band's line starts: the first at 0, each next where
+// the one before stopped. A line too short for even one secondary has one
+// page, which shows none and counts them all.
+function bandPages(primary: string | null, secondaries: string[], columns: number, paused: boolean[], marks: number[], primaryMark: number) {
+  const starts = [0]
+  for (;;) {
+    const start = starts[starts.length - 1] ?? 0
+    const { shown } = bandFit(primary, secondaries, columns, paused, marks, primaryMark, start)
+    if (shown === 0 || start + shown >= secondaries.length) {
+      return starts
+    }
+    starts.push(start + shown)
+  }
 }
 
 type Binding = {
@@ -1579,6 +1594,12 @@ const markAlt = (source: string) =>
         ? 'obsidian-mcp-router'
         : source === LIST_MARK
           ? t('mark.recent')
+        : source === LOCK_MARK
+          ? modeLabel('locked')
+        : source === HAND_MARK
+          ? modeLabel('soft')
+        : source === PEN_MARK
+          ? modeLabel('writable')
         : source === GITHUB_MARK
           ? 'GitHub'
           : t('mark.browser')
@@ -3815,8 +3836,7 @@ export const register: Register = on => {
     // The terminal draws no SVG (its element draws nothing there): no mark is
     // drawn, and none is counted.
     const BandSvg = e.surface !== 'terminal' && 'Svg' in bandEls ? bandEls.Svg : null
-    // A graphical surface frames each vault in its own chip; the terminal,
-    // where a frame costs two rows, keeps one line and a "│" between them.
+    // A graphical surface parts the vaults with a "·"; the terminal with a "│".
     const isChip = !!BandSvg
     const bandOpen = await read($, openers)
     // The cells a name's controls take beyond the name: Obsidian's mark (2 and
@@ -3838,7 +3858,7 @@ export const register: Register = on => {
     await read($, paneVersion)
     await read($, language)
     const isShown = isPanePlaced
-    const isListOpen = await read($, bandListOpen)
+    const page = await read($, bandPage)
     const names = snap.secondaries.map(s => s.name)
     const paused = snap.paused ?? []
     // Every secondary on the line, in the binding's order, paused or not: each
@@ -3853,6 +3873,17 @@ export const register: Register = on => {
       ...snap.secondaries.map(row => ({ row, isPaused: false })),
       ...paused.map(row => ({ row, isPaused: true })),
     ].sort((x, y) => rank(x.row.name) - rank(y.row.name))
+    const pages = bandPages(
+      snap.primary?.name ?? null,
+      entries.map(entry => entry.row.name),
+      e.props.bodyColumns,
+      entries.map(entry => entry.isPaused),
+      entries.map(entry => markCells(entry.row)),
+      snap.primary ? markCells(snap.primary) : 0,
+    )
+    // The page shown: the one kept, within the pages the width now allows.
+    const pageAt = Math.min(Math.max(0, page), pages.length - 1)
+    const start = pages[pageAt] ?? 0
     const fit = bandFit(
       snap.primary?.name ?? null,
       entries.map(entry => entry.row.name),
@@ -3860,14 +3891,15 @@ export const register: Register = on => {
       entries.map(entry => entry.isPaused),
       entries.map(entry => markCells(entry.row)),
       snap.primary ? markCells(snap.primary) : 0,
-      isChip,
+      start,
     )
-    const chip = chipText(fit.hidden, entries.slice(fit.shown).filter(entry => entry.isPaused).length)
+    const more = moreText(fit.hidden)
     // The band's width and what fitted, in the trace (see `traceScroll`): what
     // `bandFit` counts, beside what a surface draws, sets the count right.
     const bandLine = JSON.stringify([
       e.surface,
       e.props.bodyColumns,
+      start,
       fit.shown,
       snap.primary?.name ?? '',
       entries.map(entry => [entry.row.name, entry.isPaused]),
@@ -3878,6 +3910,7 @@ export const register: Register = on => {
         kind: 'band',
         surface: e.surface,
         bodyColumns: e.props.bodyColumns,
+        start,
         shown: fit.shown,
         hidden: fit.hidden,
         names: entries.map(entry => entry.row.name),
@@ -3902,8 +3935,8 @@ export const register: Register = on => {
     // A vault's name and where it opens. A local one: Obsidian's mark before
     // its name, both opening it in Obsidian. A remote one: its name, then the
     // planet (the default browser) and Claude's mark (Claude's own browser),
-    // each its own control; the name opens nothing. `list` keys the dropdown's
-    // copy (`list-`) and the primary's (`main-`) apart from the secondaries'.
+    // each its own control; the name opens nothing. `list` keys the primary's
+    // copy (`main-`) apart from the secondaries'.
     // Every key ends with the vault's name, after a word of the band's own: no
     // key is another's with a suffix.
     const opener = (row: VaultRow, name: string, isDim = false, list = '') => {
@@ -3941,10 +3974,8 @@ export const register: Register = on => {
         </Box>
       )
     }
-    // The chip opens a dropdown under the line: every secondary, one per row,
-    // with its controls; pressed again, it folds.
-    const isUnfolded = isListOpen && fit.hidden > 0
-    const onLine = entries.slice(0, fit.shown)
+    // This page's run of secondaries.
+    const onLine = entries.slice(start, start + fit.shown)
     // A secondary's control: ▶ on a green ground while it runs (a press pauses
     // it); while it is paused, the same ▶ dimmed on no ground, a key that
     // reads as off (a press resumes it). Asked for in place of a red ❚❚.
@@ -3969,121 +4000,58 @@ export const register: Register = on => {
         {text}
       </Text>
     )
-    // A vault's place on the line: framed on a graphical surface, so each
-    // stands apart; on the terminal, after a "│" from the one before.
-    const slot = (key: string, isFirst: boolean, children: unknown) =>
-      isChip ? (
-        <Box
-          key={key}
-          flexDirection="row"
-          alignItems="center"
-          columnGap={1}
-          flexShrink={0}
-          borderStyle="round"
-          borderColor="inactive"
-          paddingX={1}
-        >
-          {children as never}
-        </Box>
-      ) : (
-        <Box key={key} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
-          {!isFirst && caption('│')}
-          {children as never}
-        </Box>
-      )
-    const entry = (row: Secondary, isPaused: boolean, list = '') => [
-      opener(row, row.name, isPaused, list),
-      <Text key={`band-${list}tier-${row.name}`} dimColor={isPaused} wrap="truncate-end">
-        {iconOf(row.mode)}
-      </Text>,
-      control(row, isPaused, list),
-    ]
-    // The dropdown's rows in columns of fixed widths, so each control stands
-    // under the one above: Obsidian's mark (a local vault), the name, the
-    // planet and Claude's mark (a remote one), the tier, the ▶. A row draws
-    // what its vault has and leaves the other cells empty.
-    // Capped to what the band leaves the name once the frame, its padding, the
-    // four 2-cell columns, the ▶ and the gaps are counted: a long name is cut,
-    // never a control pushed off the band.
-    const nameWidth = Math.max(
-      6,
-      Math.min(Math.max(0, ...entries.map(({ row }) => cells(row.name))) + 1, e.props.bodyColumns - (2 + 2 + 4 * 2 + 1 + 5)),
-    )
-    const column = (key: string, width: number, child: unknown) => (
-      <Box key={key} width={width} minWidth={width} flexShrink={0} flexDirection="row" alignItems="center">
-        {child as never}
+    // A vault's place on the line: after a "·" from the one before (a "│" on
+    // the terminal), the first after nothing. No frame: the line reads as the
+    // counters above it do.
+    const slot = (key: string, isFirst: boolean, children: unknown) => (
+      <Box key={key} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
+        {!isFirst && caption(isChip ? '·' : '│')}
+        {children as never}
       </Box>
     )
-    const listRow = (row: Secondary, isPaused: boolean) => {
-      const target = openTarget(row)
-      const name = row.name
-
-      return [
-        column(
-          `band-list-lead-${name}`,
-          2,
-          target === 'obsidian' && BandSvg && bandOpen.obsidian
-            ? iconKey(OBSIDIAN_MARK, '', `band-list-obsidian-${name}`, () => void openVault($, row))
-            : null,
-        ),
-        column(
-          `band-list-label-${name}`,
-          nameWidth,
-          target === 'obsidian' && bandOpen.obsidian ? (
-            <Button key={`band-list-open-${name}`} plain onPress={() => void openVault($, row)}>
-              <Text dimColor={isPaused} wrap="truncate-end">
-                {name}
-              </Text>
-            </Button>
-          ) : (
-            <Text key={`band-list-name-${name}`} dimColor={isPaused || !target} wrap="truncate-end">
-              {name}
-            </Text>
-          ),
-        ),
-        column(
-          `band-list-webcell-${name}`,
-          2,
-          target === 'browser' && bandOpen.browser
-            ? iconKey(GLOBE_MARK, '🌐', `band-list-web-${name}`, () => void openInBrowser($, row))
-            : null,
-        ),
-        column(
-          `band-list-uicell-${name}`,
-          2,
-          target === 'browser' && bandOpen.claude
-            ? iconKey(CLAUDE_PANE_MARK, '✳', `band-list-ui-${name}`, () => void openUi($, row))
-            : null,
-        ),
-        column(
-          `band-list-tiercell-${name}`,
-          2,
-          <Text key={`band-list-tier-${name}`} dimColor={isPaused} wrap="truncate-end">
-            {iconOf(row.mode)}
-          </Text>,
-        ),
-        control(row, isPaused, 'list-'),
-      ]
-    }
-
+    // Its tier: a mark on a graphical surface (the alt names it), the badge
+    // on the terminal.
+    const tier = (row: Secondary, isPaused: boolean, list = '') =>
+      BandSvg ? (
+        <Box key={`band-${list}tier-${row.name}`} flexDirection="row" alignItems="center" flexShrink={0}>
+          <BandSvg source={markOf(row.mode)} alt={markAlt(markOf(row.mode))} width={14} height={14} />
+        </Box>
+      ) : (
+        <Text key={`band-${list}tier-${row.name}`} dimColor={isPaused} wrap="truncate-end">
+          {iconOf(row.mode)}
+        </Text>
+      )
+    const entry = (row: Secondary, isPaused: boolean, list = '') => [opener(row, row.name, isPaused, list), tier(row, isPaused, list), control(row, isPaused, list)]
+    // From the page shown (the kept one, brought within the pages), not the kept one itself.
+    const turnPage = (by: number) => void update($, bandPage, () => Math.min(Math.max(0, pageAt + by), pages.length - 1)).catch(() => undefined)
     return (
       <Box flexDirection="column">
         <Box key="vault-band" flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={2}>
           <Box key="vault-band-names" flexDirection="row" flexWrap="nowrap" alignItems="center" columnGap={1} flexShrink={1} overflow="hidden">
             {heading(t('band.primary'))}
             {snap.primary ? (
-              slot('band-main-row', true, opener(snap.primary, snap.primary.name, false, 'main-'))
+              <Box key="band-main-row" flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
+                <Text color="claude">●</Text>
+                {opener(snap.primary, snap.primary.name, false, 'main-')}
+              </Box>
             ) : (
               <Text wrap="truncate-end">{t('band.none')}</Text>
             )}
             <Box width={1} />
             {heading(t('band.secondaries'))}
             {names.length === 0 && paused.length === 0 && caption(t('band.none'))}
-            {onLine.map(({ row, isPaused }, i) => slot(`band-row-${row.name}`, i === 0, entry(row, isPaused)))}
-            {chip && (
-              <Button key="band-more" plain dimColor onPress={() => void update($, bandListOpen, open => !open)}>
-                <Text dimColor>{`${chip} ${isUnfolded ? '▴' : '▾'}`}</Text>
+            {start > 0 && (
+              <Button key="band-back" plain dimColor onPress={() => turnPage(-1)}>
+                <Text dimColor>‹</Text>
               </Button>
+            )}
+            {onLine.map(({ row, isPaused }, i) => slot(`band-row-${row.name}`, i === 0, entry(row, isPaused)))}
+            {more && pages.length > 1 ? (
+              <Button key="band-more" plain dimColor onPress={() => turnPage(1)}>
+                <Text dimColor>{more}</Text>
+              </Button>
+            ) : (
+              more && <Text key="band-count" dimColor>{more}</Text>
             )}
           </Box>
           <Button
@@ -4094,18 +4062,6 @@ export const register: Register = on => {
             onPress={() => void togglePane($)}
           />
         </Box>
-        {isUnfolded && (
-          // The dropdown: every secondary, in the binding's order, with what
-          // acts on it — open it (Obsidian, the browser, Claude's browser),
-          // pause or resume it.
-          <Box key="band-list" flexDirection="column" borderStyle="round" borderColor="inactive" paddingX={1} alignSelf="flex-start">
-            {entries.map(({ row, isPaused }) => (
-              <Box key={`band-list-row-${row.name}`} flexDirection="row" alignItems="center" columnGap={1}>
-                {listRow(row, isPaused)}
-              </Box>
-            ))}
-          </Box>
-        )}
         {below}
       </Box>
     )
