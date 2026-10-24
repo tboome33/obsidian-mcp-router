@@ -139,7 +139,7 @@ export const FR: Record<string, string> = {
   "secondaries.openOne": "Ouvrir le vault local fermé",
   "secondaries.unreachable": "injoignable",
   "filter.placeholder": "Filtrer",
-  "filter.submit": "filtrer",
+  "filter.submit": "Filtrer",
   "add.toggle.one": "Ajouter un vault · {count} disponible",
   "add.toggle.other": "Ajouter un vault · {count} disponibles",
   "add.choosePrimary.one": "Choisir le vault principal · {count} disponible",

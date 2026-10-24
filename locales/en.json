@@ -154,7 +154,7 @@
   "secondaries.unreachable": "unreachable",
 
   "filter.placeholder": "Filter",
-  "filter.submit": "filter",
+  "filter.submit": "Filter",
 
   "add.toggle.one": "Add a vault · {count} available",
   "add.toggle.other": "Add a vault · {count} available",

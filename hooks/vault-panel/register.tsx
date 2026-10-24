@@ -2748,7 +2748,7 @@ export const register: Register = on => {
       row: VaultRow,
       right: unknown,
       lines: unknown[],
-      opts: { width: number; isDim?: boolean; isHighlighted?: boolean },
+      opts: { width: number; isDim?: boolean; isHighlighted?: boolean; foot?: unknown },
     ) => (
       <Box
         key={key}
@@ -2780,6 +2780,18 @@ export const register: Register = on => {
             {line as never}
           </Box>
         ))}
+        {opts.foot !== undefined && (
+          // The tile's action, at its bottom right: a spacer takes what height
+          // the row's tallest tile leaves, then the foot sits on its own line.
+          // Keyed before the tile's key, never after: "av-x-foot" would be the
+          // tile of a vault named "x-foot".
+          <Box key={`spacer-${key}`} flexGrow={1} />
+        )}
+        {opts.foot !== undefined && (
+          <Box key={`foot-${key}`} flexDirection="row" justifyContent="flex-end" alignItems="center">
+            {opts.foot as never}
+          </Box>
+        )}
       </Box>
     )
     // Tiles side by side, wrapping to the next line when the pane is narrow.
@@ -3088,23 +3100,25 @@ export const register: Register = on => {
               v,
               null,
               [
-                // Where it opens, on the left — a vault can be looked at before it
-                // is added — and the one action, "+ Ajouter", plain to see on the
-                // right.
-                <Box key={`av-foot-${v.name}`} flexDirection="row" flexGrow={1} justifyContent="space-between" alignItems="center" gap={1} flexWrap="wrap">
-                  <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap" flexShrink={1}>
-                    {(isRemote(v) && v.uiUrl) || (!isRemote(v) && v.path && v.isKnownToObsidian !== false) ? (
-                      links(v)
-                    ) : (
-                      <Box key={`av-place-${v.name}`} flexDirection="row" gap={1} alignItems="center">
-                        {mark(isRemote(v) ? GLOBE_MARK : OBSIDIAN_MARK)}
-                        <Text size="caption" dimColor>
-                          {placeOf(v)}
-                        </Text>
-                      </Box>
-                    )}
-                  </Box>
-                  {snap.primary ? (
+                // Where it opens — a vault can be looked at before it is added.
+                <Box key={`av-where-${v.name}`} flexDirection="row" gap={1} alignItems="center" flexWrap="wrap" flexShrink={1}>
+                  {(isRemote(v) && v.uiUrl) || (!isRemote(v) && v.path && v.isKnownToObsidian !== false) ? (
+                    links(v)
+                  ) : (
+                    <Box key={`av-place-${v.name}`} flexDirection="row" gap={1} alignItems="center">
+                      {mark(isRemote(v) ? GLOBE_MARK : OBSIDIAN_MARK)}
+                      <Text size="caption" dimColor>
+                        {placeOf(v)}
+                      </Text>
+                    </Box>
+                  )}
+                </Box>,
+              ],
+              {
+                width: addWidth,
+                // The one action, "+ Ajouter", plain to see at the tile's bottom right.
+                foot: (
+                  snap.primary ? (
                     <Button
                       key={`add-${v.name}`}
                       label={t('add.button')}
@@ -3131,10 +3145,9 @@ export const register: Register = on => {
                     />
                   ) : (
                     <Button key={`primary-${v.name}`} label={t('add.primaryButton')} variant="secondary" onPress={() => void choosePrimary($, v.name)} />
-                  )}
-                </Box>,
-              ],
-              { width: addWidth },
+                  )
+                ),
+              },
             ),
           ),
         )}

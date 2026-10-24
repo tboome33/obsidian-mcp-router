@@ -1,7 +1,7 @@
 {
   "$comment": "Written by scripts/render-quick-reference.mjs. Each value is the sha256 of the HTML the matching PDF was rendered from; `npm run validate` refuses when a page has changed since, so editing the source and forgetting the render is a named failure rather than a silent drift. Do not hand-edit — run `npm run docs:quick-reference`.",
   "renderedFrom": {
-    "docs/quick-reference-en.html": "f7f89687075ac859792f5580c1ec2f4517b4fa9ea25aa2366ca4c298624bdd3b",
-    "docs/quick-reference-fr.html": "cabd98cab436313791fc0a4493caaa3c5909c6b475fed72aa8e004183fe1b90c"
+    "docs/quick-reference-en.html": "06d831d5098f0ccb9654d01d8015fda43451379ac1a92454a9d62908920e35bd",
+    "docs/quick-reference-fr.html": "a1f60450f6687be6621f5fd347cbbb3c47d753f967037d4b748adfdb369890c5"
   }
 }

@@ -10,6 +10,17 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.110.4] — 2026-10-24 — "+ Ajouter" at the tile's bottom right
+
+Seen on screen in v0.110.3: in the tiles to add, "+ Ajouter" wrapped under the links on the
+left, or sat at the top beside "Local".
+
+- **"+ Ajouter" at the bottom right of every tile**, on its own line under a spacer that takes
+  the height the row's tallest tile leaves (a tile can carry a `foot`).
+- **"Filtrer"**: the secondaries' filter button is capitalised like the add bar's.
+- Adversarial review by Codex: one P3 fixed (the foot's keys go before the tile's key, so a
+  vault named `x-foot` collides with nothing). Tests: `tests/vault-panel.test.tsx` 104.
+
 ## [0.110.3] — 2026-10-24 — the band's marks: Obsidian, the planet and Claude
 
 Seen on screen after v0.110.2: the band kept an empty space where each name's mark should have
