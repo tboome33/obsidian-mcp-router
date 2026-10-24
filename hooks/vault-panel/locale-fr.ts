@@ -16,7 +16,6 @@ export const FR: Record<string, string> = {
   "band.primary": "Principal :",
   "band.secondaries": "Secondaires :",
   "band.none": "aucun",
-  "band.fold": "‹ réduire",
   "band.show": "◧ Afficher le panneau",
   "band.hide": "◧ Masquer le panneau",
   "refused.lead": "Claude Code a bloqué",
