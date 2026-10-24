@@ -134,6 +134,8 @@ Ce qu'il montre, dans un panneau **Vaults** et via la commande `/vaults` :
 
 **Le bandeau cliquable** (v0.107.0). Un appui sur un nom ouvre le vault : dans Obsidian s'il est local, son interface web dans le navigateur s'il est distant. La pastille « … +3 » (et « ⏸ 1 » parmi eux s'il y a des secondaires en pause) déplie sur la ligne même les secondaires qui n'y tenaient pas, avec retour à la ligne si besoin (v0.108.2) : chacun s'y ouvre d'un appui, ■ le met en pause, ▶ le reprend.
 
+**Menu du panneau** (v0.113.0). En haut du panneau, un menu « Vaults », « + Ajouter un vault », « ⚙ Administration » (la vue affichée mise en avant, un trait dessous) ; un clic affiche la vue et y amène le panneau. Quand le panneau défile, le menu reste collé en haut, sans cadre. Sur un panneau étroit, il se replie en « ☰ » suivi de la vue affichée.
+
 **Liste en colonnes, pause grisée** (v0.112.1). La liste déroulante du bandeau aligne ses colonnes (icône, nom, planète, Claude, droit d'écriture, ▶). Un secondaire en pause montre le même ▶, grisé et sans fond, comme un bouton désactivé ; un clic le reprend.
 
 **Bandeau : icônes actives, cadres, liste déroulante** (v0.112.0). Sur le bandeau, un vault distant s'affiche « nom 🌐 ✳ » : la planète l'ouvre dans le navigateur par défaut, le logo de Claude dans son navigateur interne ; le nom n'ouvre plus rien. Un vault local garde le logo d'Obsidian avant son nom. Chaque vault a son cadre ; quand les secondaires ne tiennent pas, « … +N ▾ » ouvre une liste sous le bandeau, avec pour chacun ses boutons (▶/❚❚, Obsidian, navigateur, Claude).

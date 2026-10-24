@@ -104,6 +104,8 @@
   "add.localOpen": "Local · ouvert",
   "footer.github": "GitHub ↗",
   "footer.admin": "⚙ Administration ›",
+  "nav.vaults": "Vaults",
+  "nav.admin": "⚙ Administration",
   "admin.general": "Général",
   "admin.plugin": "Plugin",
   "admin.upToDate": "À jour",

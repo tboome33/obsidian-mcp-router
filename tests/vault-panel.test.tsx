@@ -2666,31 +2666,53 @@ test('the band keys each Claude key by its vault name: a vault named "x-ui" coll
   await band.unmount()
 })
 
-test('the status bar stays at the top while the pane scrolls: a copy over the first row the window shows', async ($, on) => {
+test('the menu stays at the top while the pane scrolls: a copy, no frame, over the first row the window shows', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
   for (const surface of ['terminal', 'desktop'] as const) {
-    // At the top, the bar is the one in the flow, and no copy is drawn.
-    const top = await $.ui.mount({ ...PANE, surface })
-    expect(await top.find({ type: 'Button', key: 'refresh' })).toBeTruthy()
+    // At the top: the menu in the flow — Vaults (in view), + Ajouter un vault, ⚙ Administration — and no copy.
+    const top = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80 }, surface })
+    const items = ['nav-vaults', 'nav-add', 'nav-admin']
+    const at = nodesOf(await top.drawn())
+    expect(items.map(key => at.find(n => keyOf(n) === key)?.props?.label)).toEqual(['Vaults', '+ Ajouter un vault', '⚙ Administration'])
+    expect(at.find(n => keyOf(n) === 'nav-vaults')?.props?.variant).toBe('primary')
+    expect(at.find(n => keyOf(n) === 'nav-add')?.props?.plain).toBe(true)
     expect(await top.find({ key: 'sticky-bar' })).toBeFalsy()
     await top.unmount()
 
-    // Scrolled down 7 rows: the copy sits at row 7, opaque and over the rest, with its own keys;
-    // the bar in the flow keeps its controls, so nothing under it moves.
-    const down = await $.ui.mount({ ...PANE, props: { ...PANE.props, scroll: { offset: 7, bodyRows: 20 } }, surface })
+    // Scrolled down 7 rows: the copy sits at row 7, opaque, with no frame — the menu line and its rule.
+    const down = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80, scroll: { offset: 7, bodyRows: 20 } }, surface })
     const nodes = nodesOf(await down.drawn())
     const bar = nodes.find(n => keyOf(n) === 'sticky-bar')
     expect(bar?.props).toMatchObject({ position: 'absolute', top: 7, left: 0, right: 0, backgroundColor: 'inverseText' })
-    expect(nodesOf(bar as never).find(n => keyOf(n) === 'sticky-refresh')?.props?.label).toBe('↻ Rafraîchir')
-    expect(nodesOf(bar as never).some(n => keyOf(n) === 'sticky-open-closed')).toBe(true)
-    expect(nodesOf(nodes.find(n => keyOf(n) === 'status') as never).some(n => keyOf(n) === 'refresh')).toBe(true)
+    expect(bar?.props?.borderStyle).toBeUndefined()
+    expect(items.every(key => nodesOf(bar as never).some(n => keyOf(n) === `sticky-${key}`))).toBe(true)
+    expect(nodesOf(bar as never).some(n => n.type === 'Text' && /^─+$/.test(textOf(n)))).toBe(true)
     // Drawn last, so it paints over the tiles.
     const root = (await down.drawn()) as { children?: unknown[] }
     expect(keyOf((root.children ?? []).at(-1) as never)).toBe('sticky-bar')
-    await down.press({ key: 'sticky-refresh' })
     await down.unmount()
   }
+})
+
+test('the menu switches the view: + Ajouter un vault opens the list, ⚙ Administration the console, Vaults back', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80 }, surface: 'desktop' })
+  const variant = async (key: string) => nodesOf(await ui.drawn()).find(n => keyOf(n) === key)?.props?.variant
+  await ui.press({ key: 'nav-add' })
+  expect(await ui.find({ type: 'Button', key: 'tab-tous' })).toBeTruthy()
+  expect(await variant('nav-add')).toBe('primary')
+  await ui.press({ key: 'nav-admin' })
+  expect(await ui.find({ key: 'admin-general' })).toBeTruthy()
+  expect(await variant('nav-admin')).toBe('primary')
+  // The console holds the pane, the menu still on top of it.
+  expect(await ui.find({ type: 'Button', key: 'nav-vaults' })).toBeTruthy()
+  await ui.press({ key: 'nav-vaults' })
+  expect(await ui.find({ key: 'admin-general' })).toBeFalsy()
+  expect(await ui.find({ type: 'Button', key: 'tab-tous' })).toBeFalsy()
+  expect(await variant('nav-vaults')).toBe('primary')
+  await ui.unmount()
 })
 
 test('on the terminal, a remote vault in the band has 🌐 and ✳ keys after its name, and no frame', async ($, on) => {
@@ -2788,6 +2810,28 @@ test('a long name in the dropdown is cut to what the band leaves it, never pushi
   await band.unmount()
 })
 
+test('a pane too narrow for the menu folds it into "☰" and the view in sight; a press unfolds it', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 40 }, surface: 'desktop' })
+  // Folded: one key, the three hidden.
+  expect((await ui.find({ type: 'Button', key: 'nav-burger' }))?.props?.label).toBe('☰ Vaults')
+  expect(await ui.find({ type: 'Button', key: 'nav-add' })).toBeFalsy()
+  await ui.press({ key: 'nav-burger' })
+  // Open: the three, one under the other; a pick shows its view and folds the menu.
+  expect(await ui.find({ type: 'Button', key: 'nav-add' })).toBeTruthy()
+  await ui.press({ key: 'nav-add' })
+  expect(await ui.find({ type: 'Button', key: 'tab-tous' })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'nav-add' })).toBeFalsy()
+  expect((await ui.find({ type: 'Button', key: 'nav-burger' }))?.props?.label).toBe('☰ + Ajouter un vault')
+  await ui.unmount()
+  // Wide enough: the three on one line, no "☰".
+  const wide = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface: 'desktop' })
+  expect(await wide.find({ type: 'Button', key: 'nav-burger' })).toBeFalsy()
+  expect(await wide.find({ type: 'Button', key: 'nav-admin' })).toBeTruthy()
+  await wide.unmount()
+})
+
 // The workspace's hooks, as scripts/workspace-hooks.mjs answers them: the
 // console runs it with node, for the session's folder.
 function hooksScript(on: On, state: { enabled: string[]; global: string[]; runs: (readonly string[])[] }) {
@@ -2839,5 +2883,17 @@ test('the console shows the read-only hooks always on and switches the others fo
   // Still wired machine-wide: said so, and no switch that would not hold.
   expect(await ui.find({ type: 'Button', key: 'hook-vault-link-linter-on' })).toBeFalsy()
   expect(await ui.find({ type: 'Text', text: /^Encore installé globalement/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('the console opened from the pane menu reads this workspace’s hooks too', async ($, on) => {
+  wire(on, { list: LIST })
+  const hooks = { enabled: ['wiki-autocommit'], global: [] as string[], runs: [] as (readonly string[])[] }
+  hooksScript(on, hooks)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80 }, surface: 'desktop' })
+  await ui.press({ key: 'nav-admin' })
+  expect(hooks.runs.some(argv => argv[2] === 'status')).toBe(true)
+  expect(await ui.find({ type: 'Button', key: 'hook-wiki-autocommit-on' })).toBeTruthy()
   await ui.unmount()
 })
