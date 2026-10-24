@@ -207,6 +207,8 @@ function chipText(hidden: number, paused: number) {
 // The secondaries on the band's line, active ones then paused ones, each as
 // its name, its badge (tier or ⏸) and its ■ or ▶; `paused[i]` says which.
 // `marks[i]` (and `primaryMark`): the cells that name's marks take beside it.
+// `isChip`: each vault drawn in its own frame (a graphical surface), its frame
+// and padding four cells, in place of the "│ " between secondaries.
 function bandFit(
   primary: string | null,
   secondaries: string[],
@@ -214,27 +216,31 @@ function bandFit(
   paused: boolean[] = [],
   marks: number[] = [],
   primaryMark = 0,
+  isChip = false,
 ) {
   const toggle = 2 + Math.max(cells(t('band.show')), cells(t('band.hide'))) + 4
   const base =
     cells(t('band.primary')) +
     1 +
     primaryMark +
+    (isChip && primary ? 4 : 0) +
     cells(primary ?? t('band.none')) +
     1 +
     1 +
     1 +
     cells(t('band.secondaries')) +
     toggle
-  // A gap, "| " after the first, the mark and the name, a gap and its badge,
-  // a gap and its control (▶, or ❚❚ while paused).
+  // A gap, its frame (or "│ " after the first), the marks and the name, a gap
+  // and its badge, a gap and its control (▶, or ❚❚ while paused).
   const widths = secondaries.map(
-    (name, i) => 1 + (i > 0 ? 2 : 0) + (marks[i] ?? 0) + cells(name) + 1 + 2 + 1 + (paused[i] ? 2 : 1),
+    (name, i) => 1 + (isChip ? 4 : i > 0 ? 2 : 0) + (marks[i] ?? 0) + cells(name) + 1 + 2 + 1 + (paused[i] ? 2 : 1),
   )
   // The most secondaries that fit with the chip their remainder needs.
   for (let shown = secondaries.length; shown > 0; shown -= 1) {
     const chip = chipText(secondaries.length - shown, paused.slice(shown).filter(Boolean).length)
-    const used = base + widths.slice(0, shown).reduce((a, b) => a + b, 0) + (chip ? 1 + cells(chip) : 0)
+    // The chip's room: "… +N ▾", the same width open ("… +N ▴").
+    const room = chip ? 1 + cells(chip) + 2 : 0
+    const used = base + widths.slice(0, shown).reduce((a, b) => a + b, 0) + room
     if (used <= columns) {
       return { shown, hidden: secondaries.length - shown }
     }
@@ -1893,6 +1899,35 @@ async function togglePane($: EngineInterface) {
 // The band is drawn in this session: neither the panel nor the band is off.
 const isBandOn = () => isEnvKnown && !isOptedOut && !isBandOptedOut
 
+// What the pane's window does, as this module sees it: each `ui.scroll` for
+// the pane and each drawing's `scroll`, the last 60, in a file of the
+// temporary directory (obsidian-router-pane-scroll.json). The sticky status
+// bar draws from `scroll.offset`; this says whether a surface reports it.
+const scrollTrace: Record<string, unknown>[] = []
+let lastTracedOffset = -1
+// One writer: an entry while a write runs marks the trace dirty, and the
+// writer writes again, the latest state, so no older snapshot lands last.
+let isTraceWriting = false
+let isTraceDirty = false
+async function traceScroll($: EngineInterface, entry: Record<string, unknown>) {
+  scrollTrace.push({ at: Date.now(), ...entry })
+  scrollTrace.splice(0, Math.max(0, scrollTrace.length - 60))
+  isTraceDirty = true
+  if (isTraceWriting) {
+    return
+  }
+  isTraceWriting = true
+  try {
+    const dir = (await $.env.get('TEMP')) ?? (await $.env.get('TMPDIR')) ?? '/tmp'
+    while (isTraceDirty) {
+      isTraceDirty = false
+      await $.fs.write(`${dir}/obsidian-router-pane-scroll.json`, JSON.stringify(scrollTrace, null, 1)).catch(() => undefined)
+    }
+  } finally {
+    isTraceWriting = false
+  }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const start = ++generation
@@ -1976,6 +2011,21 @@ export const register: Register = on => {
     })().catch(() => undefined)
 
     return next(e)
+  })
+
+  on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    const moved = await next(e)
+    void traceScroll($, {
+      kind: 'scroll',
+      offset: e.offset,
+      by: e.by,
+      bodyRows: e.bodyRows,
+      contentRows: e.contentRows,
+      origin: e.origin.kind,
+      deny: moved.deny,
+    }).catch(() => undefined)
+
+    return moved
   })
 
   // Closing the pane stops its polling and its redraws after tool calls.
@@ -2202,6 +2252,12 @@ export const register: Register = on => {
     // clamp or a focus kept in view, waits for the next drawing). Nothing
     // while the window is at the top.
     const scrolled = Math.max(0, Math.floor(e.props.scroll?.offset ?? 0))
+    if (scrolled !== lastTracedOffset) {
+      lastTracedOffset = scrolled
+      void traceScroll($, { kind: 'render', surface: e.surface, offset: scrolled, bodyRows: e.props.scroll?.bodyRows }).catch(
+        () => undefined,
+      )
+    }
     const statusLine = statusBar('')
     const sticky =
       scrolled > 0 ? (
@@ -3380,13 +3436,16 @@ export const register: Register = on => {
     // The terminal draws no SVG (its element draws nothing there): no mark is
     // drawn, and none is counted.
     const BandSvg = e.surface !== 'terminal' && 'Svg' in bandEls ? bandEls.Svg : null
-    // The cells a name's marks take beyond the name: Obsidian's (2 and a gap)
-    // for a local vault; for a remote one the planet (3), then Claude's mark
-    // and its "↗" key (2, a gap, 1, a gap).
+    // A graphical surface frames each vault in its own chip; the terminal,
+    // where a frame costs two rows, keeps one line and a "│" between them.
+    const isChip = !!BandSvg
+    // The cells a name's controls take beyond the name: Obsidian's mark (2 and
+    // a gap) for a local vault; for a remote one the planet and Claude's mark
+    // (a gap and 2 each), on the terminal 🌐 and ✳ (a gap and 2, a gap and 1).
     const markCells = (row: VaultRow) => {
       const target = openTarget(row)
 
-      return !BandSvg || !target ? 0 : target === 'browser' ? 3 + 5 : 3
+      return !target ? 0 : target === 'browser' ? (BandSvg ? 6 : 5) : BandSvg ? 3 : 0
     }
     // Read for its redraws only: the toggle says what the module knows, and
     // the texts follow the language.
@@ -3397,7 +3456,7 @@ export const register: Register = on => {
     const names = snap.secondaries.map(s => s.name)
     const paused = snap.paused ?? []
     // Every secondary on the line, in the binding's order, paused or not: each
-    // with its own ■ (pause) or ▶ (resume), right where it is named. A pause
+    // with its own ▶ (pause) or ❚❚ (resume), right where it is named. A pause
     // changes the control, never the place.
     const rank = (name: string) => {
       const at = (snap.order ?? []).indexOf(name)
@@ -3415,67 +3474,81 @@ export const register: Register = on => {
       entries.map(entry => entry.isPaused),
       entries.map(entry => markCells(entry.row)),
       snap.primary ? markCells(snap.primary) : 0,
+      isChip,
     )
     const chip = chipText(fit.hidden, entries.slice(fit.shown).filter(entry => entry.isPaused).length)
-    // A vault's name, pressed, opens it: Obsidian for a local one, the browser
-    // for a remote one's web UI.
-    // A vault's name, pressed, opens it; its mark before it says where:
-    // Obsidian for a local one, the planet (the browser) for a remote one.
-    const opener = (row: VaultRow, key: string, isDim = false) => {
+    // A mark that is a control. A Button holds text only and a mark is no
+    // button, so the mark is drawn and a blank Button laid over it, the one
+    // the click lands on; the terminal, which draws no mark, has a glyph key.
+    // Blank, since the desktop draws a label whole (v0.110.1): the mark's
+    // `alt` beside it is what names it to a reader.
+    const iconKey = (source: string, glyph: string, key: string, onPress: () => void) =>
+      BandSvg ? (
+        <Box key={`icon-${key}`} flexDirection="row" alignItems="center" flexShrink={0}>
+          <BandSvg source={source} alt={markAlt(source)} width={14} height={14} />
+          <Box position="absolute" top={0} left={0}>
+            <Button key={key} label={'  '} plain onPress={onPress} />
+          </Box>
+        </Box>
+      ) : (
+        <Button key={key} label={glyph} plain dimColor onPress={onPress} />
+      )
+    // A vault's name and where it opens. A local one: Obsidian's mark before
+    // its name, both opening it in Obsidian. A remote one: its name, then the
+    // planet (the default browser) and Claude's mark (Claude's own browser),
+    // each its own control; the name opens nothing. `list` keys the dropdown's
+    // copy (`list-`) and the primary's (`main-`) apart from the secondaries'.
+    // Every key ends with the vault's name, after a word of the band's own: no
+    // key is another's with a suffix.
+    const opener = (row: VaultRow, name: string, isDim = false, list = '') => {
       const target = openTarget(row)
       if (!target) {
         return (
-          <Text key={`${key}-plain`} dimColor wrap="truncate-end">
+          <Text key={`band-${list}plain-${name}`} dimColor wrap="truncate-end">
             {row.name}
           </Text>
         )
       }
-
-      const markOf = (source: string) =>
-        BandSvg ? <BandSvg source={source} alt={markAlt(source)} width={14} height={14} /> : null
+      if (target === 'obsidian') {
+        return (
+          <Box key={`band-${list}box-${name}`} flexDirection="row" gap={1} alignItems="center">
+            {BandSvg && iconKey(OBSIDIAN_MARK, '', `band-${list}obsidian-${name}`, () => void openVault($, row))}
+            {/* No label: the desktop draws a Button's label in place of its
+                children, and a sentence pushed the band's names off its line
+                (seen on screen in v0.110.1). The name is the control's text. */}
+            <Button key={`band-${list}open-${name}`} plain onPress={() => void openVault($, row)}>
+              <Text dimColor={isDim} wrap="truncate-end">
+                {row.name}
+              </Text>
+            </Button>
+          </Box>
+        )
+      }
 
       return (
-        <Box key={`${key}-box`} flexDirection="row" gap={1} alignItems="center">
-          {markOf(target === 'browser' ? GLOBE_MARK : OBSIDIAN_MARK)}
-          {/* No label: the desktop draws a Button's label in place of its
-              children, and a sentence pushed the band's names off its line
-              (seen on screen in v0.110.1). The name is the control's text. */}
-          <Button key={key} plain onPress={() => void openVault($, row)}>
-            <Text dimColor={isDim} wrap="truncate-end">
-              {row.name}
-            </Text>
-          </Button>
-          {target === 'browser' && BandSvg && (
-            // Claude's own browser: its mark, and a key beside it (a mark is
-            // no button).
-            <Box key={`${key}-claude`} flexDirection="row" gap={1} alignItems="center">
-              {markOf(CLAUDE_PANE_MARK)}
-              {/* Keyed by the vault's own name, under a prefix of its own: a
-                  key built on another key ("band-open-x" + "-ui") could be a
-                  vault named "x-ui"'s. */}
-              <Button key={`band-ui-${row.name}`} label="↗" plain dimColor onPress={() => void openUi($, row)} />
-            </Box>
-          )}
+        <Box key={`band-${list}box-${name}`} flexDirection="row" gap={1} alignItems="center">
+          <Text key={`band-${list}name-${name}`} dimColor={isDim} wrap="truncate-end">
+            {row.name}
+          </Text>
+          {iconKey(GLOBE_MARK, '🌐', `band-${list}web-${name}`, () => void openVault($, row))}
+          {iconKey(CLAUDE_PANE_MARK, '✳', `band-${list}ui-${name}`, () => void openUi($, row))}
         </Box>
       )
     }
-    // The chip unfolds the rest on the line itself, after the others, wrapping
-    // to a second line (and more) when the band is too narrow; pressed again,
-    // it folds them back.
+    // The chip opens a dropdown under the line: every secondary, one per row,
+    // with its controls; pressed again, it folds.
     const isUnfolded = isListOpen && fit.hidden > 0
-    const onLine = isUnfolded ? entries : entries.slice(0, fit.shown)
-    // A secondary's control: ■ pauses an active one, ▶ resumes a paused one.
-    // One key per secondary, as the pane's switch draws its state: ▶ on a green
-    // ground while it runs (a press pauses it), ❚❚ on a red one while it is
-    // paused (a press resumes it).
-    const control = (row: Secondary, isPaused: boolean) =>
+    const onLine = entries.slice(0, fit.shown)
+    // A secondary's control: ▶ on a green ground while it runs (a press pauses
+    // it), ❚❚ on a red one while it is paused (a press resumes it).
+    const control = (row: Secondary, isPaused: boolean, list = '') =>
       isPaused ? (
-        <Box key={`band-state-${row.name}`} backgroundColor="diffRemovedDimmed">
-          <Button key={`band-resume-${row.name}`} label="❚❚" plain onPress={() => void setPaused($, row, false)} />
+        <Box key={`band-${list}state-${row.name}`} backgroundColor="diffRemovedDimmed">
+          <Button key={`band-${list}resume-${row.name}`} label="❚❚" plain onPress={() => void setPaused($, row, false)} />
         </Box>
       ) : (
-        <Box key={`band-state-${row.name}`} backgroundColor="diffAddedDimmed">
-          <Button key={`band-pause-${row.name}`} label="▶" plain onPress={() => void setPaused($, row, true)} />
+        <Box key={`band-${list}state-${row.name}`} backgroundColor="diffAddedDimmed">
+          <Button key={`band-${list}pause-${row.name}`} label="▶" plain onPress={() => void setPaused($, row, true)} />
         </Box>
       )
     const caption = (text: string) => (
@@ -3489,37 +3562,53 @@ export const register: Register = on => {
         {text}
       </Text>
     )
+    // A vault's place on the line: framed on a graphical surface, so each
+    // stands apart; on the terminal, after a "│" from the one before.
+    const slot = (key: string, isFirst: boolean, children: unknown) =>
+      isChip ? (
+        <Box
+          key={key}
+          flexDirection="row"
+          alignItems="center"
+          columnGap={1}
+          flexShrink={0}
+          borderStyle="round"
+          borderColor="inactive"
+          paddingX={1}
+        >
+          {children as never}
+        </Box>
+      ) : (
+        <Box key={key} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
+          {!isFirst && caption('│')}
+          {children as never}
+        </Box>
+      )
+    const entry = (row: Secondary, isPaused: boolean, list = '') => [
+      opener(row, row.name, isPaused, list),
+      <Text key={`band-${list}tier-${row.name}`} dimColor={isPaused} wrap="truncate-end">
+        {iconOf(row.mode)}
+      </Text>,
+      control(row, isPaused, list),
+    ]
 
     return (
       <Box flexDirection="column">
         <Box key="vault-band" flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={2}>
-          <Box
-            key="vault-band-names"
-            flexDirection="row"
-            flexWrap={isUnfolded ? 'wrap' : 'nowrap'}
-            alignItems="center"
-            columnGap={1}
-            flexShrink={1}
-            overflow={isUnfolded ? 'visible' : 'hidden'}
-          >
+          <Box key="vault-band-names" flexDirection="row" flexWrap="nowrap" alignItems="center" columnGap={1} flexShrink={1} overflow="hidden">
             {heading(t('band.primary'))}
-            {snap.primary ? opener(snap.primary, 'band-open-primary') : <Text wrap="truncate-end">{t('band.none')}</Text>}
+            {snap.primary ? (
+              slot('band-main-row', true, opener(snap.primary, snap.primary.name, false, 'main-'))
+            ) : (
+              <Text wrap="truncate-end">{t('band.none')}</Text>
+            )}
             <Box width={1} />
             {heading(t('band.secondaries'))}
             {names.length === 0 && paused.length === 0 && caption(t('band.none'))}
-            {onLine.map(({ row, isPaused }, i) => (
-              <Box key={`band-${row.name}`} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
-                {i > 0 && caption('|')}
-                {opener(row, `band-open-${row.name}`, isPaused)}
-                <Text dimColor={isPaused} wrap="truncate-end">
-                  {iconOf(row.mode)}
-                </Text>
-                {control(row, isPaused)}
-              </Box>
-            ))}
+            {onLine.map(({ row, isPaused }, i) => slot(`band-row-${row.name}`, i === 0, entry(row, isPaused)))}
             {chip && (
               <Button key="band-more" plain dimColor onPress={() => void update($, bandListOpen, open => !open)}>
-                <Text dimColor>{isUnfolded ? t('band.fold') : chip}</Text>
+                <Text dimColor>{`${chip} ${isUnfolded ? '▴' : '▾'}`}</Text>
               </Button>
             )}
           </Box>
@@ -3531,6 +3620,18 @@ export const register: Register = on => {
             onPress={() => void togglePane($)}
           />
         </Box>
+        {isUnfolded && (
+          // The dropdown: every secondary, in the binding's order, with what
+          // acts on it — open it (Obsidian, the browser, Claude's browser),
+          // pause or resume it.
+          <Box key="band-list" flexDirection="column" borderStyle="round" borderColor="inactive" paddingX={1} alignSelf="flex-start">
+            {entries.map(({ row, isPaused }) => (
+              <Box key={`band-list-row-${row.name}`} flexDirection="row" alignItems="center" columnGap={1}>
+                {entry(row, isPaused, 'list-')}
+              </Box>
+            ))}
+          </Box>
+        )}
         {below}
       </Box>
     )

@@ -1428,8 +1428,16 @@ test('the band shows the primary, each secondary with its write badge, and keeps
     const ui = await $.ui.mount({ ...BAND, surface })
     const texts = await bandTexts(ui)
     expect(texts).toContain('main')
-    // docs is read-only, notes writes on request: one badge each, in order.
-    expect(texts.slice(texts.indexOf('docs'), texts.indexOf('notes') + 2)).toEqual(['docs', '🔒', '|', 'notes', '✋'])
+    // docs is read-only, notes writes on request: one badge each, in order; the
+    // terminal puts a "│" between them, the desktop a frame round each.
+    expect(texts.slice(texts.indexOf('docs'), texts.indexOf('notes') + 2)).toEqual(
+      surface === 'terminal' ? ['docs', '🔒', '│', 'notes', '✋'] : ['docs', '🔒', 'notes', '✋'],
+    )
+    if (surface === 'desktop') {
+      const frames = nodesOf(await ui.drawn()).filter(n => /^band-(main-)?row/.test(keyOf(n) ?? ''))
+      expect(frames.map(n => keyOf(n))).toEqual(['band-main-row', 'band-row-docs', 'band-row-notes'])
+      expect(frames.every(n => n.props?.borderStyle === 'round')).toBe(true)
+    }
     expect(texts.some(t => t.startsWith('…'))).toBe(false)
     expect(texts).toContain('engine band')
     await ui.unmount()
@@ -1442,14 +1450,14 @@ test('a band too narrow for every secondary ends with "…" and how many it left
   wire(on, { list: many })
   engineBand(on)
   await begin($)
-  const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 90 }, surface: 'desktop' })
+  const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 110 }, surface: 'desktop' })
   const texts = await bandTexts(ui)
   const shown = names.filter(n => texts.includes(n))
   expect(shown.length).toBeGreaterThan(0)
   expect(shown.length).toBeLessThan(5)
   // Binding order: the first ones are kept, the tail is counted.
   expect(shown).toEqual(names.slice(0, shown.length))
-  expect(texts).toContain(`… +${5 - shown.length}`)
+  expect(texts).toContain(`… +${5 - shown.length} ▾`)
   await ui.unmount()
 
   // Wide enough, all of them and no "…".
@@ -1579,7 +1587,7 @@ test('a band too narrow for even one secondary counts them all', async ($, on) =
   const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 40 }, surface: 'desktop' })
   const texts = await bandTexts(ui)
   expect(texts.includes('docs') || texts.includes('notes')).toBe(false)
-  expect(texts).toContain('… +2')
+  expect(texts).toContain('… +2 ▾')
   await ui.unmount()
 })
 
@@ -1610,14 +1618,14 @@ test('the band keeps room for "… +N" before it shows a secondary', async ($, o
   const docsAt = await firstShowing('docs')
   const notesAt = await firstShowing('notes')
   // Below docs' width, both are counted in the chip; at it, docs and "… +1".
-  expect(await at(docsAt - 1)).toContain('… +2')
-  expect(await at(docsAt)).toContain('… +1')
+  expect(await at(docsAt - 1)).toContain('… +2 ▾')
+  expect(await at(docsAt)).toContain('… +1 ▾')
   // notes, once it fits, takes the chip's room: no "…" any more.
   expect((await at(notesAt)).some(t => t.startsWith('…'))).toBe(false)
   // Neither opens anywhere (no folder, no web UI): no mark. notes' own width
-  // (gap, "| ", 5 cells, badge, control) less the chip it frees.
-  expect(notesAt - docsAt).toBe(1 + 2 + 5 + 1 + 2 + 1 + 1 - (1 + 4))
-  expect([docsAt, notesAt]).toEqual([74, 82])
+  // (gap, its frame and padding, 5 cells, badge, control) less the chip it frees ("… +1 ▾").
+  expect(notesAt - docsAt).toBe(1 + 4 + 5 + 1 + 2 + 1 + 1 - (1 + 4 + 2))
+  expect([docsAt, notesAt]).toEqual([84, 92])
 })
 
 test('the band counts a name\'s mark where it is drawn: on the desktop, for a vault that opens', async ($, on) => {
@@ -1641,11 +1649,11 @@ test('the band counts a name\'s mark where it is drawn: on the desktop, for a va
 
     return -1
   }
-  // The terminal draws no mark and counts none. The desktop: notes (local) its
-  // Obsidian mark, 3 cells; extra (remote) the planet, 3, and Claude's mark with
-  // its "↗", 5 more.
-  expect([await firstShowing('extra', 'terminal'), await firstShowing('notes', 'terminal')]).toEqual([75, 83])
-  expect([await firstShowing('extra', 'desktop'), await firstShowing('notes', 'desktop')]).toEqual([83, 94])
+  // The terminal draws no mark: a remote vault's 🌐 and ✳ keys (5 cells), a
+  // local one nothing. The desktop: notes (local) its Obsidian mark, 3 cells;
+  // extra (remote) the planet and Claude's mark, 6; and a frame round each vault.
+  expect([await firstShowing('extra', 'terminal'), await firstShowing('notes', 'terminal')]).toEqual([82, 88])
+  expect([await firstShowing('extra', 'desktop'), await firstShowing('notes', 'desktop')]).toEqual([91, 102])
 })
 
 // Two cells per CJK character: "資料庫一" is 8 cells, not 4. With main + two
@@ -1674,8 +1682,8 @@ test('the band counts a wide character as two cells', async ($, on) => {
     }
   }
   expect(first).toBeGreaterThan(-1)
-  // "文書庫二三" is 10 cells, not 5: its entry less the chip it frees.
-  expect(second - first).toBe(1 + 2 + 10 + 1 + 2 + 1 + 1 - (1 + 4))
+  // "文書庫二三" is 10 cells, not 5: its entry less the chip it frees ("… +1 ▾").
+  expect(second - first).toBe(1 + 2 + 10 + 1 + 2 + 1 + 1 - (1 + 4 + 2))
 })
 
 test('a pane the app draws on its own is told to the band', async ($, on) => {
@@ -2264,7 +2272,9 @@ test("a name in the band opens its vault: a remote one's web UI in the browser",
   engineBand(on)
   await begin($)
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  await band.press({ key: 'band-open-extra' })
+  // The planet after its name: the default browser. The name itself opens nothing.
+  expect(await band.find({ type: 'Button', key: 'band-open-extra' })).toBeFalsy()
+  await band.press({ key: 'band-web-extra' })
   expect(launched).toContainEqual(['rundll32', 'url.dll,FileProtocolHandler', 'https://10.8.0.1:3002/'])
   await band.unmount()
 })
@@ -2335,8 +2345,8 @@ test("a paused remote vault, which the router no longer lists, still opens from 
   engineBand(on)
   await begin($)
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  // On the band's line, where a paused vault is named too.
-  await band.press({ key: 'band-open-extra' })
+  // On the band's line, where a paused vault is named too: its planet.
+  await band.press({ key: 'band-web-extra' })
   expect(launched).toContainEqual(['rundll32', 'url.dll,FileProtocolHandler', 'https://10.8.0.1:3002/'])
   await band.unmount()
 })
@@ -2366,34 +2376,38 @@ test("a router older than the pause is said, and sent nothing it would refuse", 
   await ui.unmount()
 })
 
-test('"… +N" unfolds the rest on the band\'s line, wrapping to a second line; pressed again it folds them', async ($, on) => {
+test('"… +N ▾" opens a dropdown under the line: every secondary with its controls; pressed again it folds', async ($, on) => {
   const names = ['alpha-vault', 'beta-vault', 'gamma-vault', 'delta-vault', 'epsilon-vault']
-  const toasts: string[] = []
-  wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: names } }, toasts })
+  const calls = wire(on, { list: { ...LIST, routerBuild: { version: '0.108.0' }, workspaceBinding: { ...LIST.workspaceBinding, also: names } } })
   engineBand(on)
   await begin($)
   const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 100 }, surface: 'desktop' })
   const line = async () => nodesOf(await band.drawn()).find(n => keyOf(n) === 'vault-band-names')
-  // Folded: the line holds what fits, no wrapping, and nothing above it.
+  // Folded: the line holds what fits, no wrapping, no list.
   expect((await line())?.props?.flexWrap).toBe('nowrap')
-  expect(await band.find({ type: 'Button', key: 'band-open-epsilon-vault' })).toBeFalsy()
+  expect(await band.find({ key: 'band-list' })).toBeFalsy()
   await band.press({ key: 'band-more' })
-  // Unfolded: every secondary on the line, which wraps; the chip folds them back.
-  expect((await line())?.props?.flexWrap).toBe('wrap')
-  for (const name of names) {
-    expect(await bandTexts(band)).toContain(name)
-    expect(await band.find({ type: 'Button', key: `band-pause-${name}` })).toBeTruthy()
-  }
-  expect(await bandTexts(band)).toContain('‹ réduire')
-  // Nothing is drawn above the line any more.
+  // Open: the line is unchanged; under it, a framed list, one row per secondary in
+  // the binding's order, each with its own ▶ — the line's keys are not reused.
+  expect((await line())?.props?.flexWrap).toBe('nowrap')
   const nodes = nodesOf(await band.drawn())
-  expect(nodes.findIndex(n => keyOf(n) === 'vault-band')).toBeLessThan(nodes.findIndex(n => keyOf(n) === 'band-state-epsilon-vault'))
-  // These open nowhere (no folder, no web UI): their names are not buttons.
-  expect(await band.find({ type: 'Button', key: 'band-open-epsilon-vault' })).toBeFalsy()
-  void toasts
+  const list = nodes.find(n => keyOf(n) === 'band-list')
+  expect(list?.props?.borderStyle).toBe('round')
+  expect(nodes.findIndex(n => keyOf(n) === 'vault-band')).toBeLessThan(nodes.findIndex(n => keyOf(n) === 'band-list'))
+  const rows = nodesOf(list as never).filter(n => /^band-list-row-/.test(keyOf(n) ?? '')).map(n => keyOf(n))
+  expect(rows).toEqual(names.map(name => `band-list-row-${name}`))
+  for (const name of names) {
+    expect(await band.find({ type: 'Button', key: `band-list-pause-${name}` })).toBeTruthy()
+  }
+  const keys = nodes.map(n => keyOf(n)).filter((k): k is string => !!k)
+  expect(keys.length).toBe(new Set(keys).size)
+  // The chip says the list is open, at the same width: "… +N ▴".
+  expect((await bandTexts(band)).some(text => /^… \+\d+ ▴$/.test(text))).toBe(true)
+  // A control in the list acts as the line's would.
+  await band.press({ key: 'band-list-pause-epsilon-vault' })
+  expect(calls.filter(c => c.tool === 'set_secondary_vault_mode').at(-1)?.args).toEqual({ vault: 'epsilon-vault', paused: true })
   await band.press({ key: 'band-more' })
-  expect((await line())?.props?.flexWrap).toBe('nowrap')
-  expect(await band.find({ type: 'Button', key: 'band-pause-epsilon-vault' })).toBeFalsy()
+  expect(await band.find({ key: 'band-list' })).toBeFalsy()
   await band.unmount()
 })
 
@@ -2421,15 +2435,20 @@ test('a paused secondary keeps its place on the band: ▶ on green while it runs
   expect(prop('band-state-notes', 'backgroundColor')).toBe('diffAddedDimmed')
   expect(at('band-pause-docs')).toBe(-1)
   expect(at('band-resume-notes')).toBe(-1)
-  // A name that opens has its mark and a button named for where; one that opens nowhere is its name alone.
-  // A remote vault: the planet (the default browser) before its name, then Claude's
-  // mark and its own key (Claude's browser). Every mark says what it shows.
-  const marks = nodesOf(nodes.find(n => keyOf(n) === 'band-open-extra-box') as never).filter(n => n.type === 'Svg')
-  expect(marks.map(n => n.props?.alt)).toEqual(['Navigateur', 'Claude'])
-  expect(prop('band-ui-extra', 'label')).toBe('↗')
-  // Its name is the button's text, never a sentence: the desktop draws a label in its place.
-  expect(textOf(nodes.find(n => keyOf(n) === 'band-open-extra')!)).toBe('extra')
-  expect(['extra', undefined]).toContain(prop('band-open-extra', 'label'))
+  // A remote vault: its name, then the planet (the default browser) and Claude's
+  // mark (Claude's browser), each a control: a blank Button laid over the mark.
+  // Every mark says what it shows; the name opens nothing; no "↗" any more.
+  const box = nodesOf(nodes.find(n => keyOf(n) === 'band-box-extra') as never)
+  expect(box.filter(n => n.type === 'Svg').map(n => n.props?.alt)).toEqual(['Navigateur', 'Claude'])
+  expect(box.findIndex(n => keyOf(n) === 'band-name-extra')).toBeLessThan(box.findIndex(n => keyOf(n) === 'band-web-extra'))
+  expect(box.findIndex(n => keyOf(n) === 'band-web-extra')).toBeLessThan(box.findIndex(n => keyOf(n) === 'band-ui-extra'))
+  for (const key of ['band-web-extra', 'band-ui-extra']) {
+    expect(prop(`icon-${key}`, 'flexDirection')).toBe('row')
+    const over = nodesOf(nodes.find(n => keyOf(n) === `icon-${key}`) as never).find(n => n.props?.position === 'absolute')
+    expect(nodesOf(over as never).some(n => n.type === 'Button' && keyOf(n) === key)).toBe(true)
+  }
+  expect(at('band-open-extra')).toBe(-1)
+  expect(nodes.some(n => n.type === 'Button' && n.props?.label === '↗')).toBe(false)
   expect(at('band-open-docs')).toBe(-1)
   await band.unmount()
 })
@@ -2618,9 +2637,12 @@ test("on the band, a local vault's name has Obsidian's mark, and a remote one's 
   await begin($)
   const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 160 }, surface: 'desktop' })
   const nodes = nodesOf(await band.drawn())
-  const local = nodesOf(nodes.find(n => keyOf(n) === 'band-open-notes-box') as never).filter(n => n.type === 'Svg')
+  const local = nodesOf(nodes.find(n => keyOf(n) === 'band-box-notes') as never).filter(n => n.type === 'Svg')
   expect(local.map(n => n.props?.alt)).toEqual(['Obsidian'])
   expect(String(local[0]?.props?.source)).toContain('#A88BFA')
+  // The mark opens it in Obsidian, as its name does.
+  expect(await band.find({ type: 'Button', key: 'band-obsidian-notes' })).toBeTruthy()
+  expect(await band.find({ type: 'Button', key: 'band-open-notes' })).toBeTruthy()
   await band.press({ key: 'band-ui-extra' })
   expect(calls.find(c => c.tool === 'preview_start')?.args).toEqual({ url: 'https://10.8.0.1:3002/' })
   await band.unmount()
@@ -2638,7 +2660,7 @@ test('the band keys each Claude key by its vault name: a vault named "x-ui" coll
   const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 200 }, surface: 'desktop' })
   const keys = nodesOf(await band.drawn()).map(n => keyOf(n)).filter((k): k is string => !!k)
   expect(keys.length).toBe(new Set(keys).size)
-  expect(keys).toEqual(expect.arrayContaining(['band-open-extra', 'band-ui-extra', 'band-open-extra-ui', 'band-ui-extra-ui']))
+  expect(keys).toEqual(expect.arrayContaining(['band-web-extra', 'band-ui-extra', 'band-web-extra-ui', 'band-ui-extra-ui']))
   await band.unmount()
 })
 
@@ -2667,6 +2689,38 @@ test('the status bar stays at the top while the pane scrolls: a copy over the fi
     await down.press({ key: 'sticky-refresh' })
     await down.unmount()
   }
+})
+
+test('on the terminal, a remote vault in the band has 🌐 and ✳ keys after its name, and no frame', async ($, on) => {
+  const list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['extra', 'docs'] } }
+  const calls = wire(on, { list })
+  engineBand(on)
+  await begin($)
+  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 160 }, surface: 'terminal' })
+  const nodes = nodesOf(await band.drawn())
+  expect(nodes.find(n => keyOf(n) === 'band-web-extra')?.props?.label).toBe('🌐')
+  expect(nodes.find(n => keyOf(n) === 'band-ui-extra')?.props?.label).toBe('✳')
+  expect(nodes.some(n => n.type === 'Svg')).toBe(false)
+  expect(nodes.some(n => n.props?.borderStyle)).toBe(false)
+  await band.press({ key: 'band-ui-extra' })
+  expect(calls.find(c => c.tool === 'preview_start')?.args).toEqual({ url: 'https://10.8.0.1:3002/' })
+  await band.unmount()
+})
+
+test('a secondary named "primary" collides with nothing on the band: the primary has keys of its own', async ($, on) => {
+  const list = {
+    ...LIST,
+    workspaceBinding: { ...LIST.workspaceBinding, vault: 'extra', also: ['primary'] },
+    vaults: [...LIST.vaults, { name: 'primary', type: 'remote', online: true, baseUrl: 'http://10.8.0.1:27191', description: 'Conteneur (UI :3010)' }],
+  }
+  wire(on, { list })
+  engineBand(on)
+  await begin($)
+  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 200 }, surface: 'desktop' })
+  const keys = nodesOf(await band.drawn()).map(n => keyOf(n)).filter((k): k is string => !!k)
+  expect(keys.length).toBe(new Set(keys).size)
+  expect(keys).toEqual(expect.arrayContaining(['band-main-web-extra', 'band-main-ui-extra', 'band-web-primary', 'band-ui-primary', 'band-row-primary']))
+  await band.unmount()
 })
 
 // The workspace's hooks, as scripts/workspace-hooks.mjs answers them: the

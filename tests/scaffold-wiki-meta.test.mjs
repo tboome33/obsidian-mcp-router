@@ -582,7 +582,7 @@ describe('I-3 — scaffold spawns never touch the real ~/.claude', () => {
     );
   });
 
-  test('with the plugin installed, a bootstrap wires no hook machine-wide (v0.112.0)', () => {
+  test('with the plugin installed, a bootstrap wires no hook machine-wide', () => {
     // The opt-in hooks are switched on per workspace from the vault panel;
     // wiring them into settings.json would run them in every project.
     const pluginHome = path.join(workDir, 'plugin-home');

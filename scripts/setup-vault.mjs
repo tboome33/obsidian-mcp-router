@@ -5788,7 +5788,7 @@ function maybeAutoInstallHooks({ quiet = false, noHooks = false } = {}) {
     return;
   }
 
-  // v0.112.0: with the plugin installed, nothing is wired machine-wide any
+  // With the plugin installed, nothing is wired machine-wide any
   // more. Its three read-only hooks already run everywhere, and every other
   // one is declared behind hooks/opt-in-gate.mjs, switched on per workspace
   // from the vault panel's administration console. Wiring them here would run

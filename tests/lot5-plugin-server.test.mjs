@@ -367,7 +367,7 @@ describe('plugin manifests', () => {
     // anything that commits to git, writes session transcripts into a vault,
     // blocks a turn with exit 2, or phones home must stay out.
     //
-    // v0.112.0: the opt-in hooks ARE declared here, but only behind
+    // The opt-in hooks ARE declared here, but only behind
     // hooks/opt-in-gate.mjs, which runs one only in a workspace its owner
     // switched on from the vault panel's console — that switch is the opt-in
     // step. Off (the default), the gate reads a file and exits 0: it meets the
