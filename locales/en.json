@@ -99,11 +99,12 @@
   "add.close": "Close",
   "add.tabAll": "All · {count}",
   "add.search": "Search a vault to add",
+  "add.filter": "Filter",
   "add.sortAz": "A → Z",
   "add.sortZa": "Z → A",
   "add.localOpen": "Local · open",
   "footer.github": "GitHub ↗",
-  "footer.admin": "Administration ›",
+  "footer.admin": "⚙ Administration ›",
   "admin.general": "General",
   "admin.plugin": "Plugin",
   "admin.upToDate": "Up to date",
@@ -162,7 +163,7 @@
   "add.tabLocal": "Local · {count}",
   "add.tabRemote": "Remote · {count}",
   "add.noMatch": "No vault matches.",
-  "add.button": "Add",
+  "add.button": "+ Add",
   "add.primaryButton": "Primary",
 
   "tunnel.down": "WireGuard seems down: the remote vaults are not available.",
@@ -276,5 +277,9 @@
   "secondaries.pausedTag": "paused",
   "secondaries.pauseHint": "■ pauses a secondary without removing it · ▶ resumes it as it was set: 🔒 read-only, ✋ write if you agree, or ✏️ read and write",
 
-  "band.noOpen": "Nothing to open {name} with: no known local folder, no web UI."
+  "band.noOpen": "Nothing to open {name} with: no known local folder, no web UI.",
+  "band.openObsidian": "Open {name} in Obsidian",
+  "band.openBrowser": "Open {name} in the browser",
+  "band.pauseOne": "Pause {name}",
+  "band.resumeOne": "Resume {name}"
 }
