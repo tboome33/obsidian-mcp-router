@@ -10,6 +10,24 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.111.0] — 2026-10-24 — the pane's top bar stays at the top
+
+Asked after v0.110.4: a menu at the top of the pane that stays while it scrolls.
+
+- **A sticky status bar.** The mod UI has no `position: sticky`; the engine draws the pane
+  again at every move of its window (`scroll.offset`), so once the body has scrolled a copy of
+  the status bar ("3 liés · tous ouverts", "Rafraîchir", "Ouvrir…") is drawn over the content
+  at the first row the window shows, on an opaque ground in a bold frame. Its controls carry
+  their own keys (`sticky-refresh`, `sticky-open-closed`); the bar in the flow keeps its
+  controls, so nothing under it moves as the window leaves the top and Tab walks them where
+  they were. Nothing is drawn while the window is at the top, nor in the administration console.
+- Adversarial review by Codex, two passes. Fixed: none left open. Weighed and kept: duplicate
+  controls while scrolled (removing the in-flow ones moved the layout and the Tab order —
+  Codex's second pass). Left to see on screen: that the desktop delivers clicks to a Box drawn
+  `position: "absolute"` (the types say its pointer is its parent's), and on the terminal a
+  move its engine makes on its own (a clamp, a focus kept in view) is followed at the next
+  drawing only. Tests: `tests/vault-panel.test.tsx` 105.
+
 ## [0.110.4] — 2026-10-24 — "+ Ajouter" at the tile's bottom right
 
 Seen on screen in v0.110.3: in the tiles to add, "+ Ajouter" wrapped under the links on the
