@@ -1302,21 +1302,21 @@ test('the primary, the secondaries and the vaults to add are the same tile, in g
     await openAdd(ui)
     const nodes = nodesOf(await ui.drawn())
     // In LIST: one primary, two secondaries (one open, one closed), two vaults to add.
-    const tiles = nodes.filter(n => n.props?.borderStyle === 'round' && /^(primary-row|sec-|av-)/.test(keyOf(n) ?? ''))
+    const tiles = nodes.filter(n => n.props?.borderStyle === 'bold' && /^(primary-row|sec-|av-)/.test(keyOf(n) ?? ''))
     expect(tiles.map(n => keyOf(n))).toEqual(['primary-row', 'sec-docs', 'sec-notes', 'av-closed', 'av-extra'])
     const width = tiles[0]!.props?.width
     for (const tile of tiles) {
       // One tile for all three: same width (the side panel holds one per line), same border, same parts.
       expect(tile.props?.width).toBe(width)
-      expect(tile.props?.borderStyle).toBe('round')
+      expect(tile.props?.borderStyle).toBe('bold')
       expect(tile.props?.flexDirection).toBe('column')
       const nameText = nodesOf(tile as never).find(n => n.type === 'Text' && n.props?.weight === 'semibold')
       expect(nameText).toBeTruthy()
       // Its controls wrap inside the tile rather than run past its edge.
       expect(nodes.find(n => keyOf(n) === `${keyOf(tile)}-controls`)?.props?.flexWrap).toBe('wrap')
     }
-    // Only the primary's border is lit.
-    expect(tiles.map(n => n.props?.borderDimColor)).toEqual([false, true, true, true, true])
+    // A bold frame for every tile, the primary's in Claude's colour.
+    expect(tiles.map(n => n.props?.borderColor)).toEqual(['claude', 'inactive', 'inactive', 'inactive', 'inactive'])
     // The grids wrap.
     for (const key of ['sec-tiles', 'av-tiles']) {
       expect(nodes.find(n => keyOf(n) === key)?.props?.flexWrap).toBe('wrap')
@@ -1429,7 +1429,7 @@ test('the band shows the primary, each secondary with its write badge, and keeps
     const texts = await bandTexts(ui)
     expect(texts).toContain('main')
     // docs is read-only, notes writes on request: one badge each, in order.
-    expect(texts.slice(texts.indexOf('docs'), texts.indexOf('notes') + 3)).toEqual(['docs', '🔒', '■', '|', 'notes', '✋', '■'])
+    expect(texts.slice(texts.indexOf('docs'), texts.indexOf('notes') + 2)).toEqual(['docs', '🔒', '|', 'notes', '✋'])
     expect(texts.some(t => t.startsWith('…'))).toBe(false)
     expect(texts).toContain('engine band')
     await ui.unmount()
@@ -1598,16 +1598,52 @@ test('the band keeps room for "… +N" before it shows a secondary', async ($, o
 
     return texts
   }
-  const narrow = await at(69)
-  expect(narrow.includes('docs')).toBe(false)
-  expect(narrow).toContain('… +2')
-  const enough = await at(74)
-  expect(enough).toContain('docs')
-  expect(enough).toContain('… +1')
-  const all = await at(82)
-  expect(all).toContain('notes')
-  expect(all.some(t => t.startsWith('…'))).toBe(false)
-  expect((await at(81)).includes('notes')).toBe(false)
+  const firstShowing = async (name: string) => {
+    for (let columns = 40; columns < 160; columns += 1) {
+      if ((await at(columns)).includes(name)) {
+        return columns
+      }
+    }
+
+    return -1
+  }
+  const docsAt = await firstShowing('docs')
+  const notesAt = await firstShowing('notes')
+  // Below docs' width, both are counted in the chip; at it, docs and "… +1".
+  expect(await at(docsAt - 1)).toContain('… +2')
+  expect(await at(docsAt)).toContain('… +1')
+  // notes, once it fits, takes the chip's room: no "…" any more.
+  expect((await at(notesAt)).some(t => t.startsWith('…'))).toBe(false)
+  // Neither opens anywhere (no folder, no web UI): no mark. notes' own width
+  // (gap, "| ", 5 cells, badge, control) less the chip it frees.
+  expect(notesAt - docsAt).toBe(1 + 2 + 5 + 1 + 2 + 1 + 1 - (1 + 4))
+  expect([docsAt, notesAt]).toEqual([74, 82])
+})
+
+test('the band counts a name\'s mark where it is drawn: on the desktop, for a vault that opens', async ($, on) => {
+  const openable = {
+    ...LIST,
+    workspaceBinding: { ...LIST.workspaceBinding, also: ['extra', 'notes'] },
+    vaults: [...LIST.vaults.filter(v => v.name !== 'notes'), { name: 'notes', type: 'local', online: false, path: 'C:\\VAULTS\\Notes' }],
+  }
+  wire(on, { list: openable })
+  engineBand(on)
+  await begin($)
+  const firstShowing = async (name: string, surface: 'desktop' | 'terminal') => {
+    for (let columns = 40; columns < 160; columns += 1) {
+      const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: columns }, surface })
+      const has = (await bandTexts(ui)).includes(name)
+      await ui.unmount()
+      if (has) {
+        return columns
+      }
+    }
+
+    return -1
+  }
+  // The terminal draws no mark and counts none; the desktop, three cells a name.
+  expect([await firstShowing('extra', 'terminal'), await firstShowing('notes', 'terminal')]).toEqual([75, 83])
+  expect([await firstShowing('extra', 'desktop'), await firstShowing('notes', 'desktop')]).toEqual([78, 89])
 })
 
 // Two cells per CJK character: "資料庫一" is 8 cells, not 4. With main + two
@@ -1617,12 +1653,27 @@ test('the band counts a wide character as two cells', async ($, on) => {
   wire(on, { list: wide })
   engineBand(on)
   await begin($)
-  const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 80 }, surface: 'terminal' })
-  const texts = await bandTexts(ui)
-  expect(texts).toContain('資料庫一')
-  expect(texts.includes('文書庫二三')).toBe(false)
-  expect(texts).toContain('… +1')
-  await ui.unmount()
+  const at = async (bodyColumns: number) => {
+    const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns }, surface: 'terminal' })
+    const texts = await bandTexts(ui)
+    await ui.unmount()
+
+    return texts
+  }
+  let first = -1
+  let second = -1
+  for (let columns = 40; columns < 160 && second === -1; columns += 1) {
+    const texts = await at(columns)
+    if (first === -1 && texts.includes('資料庫一')) {
+      first = columns
+    }
+    if (texts.includes('文書庫二三')) {
+      second = columns
+    }
+  }
+  expect(first).toBeGreaterThan(-1)
+  // "文書庫二三" is 10 cells, not 5: its entry less the chip it frees.
+  expect(second - first).toBe(1 + 2 + 10 + 1 + 2 + 1 + 1 - (1 + 4))
 })
 
 test('a pane the app draws on its own is told to the band', async ($, on) => {
@@ -2242,10 +2293,9 @@ test('❚❚ Pause pauses a secondary through the router, which keeps it in plac
   expect(await ground('state-on-docs')).toBeUndefined()
   expect(await ui.find({ key: 'mode-docs' })).toBeTruthy()
   expect(await ui.find({ type: 'Button', key: 'add-docs' })).toBeFalsy()
-  // The band shows it on its line, marked ⏸, with its ▶ right there.
+  // The band shows it on its line, with its ❚❚ (a press resumes it).
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await bandTexts(band)).toContain('⏸')
-  expect(await band.find({ type: 'Button', key: 'band-resume-docs' })).toBeTruthy()
+  expect(await band.find({ type: 'Button', key: 'band-resume-docs' })).toMatchObject({ props: { label: 'Reprendre docs' } })
   expect(await band.find({ type: 'Button', key: 'band-pause-notes' })).toBeTruthy()
   await band.unmount()
   await ui.press({ key: 'resume-docs' })
@@ -2329,36 +2379,52 @@ test('"… +N" unfolds the rest on the band\'s line, wrapping to a second line; 
   // Unfolded: every secondary on the line, which wraps; the chip folds them back.
   expect((await line())?.props?.flexWrap).toBe('wrap')
   for (const name of names) {
-    expect(await band.find({ type: 'Button', key: `band-open-${name}` })).toBeTruthy()
+    expect(await bandTexts(band)).toContain(name)
     expect(await band.find({ type: 'Button', key: `band-pause-${name}` })).toBeTruthy()
   }
   expect(await bandTexts(band)).toContain('‹ réduire')
   // Nothing is drawn above the line any more.
   const nodes = nodesOf(await band.drawn())
-  expect(nodes.findIndex(n => keyOf(n) === 'vault-band')).toBeLessThan(nodes.findIndex(n => keyOf(n) === 'band-open-epsilon-vault'))
-  await band.press({ key: 'band-open-epsilon-vault' })
-  expect(toasts.some(text => /epsilon-vault/.test(text))).toBe(true)
+  expect(nodes.findIndex(n => keyOf(n) === 'vault-band')).toBeLessThan(nodes.findIndex(n => keyOf(n) === 'band-state-epsilon-vault'))
+  // These open nowhere (no folder, no web UI): their names are not buttons.
+  expect(await band.find({ type: 'Button', key: 'band-open-epsilon-vault' })).toBeFalsy()
+  void toasts
   await band.press({ key: 'band-more' })
   expect((await line())?.props?.flexWrap).toBe('nowrap')
-  expect(await band.find({ type: 'Button', key: 'band-open-epsilon-vault' })).toBeFalsy()
+  expect(await band.find({ type: 'Button', key: 'band-pause-epsilon-vault' })).toBeFalsy()
   await band.unmount()
 })
 
-test('a paused secondary keeps its place on the band; ■ is a muted red, ▶ a green', async ($, on) => {
-  // docs comes first in the binding: paused, it stays first.
+test('a paused secondary keeps its place on the band: ▶ on green while it runs, ❚❚ on red while paused', async ($, on) => {
+  // docs comes first in the binding: paused, it stays first. extra opens in the browser.
   wire(on, {
-    list: { ...LIST, routerBuild: { version: '0.108.0' }, workspaceBinding: { ...LIST.workspaceBinding, alsoPaused: ['docs'] } },
+    list: {
+      ...LIST,
+      routerBuild: { version: '0.108.0' },
+      workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'notes', 'extra'], alsoPaused: ['docs'] },
+    },
   })
   engineBand(on)
   await begin($)
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 160 }, surface: 'desktop' })
   const nodes = nodesOf(await band.drawn())
   const at = (key: string) => nodes.findIndex(n => keyOf(n) === key)
-  expect(at('band-open-docs')).toBeGreaterThan(-1)
-  expect(at('band-open-docs')).toBeLessThan(at('band-open-notes'))
-  const glyph = (key: string) => nodesOf(nodes.find(n => keyOf(n) === key) as never).find(n => n.type === 'Text')
-  expect(glyph('band-resume-docs')?.props?.color).toBe('#3f9b5a')
-  expect(glyph('band-pause-notes')?.props?.color).toBe('#c0605a')
+  const prop = (key: string, name: string) => nodes.find(n => keyOf(n) === key)?.props?.[name]
+  expect(at('band-state-docs')).toBeGreaterThan(-1)
+  expect(at('band-state-docs')).toBeLessThan(at('band-state-notes'))
+  // One key each, its state on its ground, named for what a press does.
+  expect(prop('band-resume-docs', 'label')).toBe('Reprendre docs')
+  expect(textOf(nodes.find(n => keyOf(n) === 'band-resume-docs')!)).toBe('❚❚')
+  expect(prop('band-state-docs', 'backgroundColor')).toBe('diffRemovedDimmed')
+  expect(prop('band-pause-notes', 'label')).toBe('Mettre notes en pause')
+  expect(textOf(nodes.find(n => keyOf(n) === 'band-pause-notes')!)).toBe('▶')
+  expect(prop('band-state-notes', 'backgroundColor')).toBe('diffAddedDimmed')
+  expect(at('band-pause-docs')).toBe(-1)
+  expect(at('band-resume-notes')).toBe(-1)
+  // A name that opens has its mark and a button named for where; one that opens nowhere is its name alone.
+  expect(nodesOf(nodes.find(n => keyOf(n) === 'band-open-extra-box') as never).some(n => n.type === 'Svg')).toBe(true)
+  expect(prop('band-open-extra', 'label')).toBe('Ouvrir extra dans le navigateur')
+  expect(at('band-open-docs')).toBe(-1)
   await band.unmount()
 })
 
@@ -2392,7 +2458,7 @@ const MANY = {
 }
 const addedNames = async (ui: { drawn(): Promise<unknown> }) =>
   nodesOf(await ui.drawn())
-    .filter(n => n.props?.borderStyle === 'round' && /^av-/.test(keyOf(n) ?? ''))
+    .filter(n => n.props?.borderStyle === 'bold' && /^av-/.test(keyOf(n) ?? ''))
     .map(n => keyOf(n)!.slice(3))
 
 test('adding: all, local or remote ones, a search, and A → Z or Z → A regardless of case', async ($, on) => {
@@ -2412,8 +2478,16 @@ test('adding: all, local or remote ones, a search, and A → Z or Z → A regard
   await ui.press({ key: 'tab-tous' })
   await ui.input({ key: 'add-search', text: 'TA', kind: 'change' })
   expect(await addedNames(ui)).toEqual(['Zeta'])
-  // An open local one says so; "Fermer" folds the list back.
-  expect(await ui.find({ type: 'Text', text: /^Local · ouvert$/ })).toBeTruthy()
+  // An open local one can be looked at in Obsidian before it is added, "+ Ajouter" beside it.
+  expect(await ui.find({ type: 'Button', key: 'obsidian-Zeta' })).toMatchObject({ props: { label: 'Local · Obsidian ↗' } })
+  expect(await ui.find({ type: 'Button', key: 'add-Zeta' })).toMatchObject({ props: { label: '+ Ajouter', variant: 'secondary' } })
+  // The tabs, the search and the order share one bar; "Fermer" folds the list back.
+  const bar = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'add-bar')
+  expect(bar?.props?.flexDirection).toBe('row')
+  for (const key of ['tab-tous', 'add-search', 'add-sort']) {
+    expect(nodesOf(bar as never).some(n => keyOf(n) === key)).toBe(true)
+  }
+  expect(nodesOf(bar as never).find(n => keyOf(n) === 'add-search')?.props?.submitLabel).toBe('Filtrer')
   await ui.press({ key: 'toggle-add' })
   expect(await ui.find({ type: 'Button', key: 'tab-tous' })).toBeFalsy()
   await ui.unmount()
@@ -2483,14 +2557,14 @@ test('the console holds the pane while open: its cards, wiki types and conventio
   wire(on, { list: LIST })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 130 }, surface: 'desktop' })
-  expect(await ui.find({ type: 'Button', key: 'toggle-admin' })).toMatchObject({ props: { label: 'Administration ›' } })
+  expect(await ui.find({ type: 'Button', key: 'toggle-admin' })).toMatchObject({ props: { label: '⚙ Administration ›', variant: 'secondary' } })
   await ui.press({ key: 'toggle-admin' })
   // The vaults hidden, the five cards drawn, three to a line.
   expect(await ui.find({ type: 'Text', text: /^Principal$/ })).toBeFalsy()
   const nodes = nodesOf(await ui.drawn())
   for (const key of ['admin-general', 'admin-create', 'admin-wireguard', 'admin-register', 'admin-unregister']) {
     expect(nodes.find(n => keyOf(n) === key)?.props?.width).toBe(42)
-    expect(nodes.find(n => keyOf(n) === `${key}-card`)?.props?.borderStyle).toBe('round')
+    expect(nodes.find(n => keyOf(n) === `${key}-card`)?.props?.borderStyle).toBe('bold')
   }
   // The wiki type: the one in force framed and lit.
   await ui.press({ key: 'create-mode-research' })

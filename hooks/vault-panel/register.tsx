@@ -204,12 +204,32 @@ function chipText(hidden: number, paused: number) {
 }
 // The secondaries on the band's line, active ones then paused ones, each as
 // its name, its badge (tier or ⏸) and its ■ or ▶; `paused[i]` says which.
-function bandFit(primary: string | null, secondaries: string[], columns: number, paused: boolean[] = []) {
+// `marks[i]` (and `primaryMark`): whether that name is drawn with its mark,
+// two cells and a gap.
+function bandFit(
+  primary: string | null,
+  secondaries: string[],
+  columns: number,
+  paused: boolean[] = [],
+  marks: boolean[] = [],
+  primaryMark = false,
+) {
   const toggle = 2 + Math.max(cells(t('band.show')), cells(t('band.hide'))) + 4
   const base =
-    cells(t('band.primary')) + 1 + cells(primary ?? t('band.none')) + 1 + 1 + 1 + cells(t('band.secondaries')) + toggle
-  // A gap, "| " after the first, the name, a gap and its badge, a gap and its control.
-  const widths = secondaries.map((name, i) => 1 + (i > 0 ? 2 : 0) + cells(name) + 1 + 2 + 1 + 1)
+    cells(t('band.primary')) +
+    1 +
+    (primaryMark ? 3 : 0) +
+    cells(primary ?? t('band.none')) +
+    1 +
+    1 +
+    1 +
+    cells(t('band.secondaries')) +
+    toggle
+  // A gap, "| " after the first, the mark and the name, a gap and its badge,
+  // a gap and its control (▶, or ❚❚ while paused).
+  const widths = secondaries.map(
+    (name, i) => 1 + (i > 0 ? 2 : 0) + (marks[i] ? 3 : 0) + cells(name) + 1 + 2 + 1 + (paused[i] ? 2 : 1),
+  )
   // The most secondaries that fit with the chip their remainder needs.
   for (let shown = secondaries.length; shown > 0; shown -= 1) {
     const chip = chipText(secondaries.length - shown, paused.slice(shown).filter(Boolean).length)
@@ -1389,6 +1409,17 @@ async function setPaused($: EngineInterface, s: Secondary, paused: boolean) {
 // ---- Opening a vault from the band ------------------------------------------------
 // A local vault in Obsidian, a remote one's web UI in the default browser
 // (Chrome on this machine): what its row in the pane offers as 💎 and 🌐.
+// Where a vault opens from the band: Obsidian for a local one Obsidian lists
+// (or may list: not checked yet), the browser for a remote one with a web UI;
+// null when it opens nowhere, and the band then draws its name alone.
+function openTarget(row: VaultRow): 'obsidian' | 'browser' | null {
+  if (row.type !== 'remote' && row.path) {
+    return row.isKnownToObsidian === false ? null : 'obsidian'
+  }
+
+  return row.uiUrl ? 'browser' : null
+}
+
 async function openVault($: EngineInterface, row: VaultRow) {
   if (row.type !== 'remote' && row.path) {
     await openInObsidian($, row)
@@ -1402,7 +1433,6 @@ async function openVault($: EngineInterface, row: VaultRow) {
 // ---- Plugin update ------------------------------------------------------------------
 const REPO_URL = 'https://github.com/tboome33/obsidian-mcp-router'
 const LATEST_MANIFEST = 'https://raw.githubusercontent.com/tboome33/obsidian-mcp-router/main/.claude-plugin/plugin.json'
-// The octicon "mark-github" (MIT), grey so it reads on a light and a dark pane.
 // Obsidian's mark, in its purple, before the button that opens a local vault in
 // Obsidian (a surface with no SVG element keeps 💎). From LobeHub's icons
 // (@lobehub/icons-static-svg 1.98.0, obsidian-color.svg, MIT).
@@ -1411,9 +1441,12 @@ const OBSIDIAN_MARK =
 // The marks before a vault's open links (the panel redesign): a remote vault's
 // web UI in the browser, the same in Claude's own browser pane.
 const GLOBE_MARK =
-  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" rx="4" fill="#2A78D6"/><circle cx="8" cy="8" r="4.6" fill="none" stroke="#FFFFFF" stroke-width="1.1"/><path d="M3.4 8h9.2M8 3.4c1.4 1.3 2 2.9 2 4.6s-.6 3.3-2 4.6M8 3.4C6.6 4.7 6 6.3 6 8s.6 3.3 2 4.6" fill="none" stroke="#FFFFFF" stroke-width="1.1"/></svg>'
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="4.8" fill="#2A78D6"/><path d="M5.2 6.6c1.2.5 2.4.4 3.4-.2M6.4 10.4c1-.4 2.2-.3 3.4.4" fill="none" stroke="#9CC4F2" stroke-width="0.9" stroke-linecap="round"/><ellipse cx="8" cy="8" rx="7.3" ry="2.3" fill="none" stroke="#2A78D6" stroke-width="1.1" transform="rotate(-22 8 8)"/></svg>'
+// Claude's own mark: the app's built-in browser. From LobeHub's icons
+// (@lobehub/icons-static-svg 1.98.0, claude-color.svg, MIT).
 const CLAUDE_PANE_MARK =
-  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" rx="4" fill="#D97757"/><rect x="3.4" y="4.2" width="9.2" height="7.6" rx="1.4" fill="none" stroke="#FFFFFF" stroke-width="1.1"/><path d="M9.4 4.2v7.6" stroke="#FFFFFF" stroke-width="1.1"/></svg>'
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z" fill="#D97757" fill-rule="nonzero"/></svg>'
+// The octicon "mark-github" (MIT), grey so it reads on a light and a dark pane.
 const GITHUB_MARK =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#6e7681" d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>'
 
@@ -1456,11 +1489,6 @@ function compareVersions(x: string, y: string) {
 
   return 0
 }
-// ■ and ▶: a muted red to pause, a green to resume, readable on a light and a
-// dark background alike. The glyph is the Button's only child, a coloured
-// Text (a Button holds strings and Text only).
-const PAUSE_COLOR = '#c0605a'
-const RESUME_COLOR = '#3f9b5a'
 // A vault's tile, in cells, at the least: a name of about 18 fits. The pane
 // widens it to the tier menu's width, the same for every tile.
 const TILE_WIDTH = 24
@@ -2114,8 +2142,7 @@ export const register: Register = on => {
         <Button
           key="toggle-admin"
           label={isAdminShown ? t('footer.back') : t('footer.admin')}
-          plain
-          dimColor={!isAdminShown}
+          variant="secondary"
           onPress={() =>
             void update($, showAdmin, shownNow => !shownNow).then(async () => {
               if (await read($, showAdmin)) {
@@ -2199,7 +2226,7 @@ export const register: Register = on => {
         <Text size="footnote" weight="semibold" dimColor>
           {title}
         </Text>
-        <Box key={`${key}-card`} flexDirection="column" gap={1} borderStyle="round" borderDimColor paddingX={1}>
+        <Box key={`${key}-card`} flexDirection="column" gap={1} borderStyle="bold" borderColor="inactive" paddingX={1}>
           {body as never}
         </Box>
       </Box>
@@ -2723,8 +2750,8 @@ export const register: Register = on => {
         flexDirection="column"
         width={opts.width}
         minWidth={opts.width}
-        borderStyle="round"
-        borderDimColor={!opts.isHighlighted}
+        borderStyle="bold"
+        borderColor={opts.isHighlighted ? 'claude' : 'inactive'}
         paddingX={1}
       >
         <Box key={`${key}-head`} flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
@@ -2999,8 +3026,10 @@ export const register: Register = on => {
             <Button key="toggle-add" label={t('add.close')} plain dimColor onPress={() => void update($, showAdd, () => false)} />
           )}
         </Box>
-        {/* Three real buttons: the open one is the primary one, so which
-            list shows is plain at a glance. */}
+        {/* Three real buttons (the open one is the primary one, so which list
+            shows is plain at a glance), then the search and the order: one line
+            in a wide pane, wrapping in the side panel. */}
+        <Box key="add-bar" flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
         <Box key="tabs" flexDirection="row" gap={1} flexWrap="wrap">
           {tabs.map(one => (
             <Button
@@ -3012,14 +3041,14 @@ export const register: Register = on => {
           ))}
         </Box>
         {(Input || Select) && (
-          <Box key="add-tools" flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+          <Box key="add-tools" flexDirection="row" gap={1} alignItems="center" flexWrap="wrap" flexGrow={1} flexShrink={1}>
             {Input && (
               <Box key="add-search-box" flexGrow={1} flexShrink={1} minWidth={16}>
                 <Input
                   key="add-search"
                   placeholder={t('add.search')}
                   value={addTyped}
-                  submitLabel={t('filter.submit')}
+                  submitLabel={t('add.filter')}
                   onInput={(value: string) => void update($, addQuery, () => value)}
                   onSubmit={(value: string) => void update($, addQuery, () => value)}
                 />
@@ -3040,6 +3069,7 @@ export const register: Register = on => {
             )}
           </Box>
         )}
+        </Box>
         {list.length === 0 && (
           <Text size="caption" dimColor>
             {t('add.noMatch')}
@@ -3053,45 +3083,51 @@ export const register: Register = on => {
               v,
               null,
               [
-                // A remote vault with a web UI can be looked at before it is added.
-                isRemote(v) && v.uiUrl ? (
-                  links(v)
-                ) : (
-                  <Box key={`av-place-${v.name}`} flexDirection="row" gap={1} alignItems="center">
-                    {mark(isRemote(v) ? GLOBE_MARK : OBSIDIAN_MARK)}
-                    <Text size="caption" dimColor>
-                      {placeOf(v)}
-                    </Text>
+                // Where it opens, on the left — a vault can be looked at before it
+                // is added — and the one action, "+ Ajouter", plain to see on the
+                // right.
+                <Box key={`av-foot-${v.name}`} flexDirection="row" flexGrow={1} justifyContent="space-between" alignItems="center" gap={1} flexWrap="wrap">
+                  <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap" flexShrink={1}>
+                    {(isRemote(v) && v.uiUrl) || (!isRemote(v) && v.path && v.isKnownToObsidian !== false) ? (
+                      links(v)
+                    ) : (
+                      <Box key={`av-place-${v.name}`} flexDirection="row" gap={1} alignItems="center">
+                        {mark(isRemote(v) ? GLOBE_MARK : OBSIDIAN_MARK)}
+                        <Text size="caption" dimColor>
+                          {placeOf(v)}
+                        </Text>
+                      </Box>
+                    )}
                   </Box>
-                ),
-                snap.primary ? (
-                  <Button
-                    key={`add-${v.name}`}
-                    label={t('add.button')}
-                    plain
-                    onPress={() =>
-                      void rebind(
-                        $,
-                        { doing: t('action.add.doing', { name: v.name }), done: t('action.add.done', { name: v.name }) },
-                        shown,
-                        current => (current.includes(v.name) ? current : [...current, v.name]),
-                        {
-                          shows: snap => ({
-                            ...snap,
-                            // Already a secondary (another session added it, the retry
-                            // kept it): the tile on screen, tier and all, stays as is.
-                            secondaries: snap.secondaries.some(r => r.name === v.name)
-                              ? snap.secondaries
-                              : [...snap.secondaries, { ...v, mode: 'soft' }],
-                            available: snap.available.filter(r => r.name !== v.name),
-                          }),
-                        },
-                      )
-                    }
-                  />
-                ) : (
-                  <Button key={`primary-${v.name}`} label={t('add.primaryButton')} plain onPress={() => void choosePrimary($, v.name)} />
-                ),
+                  {snap.primary ? (
+                    <Button
+                      key={`add-${v.name}`}
+                      label={t('add.button')}
+                      variant="secondary"
+                      onPress={() =>
+                        void rebind(
+                          $,
+                          { doing: t('action.add.doing', { name: v.name }), done: t('action.add.done', { name: v.name }) },
+                          shown,
+                          current => (current.includes(v.name) ? current : [...current, v.name]),
+                          {
+                            shows: snap => ({
+                              ...snap,
+                              // Already a secondary (another session added it, the retry
+                              // kept it): the tile on screen, tier and all, stays as is.
+                              secondaries: snap.secondaries.some(r => r.name === v.name)
+                                ? snap.secondaries
+                                : [...snap.secondaries, { ...v, mode: 'soft' }],
+                              available: snap.available.filter(r => r.name !== v.name),
+                            }),
+                          },
+                        )
+                      }
+                    />
+                  ) : (
+                    <Button key={`primary-${v.name}`} label={t('add.primaryButton')} variant="secondary" onPress={() => void choosePrimary($, v.name)} />
+                  )}
+                </Box>,
               ],
               { width: addWidth },
             ),
@@ -3159,7 +3195,12 @@ export const register: Register = on => {
     if (!snap) {
       return below
     }
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const bandEls = $.ui.resolve(e)
+    const { Box, Text, Button } = bandEls
+    // The terminal draws no SVG (its element draws nothing there): no mark is
+    // drawn, and none is counted.
+    const BandSvg = e.surface !== 'terminal' && 'Svg' in bandEls ? bandEls.Svg : null
+    const hasMark = (row: VaultRow) => !!BandSvg && openTarget(row) !== null
     // Read for its redraws only: the toggle says what the module knows, and
     // the texts follow the language.
     await read($, paneVersion)
@@ -3185,32 +3226,73 @@ export const register: Register = on => {
       entries.map(entry => entry.row.name),
       e.props.bodyColumns,
       entries.map(entry => entry.isPaused),
+      entries.map(entry => hasMark(entry.row)),
+      !!snap.primary && hasMark(snap.primary),
     )
     const chip = chipText(fit.hidden, entries.slice(fit.shown).filter(entry => entry.isPaused).length)
     // A vault's name, pressed, opens it: Obsidian for a local one, the browser
     // for a remote one's web UI.
-    const opener = (row: VaultRow, key: string, isDim = false) => (
-      <Button key={key} plain onPress={() => void openVault($, row)}>
-        <Text dimColor={isDim} wrap="truncate-end">
-          {row.name}
-        </Text>
-      </Button>
-    )
+    // A vault's name, pressed, opens it; its mark before it says where:
+    // Obsidian for a local one, the planet (the browser) for a remote one.
+    const opener = (row: VaultRow, key: string, isDim = false) => {
+      const target = openTarget(row)
+      if (!target) {
+        return (
+          <Text key={`${key}-plain`} dimColor wrap="truncate-end">
+            {row.name}
+          </Text>
+        )
+      }
+
+      return (
+        <Box key={`${key}-box`} flexDirection="row" gap={1} alignItems="center">
+          {BandSvg && <BandSvg source={target === 'browser' ? GLOBE_MARK : OBSIDIAN_MARK} alt="" width={12} height={12} />}
+          {/* The label names the control for a screen reader; the name is what shows. */}
+          <Button
+            key={key}
+            label={t(target === 'browser' ? 'band.openBrowser' : 'band.openObsidian', { name: row.name })}
+            plain
+            onPress={() => void openVault($, row)}
+          >
+            <Text dimColor={isDim} wrap="truncate-end">
+              {row.name}
+            </Text>
+          </Button>
+        </Box>
+      )
+    }
     // The chip unfolds the rest on the line itself, after the others, wrapping
     // to a second line (and more) when the band is too narrow; pressed again,
     // it folds them back.
     const isUnfolded = isListOpen && fit.hidden > 0
     const onLine = isUnfolded ? entries : entries.slice(0, fit.shown)
     // A secondary's control: ■ pauses an active one, ▶ resumes a paused one.
+    // One key per secondary, as the pane's switch draws its state: ▶ on a green
+    // ground while it runs (a press pauses it), ❚❚ on a red one while it is
+    // paused (a press resumes it).
     const control = (row: Secondary, isPaused: boolean) =>
       isPaused ? (
-        <Button key={`band-resume-${row.name}`} plain onPress={() => void setPaused($, row, false)}>
-          <Text color={RESUME_COLOR}>▶</Text>
-        </Button>
+        <Box key={`band-state-${row.name}`} backgroundColor="diffRemovedDimmed">
+          <Button
+            key={`band-resume-${row.name}`}
+            label={t('band.resumeOne', { name: row.name })}
+            plain
+            onPress={() => void setPaused($, row, false)}
+          >
+            ❚❚
+          </Button>
+        </Box>
       ) : (
-        <Button key={`band-pause-${row.name}`} plain onPress={() => void setPaused($, row, true)}>
-          <Text color={PAUSE_COLOR}>■</Text>
-        </Button>
+        <Box key={`band-state-${row.name}`} backgroundColor="diffAddedDimmed">
+          <Button
+            key={`band-pause-${row.name}`}
+            label={t('band.pauseOne', { name: row.name })}
+            plain
+            onPress={() => void setPaused($, row, true)}
+          >
+            ▶
+          </Button>
+        </Box>
       )
     const caption = (text: string) => (
       <Text size="caption" dimColor wrap="truncate-end">
@@ -3245,7 +3327,9 @@ export const register: Register = on => {
               <Box key={`band-${row.name}`} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
                 {i > 0 && caption('|')}
                 {opener(row, `band-open-${row.name}`, isPaused)}
-                {isPaused ? caption('⏸') : <Text wrap="truncate-end">{iconOf(row.mode)}</Text>}
+                <Text dimColor={isPaused} wrap="truncate-end">
+                  {iconOf(row.mode)}
+                </Text>
                 {control(row, isPaused)}
               </Box>
             ))}

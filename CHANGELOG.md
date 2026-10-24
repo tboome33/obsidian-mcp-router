@@ -10,6 +10,30 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.110.1] — 2026-10-24 — tiles that stand out, marks that say where a vault opens
+
+Asked after v0.110.0, with the design's capture beside it:
+
+- **Tiles and the console's cards stand out**: a bold frame in the theme's stronger grey, the
+  primary's in Claude's colour (the engine draws no shadow and no translucency).
+- **Marks that say where a vault opens**: Obsidian's purple mark (in Obsidian), a planet (in the
+  browser), Claude's own mark (in Claude's built-in browser — from LobeHub's icons, MIT). The
+  tiles to add show the same links, so a vault can be looked at before it is added. On the band,
+  each name that opens has its mark (Obsidian or the planet); one that opens nowhere (no folder,
+  no web UI) is its name alone, not a button.
+- **The band's pause**: one key per secondary — ▶ on a green ground while it runs (a press pauses
+  it), ❚❚ on a red one while paused (a press resumes it) — no "Actif"/"Pause" words. Its keys and
+  names carry a label for a screen reader ("Mettre notes en pause", "Reprendre docs", "Ouvrir
+  extra dans le navigateur"). Marks are counted in the line's width only where they are drawn
+  (not on the terminal).
+- **"⚙ Administration ›"**: a gear, and a real button rather than a quiet link.
+- **Adding a vault, as in the design**: the tabs, the search (its button reads "Filtrer") and the
+  order on one bar, wrapping only in a narrow pane; "+ Ajouter" a real button at the tile's
+  bottom right.
+- Adversarial review by Codex: no P0/P1; its four P2/P3 fixed (marks counted where not drawn,
+  screen-reader names, absolute width thresholds back in the tests, no mark where nothing opens).
+  Tests: `tests/vault-panel.test.tsx` 102.
+
 ## [0.110.0] — 2026-10-24 — the administration console redrawn
 
 From Roland's design (Claude Design canvas "obsidian-mcp-router — console d'administration"):

@@ -91,11 +91,12 @@ export const FR: Record<string, string> = {
   "add.close": "Fermer",
   "add.tabAll": "Tous · {count}",
   "add.search": "Rechercher un vault à ajouter",
+  "add.filter": "Filtrer",
   "add.sortAz": "A → Z",
   "add.sortZa": "Z → A",
   "add.localOpen": "Local · ouvert",
   "footer.github": "GitHub ↗",
-  "footer.admin": "Administration ›",
+  "footer.admin": "⚙ Administration ›",
   "admin.general": "Général",
   "admin.plugin": "Plugin",
   "admin.upToDate": "À jour",
@@ -146,7 +147,7 @@ export const FR: Record<string, string> = {
   "add.tabLocal": "Locaux · {count}",
   "add.tabRemote": "Distants · {count}",
   "add.noMatch": "Aucun vault ne correspond.",
-  "add.button": "Ajouter",
+  "add.button": "+ Ajouter",
   "add.primaryButton": "Principal",
   "tunnel.down": "WireGuard semble inactif : les vaults distants ne sont pas disponibles.",
   "tunnel.hint": "Active le tunnel, puis ↻ Rafraîchir.",
@@ -246,5 +247,9 @@ export const FR: Record<string, string> = {
   "secondaries.paused": "En pause · {count}",
   "secondaries.pausedTag": "en pause",
   "secondaries.pauseHint": "■ met un secondaire en pause sans le retirer · ▶ le reprend tel qu'il était réglé : 🔒 lecture seule, ✋ écriture si tu l'acceptes ou ✏️ lecture et écriture",
-  "band.noOpen": "Rien pour ouvrir {name} : ni dossier local connu, ni interface web."
+  "band.noOpen": "Rien pour ouvrir {name} : ni dossier local connu, ni interface web.",
+  "band.openObsidian": "Ouvrir {name} dans Obsidian",
+  "band.openBrowser": "Ouvrir {name} dans le navigateur",
+  "band.pauseOne": "Mettre {name} en pause",
+  "band.resumeOne": "Reprendre {name}"
 }
