@@ -2113,7 +2113,7 @@ export const register: Register = on => {
         </Box>
         <Button
           key="toggle-admin"
-          label={isAdminShown ? t('footer.adminOpen') : t('footer.admin')}
+          label={isAdminShown ? t('footer.back') : t('footer.admin')}
           plain
           dimColor={!isAdminShown}
           onPress={() =>
@@ -2181,12 +2181,61 @@ export const register: Register = on => {
               ? t('wg.absent')
               : t('wg.unknown')
     const removable = snap ? snap.available : []
+    // The console's sections (the redesign): each a framed card under its grey
+    // title; side by side, three to a line, in a wide pane.
+    const cardColumns = e.props.bodyColumns ?? 60
+    const cardWidth = (() => {
+      for (let n = 3; n > 1; n -= 1) {
+        const width = Math.floor((cardColumns - (n - 1)) / n)
+        if (width >= 40) {
+          return width
+        }
+      }
+
+      return Math.max(40, cardColumns)
+    })()
+    const card = (key: string, title: string, body: unknown) => (
+      <Box key={key} flexDirection="column" width={cardWidth} minWidth={Math.min(cardWidth, 30)}>
+        <Text size="footnote" weight="semibold" dimColor>
+          {title}
+        </Text>
+        <Box key={`${key}-card`} flexDirection="column" gap={1} borderStyle="round" borderDimColor paddingX={1}>
+          {body as never}
+        </Box>
+      </Box>
+    )
+    // Two or more choices side by side, the one in force framed and lit.
+    const toggle = <V extends string>(key: string, options: { value: V; label: string; mark?: string }[], value: V, pick: (v: V) => void) => (
+      <Box key={key} flexDirection="row" flexWrap="wrap" gap={1}>
+        {options.map(o => (
+          <Box
+            key={`${key}-box-${o.value}`}
+            flexDirection="row"
+            gap={1}
+            alignItems="center"
+            borderStyle="round"
+            borderDimColor={o.value !== value}
+            backgroundColor={o.value === value ? 'diffAddedDimmed' : undefined}
+            paddingX={1}
+          >
+            {o.mark && Svg && <Svg source={o.mark} alt="" width={14} height={14} />}
+            <Button key={`${key}-${o.value}`} label={o.label} plain dimColor={o.value !== value} onPress={() => pick(o.value)} />
+          </Box>
+        ))}
+      </Box>
+    )
+    const isUpToDate = !!upd?.installed && !!upd.latest && !upd.isAvailable
     const admin = (
-      <Box key="admin" flexDirection="column" gap={1}>
-        {isAdminShown && (
-          <Box key="admin-body" flexDirection="column" gap={1} paddingLeft={2}>
+      <Box key="admin" flexDirection="row" flexWrap="wrap" gap={1}>
+        {isAdminShown && [
+          card(
+            'admin-general',
+            t('admin.general'),
+            <Box key="admin-general-body" flexDirection="column" gap={1}>
             <Box key="admin-language" flexDirection="column">
-              {section(t('admin.language'))}
+              <Text size="caption" dimColor>
+                {t('admin.language')}
+              </Text>
               {Select ? (
                 <Select
                   key="admin-language-select"
@@ -2202,32 +2251,38 @@ export const register: Register = on => {
             </Box>
 
             <Box key="admin-update" flexDirection="column" gap={1}>
-              {section(t('update.title'))}
-              <Text size="caption" color={upd?.isAvailable ? 'warning' : undefined} dimColor={!upd?.isAvailable}>
-                {!upd?.installed
-                  ? t('update.unknown')
-                  : !upd.latest
+              <Box key="admin-update-line" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+                <Text size="caption" dimColor>
+                  {t('admin.plugin')}
+                </Text>
+                {upd?.installed && <Text>v{upd.installed}</Text>}
+                {isUpToDate && <Text color="success">●</Text>}
+                <Text size="caption" color={upd?.isAvailable ? 'warning' : undefined} dimColor={!upd?.isAvailable}>
+                  {!upd?.installed || !upd.latest
                     ? t('update.unknown')
                     : upd.isAvailable
                       ? t('update.versions', { installed: upd.installed, latest: upd.latest })
-                      : t('update.upToDate', { installed: upd.installed })}
-              </Text>
-              <Box key="admin-update-actions" flexDirection="row" flexWrap="wrap" gap={1}>
+                      : t('admin.upToDate')}
+                </Text>
                 <Button key="update-check" label={t('update.check')} plain dimColor onPress={() => void checkUpdate($)} />
-                {upd?.isAvailable && (
-                  <Button key="update-run" label={t('update.button')} variant="primary" onPress={() => void updatePlugin($)} />
-                )}
               </Box>
+              {upd?.isAvailable && (
+                <Box key="admin-update-actions" flexDirection="row">
+                  <Button key="update-run" label={t('update.button')} variant="primary" onPress={() => void updatePlugin($)} />
+                </Box>
+              )}
               {upd?.log && (
                 <Text size="caption" color={upd.log.startsWith(t('update.failed', { error: '' }).trim()) ? 'error' : 'success'}>
                   {upd.log}
                 </Text>
               )}
             </Box>
-
-            <Box key="admin-create" flexDirection="column" gap={1}>
-              {section(t('create.title'))}
-              {!Input ? (
+            </Box>,
+          ),
+          card(
+            'admin-create',
+            t('create.title'),
+            !Input ? (
                 <Text size="caption" dimColor>
                   {t('register.phone')}
                 </Text>
@@ -2265,20 +2320,42 @@ export const register: Register = on => {
                   <Text size="caption" dimColor>
                     {t('create.mode')}
                   </Text>
-                  {choice<CreateForm['mode']>(
+                  {toggle<CreateForm['mode']>(
                     'create-mode',
                     (['personal', 'research', 'business', 'code'] as const).map(mode => ({ value: mode, label: t(`create.mode.${mode}`) })),
                     creating.mode,
                     mode => void update($, createForm, now => ({ ...now, mode })),
                   )}
-                  <Text size="caption" dimColor>
-                    {t('create.conventions')}
-                  </Text>
-                  <Box key="create-conventions" flexDirection="row" flexWrap="wrap" gap={1}>
+                  <Box key="create-conventions-head" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+                    <Text size="caption" dimColor>
+                      {t('create.conventions')}
+                    </Text>
+                    <Text size="caption">
+                      {t('create.conventionsCount', {
+                        count: creating.conventions.filter(id => conventions.includes(id)).length,
+                        total: conventions.length,
+                      })}
+                    </Text>
+                    <Button
+                      key="conventions-all"
+                      label={t('create.conventionsAll')}
+                      plain
+                      dimColor
+                      onPress={() => void update($, createForm, now => ({ ...now, conventions: [...conventions] }))}
+                    />
+                    <Button
+                      key="conventions-none"
+                      label={t('create.conventionsNone')}
+                      plain
+                      dimColor
+                      onPress={() => void update($, createForm, now => ({ ...now, conventions: [] }))}
+                    />
+                  </Box>
+                  <Box key="create-conventions" flexDirection="row" flexWrap="wrap" columnGap={2}>
                     {conventions.map(id => (
                       <Button
                         key={`convention-${id}`}
-                        label={`${creating.conventions.includes(id) ? '☑' : '☐'} ${id}`}
+                        label={`${creating.conventions.includes(id) ? '✓' : '·'} ${id}`}
                         plain
                         dimColor={!creating.conventions.includes(id)}
                         onPress={() =>
@@ -2333,16 +2410,20 @@ export const register: Register = on => {
                     )}
                   </Box>
                 </Box>
-              )}
-            </Box>
-
-            <Box key="admin-wireguard" flexDirection="column" gap={1}>
-              {section(t('wg.title'))}
-              <Text size="caption" color={wg?.state === 'active' ? 'success' : wg?.state === 'checking' || !wg ? undefined : 'warning'} dimColor={!wg || wg.state === 'checking'}>
-                {wgLine}
-              </Text>
-              <Box key="admin-wireguard-actions" flexDirection="row" flexWrap="wrap" gap={1}>
+              ),
+          ),
+          card(
+            'admin-wireguard',
+            t('wg.title'),
+            <Box key="admin-wireguard-body" flexDirection="column" gap={1}>
+              <Box key="admin-wireguard-line" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+                {wg?.state === 'active' && <Text color="success">●</Text>}
+                <Text size="caption" color={wg?.state === 'active' ? undefined : wg?.state === 'checking' || !wg ? undefined : 'warning'} dimColor={!wg || wg.state === 'checking'}>
+                  {wgLine}
+                </Text>
                 <Button key="wg-check" label={t('wg.check')} plain dimColor onPress={() => void checkWireguard($)} />
+              </Box>
+              <Box key="admin-wireguard-actions" flexDirection="row" flexWrap="wrap" gap={1}>
                 {wg?.state === 'inactive' && (
                   <Button key="wg-open" label={t('wg.openApp')} variant="primary" onPress={() => void openWireguard($)} />
                 )}
@@ -2352,21 +2433,22 @@ export const register: Register = on => {
                 <Button key="wg-guide" label={t('wg.guide')} plain onPress={() => void openUrl($, GUIDE_URL)} />
                 <Button key="wg-prompt" label={t('wg.prompt')} plain onPress={() => void openUrl($, PROMPT_URL)} />
               </Box>
-            </Box>
-
-            <Box key="admin-register" flexDirection="column" gap={1}>
-              {section(t('register.title'))}
-              {!Input ? (
+            </Box>,
+          ),
+          card(
+            'admin-register',
+            t('register.title'),
+            !Input ? (
                 <Text size="caption" dimColor>
                   {t('register.phone')}
                 </Text>
               ) : (
                 <Box key="admin-register-form" flexDirection="column" gap={1}>
-                  {choice<AdminForm['kind']>(
+                  {toggle<AdminForm['kind']>(
                     'admin-kind',
                     [
-                      { value: 'local', label: t('register.kindLocal') },
-                      { value: 'remote', label: t('register.kindRemote') },
+                      { value: 'local', label: t('register.kindLocal'), mark: OBSIDIAN_MARK },
+                      { value: 'remote', label: t('register.kindRemote'), mark: GLOBE_MARK },
                     ],
                     form.kind,
                     kind =>
@@ -2377,10 +2459,26 @@ export const register: Register = on => {
                         scheme: kind === 'local' ? ('https' as const) : ('http' as const),
                       })),
                   )}
+                  <Text size="caption" dimColor>
+                    {form.kind === 'local'
+                      ? t('register.descLocal')
+                      : wg?.state === 'active' && wg.tunnels.length > 0
+                        ? t('register.descRemoteTunnel', { tunnel: wg.tunnels.join(', ') })
+                        : t('register.descRemote')}
+                  </Text>
                   {field('name', t('register.name'))}
-                  {field('host', t('register.host'), form.kind === 'local' ? '127.0.0.1' : '10.8.0.1')}
-                  {field('port', t('register.port'), form.kind === 'local' ? '27124' : '27180')}
-                  {choice<AdminForm['scheme']>(
+                  <Box key="admin-address" flexDirection="row" gap={1} flexWrap="wrap">
+                    <Box key="admin-host-box" flexGrow={1} flexShrink={1} minWidth={16}>
+                      {field('host', form.kind === 'local' ? t('register.host') : t('register.hostWg'), form.kind === 'local' ? '127.0.0.1' : '10.8.0.1')}
+                    </Box>
+                    <Box key="admin-port-box" width={12} minWidth={10} flexShrink={0}>
+                      {field('port', t('register.port'), form.kind === 'local' ? '27124' : '27180')}
+                    </Box>
+                  </Box>
+                  <Text size="caption" dimColor>
+                    {t('register.protocol')}
+                  </Text>
+                  {toggle<AdminForm['scheme']>(
                     'admin-scheme',
                     [
                       { value: 'https', label: t('register.https') },
@@ -2403,14 +2501,12 @@ export const register: Register = on => {
                     <Button key="admin-register-submit" label={t('register.submit')} variant="primary" onPress={() => void registerVault($)} />
                   </Box>
                 </Box>
-              )}
-            </Box>
-
-            <Box key="admin-unregister" flexDirection="column" gap={1}>
-              {section(t('unregister.title'))}
-              <Text size="caption" dimColor>
-                {t('unregister.hint')}
-              </Text>
+              ),
+          ),
+          card(
+            'admin-unregister',
+            t('unregister.title'),
+            <Box key="admin-unregister-body" flexDirection="column" gap={1}>
               {removable.length === 0 && (
                 <Text size="caption" dimColor>
                   {t('unregister.none')}
@@ -2467,19 +2563,47 @@ export const register: Register = on => {
                   )}
                 </Box>
               ))}
-            </Box>
-          </Box>
-        )}
+              <Text size="caption" dimColor>
+                {t('unregister.hint')}
+              </Text>
+            </Box>,
+          ),
+        ]}
       </Box>
     )
 
+    // The console open, it is the pane's whole content: the vaults wait behind
+    // "‹ Retour aux vaults" in the footer.
+    if (isAdminShown) {
+      // What the vaults view would say on top, said here too: the operation
+      // under way, and every remote vault silent at once.
+      const remoteRows = snap ? [...bound, ...snap.available].filter(isRemote) : []
+      const areRemotesDown = remoteRows.length > 0 && remoteRows.every(r => r.online === false)
+
+      return (
+        <Box flexDirection="column" gap={1}>
+          {working && (
+            <Text size="caption" color="warning">
+              {working}…
+            </Text>
+          )}
+          {areRemotesDown && (
+            <Text color="warning">
+              {wg?.state === 'inactive' ? t('wg.inactive') : wg?.state === 'absent' ? t('wg.absent') : t('tunnel.down')}
+            </Text>
+          )}
+          {problems}
+          {admin}
+          {footer}
+        </Box>
+      )
+    }
     if (!snap) {
       return (
         <Box flexDirection="column" gap={1}>
           {statusLine}
           {problems}
           {footer}
-          {admin}
         </Box>
       )
     }
@@ -3017,7 +3141,6 @@ export const register: Register = on => {
         {secondaries}
         {adding}
         {footer}
-        {admin}
       </Box>
     )
   })
