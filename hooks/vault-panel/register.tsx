@@ -2397,7 +2397,11 @@ export const register: Register = on => {
     // the page below are one. The others stay closed by the rule under them.
     // The rule is drawn first and the tabs after it, so the covers paint over
     // the rule (what comes later in the tree paints over what came before).
-    const tabEnds = (left: string, right: string, dim: boolean, bottom: number) => (
+    // Between the two ends, blanks as wide as the terminal draws the key
+    // ("[ label ]"): there the cover erases by its own cells, not by the
+    // ground's colour alone; a surface that draws the key wider fills the
+    // rest with the ground.
+    const tabEnds = (left: string, right: string, dim: boolean, bottom: number, inner: number) => (
       <Box
         position="absolute"
         bottom={bottom}
@@ -2409,16 +2413,18 @@ export const register: Register = on => {
         backgroundColor="inverseText"
       >
         <Text dimColor={dim}>{left}</Text>
+        <Text>{' '.repeat(inner)}</Text>
         <Text dimColor={dim}>{right}</Text>
       </Box>
     )
     const menuTab = (prefix: string, id: PaneView, label: string) => {
       const isOpen = id === view
+      const inner = cells(label) + 4
       return (
         <Box key={`${prefix}navtab-${id}`} borderStyle="round" borderDimColor={!isOpen} flexShrink={0}>
           {menuItem(prefix, id, label)}
-          {tabEnds('│', '│', !isOpen, -1)}
-          {isOpen && tabEnds('╯', '╰', true, -2)}
+          {tabEnds('│', '│', !isOpen, -1, inner)}
+          {isOpen && tabEnds('╯', '╰', true, -2, inner)}
         </Box>
       )
     }

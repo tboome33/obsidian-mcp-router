@@ -3136,50 +3136,71 @@ test("a recent file the router gives no link to says so, opens nothing; with no 
 test('the wide menu draws its keys as tabs on a shelf: round frames open at the bottom, the rule hidden under the tab in sight alone', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
-  const tabKeys = ['vaults', 'add', 'admin']
+  const tabKeys = ['vaults', 'add', 'admin'] as const
+  const labels = { vaults: 'Vaults', add: '+ Ajouter un vault', admin: '⚙ Administration' }
   const tabOf = (tree: unknown, key: string) => nodesOf(tree).find(n => keyOf(n) === key)
-  const opening = (tab: Drawn | undefined) => nodesOf(tab as never).some(n => n.type === 'Text' && textOf(n) === '╯')
+  const covers = (tab: Drawn | undefined) => nodesOf(tab as never).filter(n => n.type === 'Box' && n.props?.position === 'absolute')
+  const glyphsOf = (cover: Drawn | undefined) => nodesOf(cover as never).filter(n => n.type === 'Text').map(n => textOf(n))
+  // A cover: one row over the frame's columns, the ground's colour, an end glyph at each side and blanks
+  // as wide as the terminal draws the key ("[ label ]") between them.
+  const cover = (tab: Drawn | undefined, bottom: number, left: string, right: string, label: string) => {
+    const one = covers(tab).filter(c => c.props?.bottom === bottom)
+    expect(one.length).toBe(1)
+    expect(one[0]?.props).toMatchObject({ left: -1, right: -1, height: 1, flexDirection: 'row', justifyContent: 'space-between', backgroundColor: 'inverseText' })
+    expect(glyphsOf(one[0])).toEqual([left, ' '.repeat([...label].length + 4), right])
+  }
+  const opening = (tab: Drawn | undefined) => covers(tab).some(c => glyphsOf(c).includes('╯'))
+  // The tabs, with the one in sight open and the others closed, in a menu copy under `prefix`.
+  const shelf = (tree: unknown, prefix: string, inSight: (typeof tabKeys)[number]) => {
+    const openings = nodesOf(tree).filter(n => n.type === 'Text' && textOf(n) === '╯')
+    expect(openings.length).toBe(1)
+    for (const id of tabKeys) {
+      const tab = tabOf(tree, `${prefix}navtab-${id}`)
+      // A round frame round the key, dim unless in sight, the key inside it.
+      expect(tab?.props).toMatchObject({ borderStyle: 'round', borderDimColor: id !== inSight })
+      expect(nodesOf(tab as never).some(n => n.type === 'Button' && keyOf(n) === `${prefix}nav-${id}`)).toBe(true)
+      // Its bottom row covered by the sides going on down.
+      cover(tab, -1, '│', '│', labels[id])
+      // The rule turned up under the tab in sight alone.
+      expect(opening(tab)).toBe(id === inSight)
+      expect(covers(tab).length).toBe(id === inSight ? 2 : 1)
+      if (id === inSight) {
+        cover(tab, -2, '╯', '╰', labels[id])
+      }
+    }
+  }
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80 }, surface })
     const tree = await ui.drawn()
-    for (const id of tabKeys) {
-      const tab = tabOf(tree, `navtab-${id}`)
-      // A round frame round the key, dim unless in sight, the key inside it.
-      expect(tab?.props).toMatchObject({ borderStyle: 'round', borderDimColor: id !== 'vaults' })
-      expect(nodesOf(tab as never).some(n => n.type === 'Button' && keyOf(n) === `nav-${id}`)).toBe(true)
-      // Its bottom row covered by the sides going on down: a "│" at each end on the ground's colour.
-      const covers = nodesOf(tab as never).filter(n => n.type === 'Box' && n.props?.position === 'absolute')
-      const sides = covers.find(c => c.props?.bottom === -1)
-      expect(sides?.props).toMatchObject({ left: -1, right: -1, height: 1, backgroundColor: 'inverseText' })
-      expect(nodesOf(sides as never).filter(n => n.type === 'Text' && textOf(n) === '│').length).toBe(2)
-      // The rule turned up under the tab in sight alone.
-      expect(opening(tab)).toBe(id === 'vaults')
-      const mouth = covers.find(c => c.props?.bottom === -2)
-      expect(mouth ? nodesOf(mouth as never).map(n => textOf(n)).filter(t => t === '╯' || t === '╰') : []).toEqual(id === 'vaults' ? ['╯', '╰'] : [])
-    }
+    shelf(tree, '', 'vaults')
+    // Every key of the tree is its own: no two nodes share one.
+    const keys = nodesOf(tree).map(n => keyOf(n)).filter((k): k is string => !!k)
+    expect(keys.length).toBe(new Set(keys).size)
     // The rule is drawn before the tabs, on the menu's last row, so the opening paints over it.
     const nav = tabOf(tree, 'nav') as Drawn & { children?: Drawn[] }
     expect(nav.props?.paddingBottom).toBe(1)
     const first = (nav.children ?? [])[0]
     expect(keyOf(first as Drawn)).toBe('nav-rule')
-    expect((first as Drawn).props).toMatchObject({ position: 'absolute', bottom: 0, left: 0, right: 0 })
+    expect((first as Drawn).props).toMatchObject({ position: 'absolute', bottom: 0, left: 0, right: 0, height: 1 })
     expect(nodesOf(first as never).some(n => n.type === 'Text' && /^─+$/.test(textOf(n)))).toBe(true)
-    // The opening follows the view.
+    // The opening follows the view through the three keys.
+    await ui.press({ key: 'nav-add' })
+    shelf(await ui.drawn(), '', 'add')
     await ui.press({ key: 'nav-admin' })
-    const after = await ui.drawn()
-    expect(opening(tabOf(after, 'navtab-admin'))).toBe(true)
-    expect(opening(tabOf(after, 'navtab-vaults'))).toBe(false)
-    expect(tabOf(after, 'navtab-vaults')?.props?.borderDimColor).toBe(true)
+    shelf(await ui.drawn(), '', 'admin')
     // Back to Vaults: the view is the session's, kept from one mount to the next.
     await ui.press({ key: 'nav-vaults' })
+    shelf(await ui.drawn(), '', 'vaults')
     await ui.unmount()
   }
-  // The pinned copy draws the same tabs, with the same opening.
+  // The pinned copy draws the same tabs, with the same opening, and its keys switch the view too.
   const down = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80, scroll: { offset: 7, bodyRows: 20 } }, surface: 'desktop' })
   const bar = tabOf(await down.drawn(), 'sticky-bar')
-  expect(tabKeys.every(id => nodesOf(bar as never).some(n => keyOf(n) === `sticky-navtab-${id}`))).toBe(true)
-  expect(opening(tabOf(bar, 'sticky-navtab-vaults'))).toBe(true)
-  expect(opening(tabOf(bar, 'sticky-navtab-add'))).toBe(false)
+  shelf(bar, 'sticky-', 'vaults')
+  await down.press({ key: 'sticky-nav-admin' })
+  shelf(tabOf(await down.drawn(), 'sticky-bar'), 'sticky-', 'admin')
+  await down.press({ key: 'sticky-nav-vaults' })
+  shelf(tabOf(await down.drawn(), 'sticky-bar'), 'sticky-', 'vaults')
   await down.unmount()
   // Folded into "☰", no tab: the keys as before, the rule in the flow.
   const narrow = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 40 }, surface: 'desktop' })
