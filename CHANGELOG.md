@@ -10,6 +10,25 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.116.0] — 2026-10-25 — the band as one line of chips, turned page by page
+
+Asked from a screenshot of the band ("très très moche") and a look at a web ticker:
+
+- **One line, no frames**: "Principal : ● name" (an orange dot, the marks after the name),
+  then "Secondaires :" and every secondary that fits, each as its name, its marks, its tier
+  and its ▶, a "·" between two (a "│" on the terminal) — the line reads as the counters
+  above it do. The tiers are drawn as grey marks on the desktop (a lock, a hand, a pen; the
+  badges stay on the terminal), one style with the planet, Claude's and Obsidian's marks.
+- **Turned page by page, not unfolded**: a line too short for them all ends with "›+N"; a
+  press shows the next ones in place of the first, and "‹" before the first shown turns it
+  back. No dropdown under the line any more ("⏸ N" went with it: a paused vault is dimmed
+  in its place). The page is kept, and brought back within the pages a new width allows.
+- Not a scrolling ticker: a pane of Box and Text has no animation, and a moving band is no
+  place for controls one clicks.
+- Adversarial review by Codex: three findings fixed — a page turned to could be empty (it
+  shows at least one secondary, cut), "‹" turned from the page kept rather than the one
+  shown, stale words about the dropdown. Tests: `tests/vault-panel.test.tsx` 120.
+
 ## [0.115.2] — 2026-10-25 — a turned tile comes back on its own, says it is at the back
 
 Three ideas taken from a web flip box (Nicolas's Zipoulou FlipBox for Divi 5), the way a
