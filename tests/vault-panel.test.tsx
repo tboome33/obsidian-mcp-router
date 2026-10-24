@@ -2949,7 +2949,23 @@ test("a tile's marks sit in its head, right of its name; its state at the left, 
   const front = nodes.find(n => keyOf(n) === 'front-docs')
   expect(nodesOf(front as never).some(n => keyOf(n) === 'state-docs')).toBe(true)
   expect(nodesOf(front as never).some(n => keyOf(n) === 'stamp-docs')).toBe(true)
-  const rights = nodes.find(n => keyOf(n) === 'rights-docs')
+  // Both halves at mid-height with air above and below; the state centred in
+  // its half; a rule between the halves, as tall as the framed rights.
+  expect(front?.props?.alignItems).toBe('center')
+  expect(front?.props?.paddingY).toBe(1)
+  // Its direct children, in order: the state half, then the rights with their rule.
+  const halves = (Array.isArray(front?.children) ? front.children : [front?.children]).filter(Boolean) as Drawn[]
+  expect(halves.map(keyOf)).toEqual(['half-docs', 'aside-docs'])
+  const [half, aside] = halves
+  expect(half?.props?.alignItems).toBe('center')
+  expect(half?.props?.flexGrow).toBe(1)
+  expect(nodesOf(half as never).some(n => keyOf(n) === 'state-docs')).toBe(true)
+  expect(nodesOf(half as never).some(n => keyOf(n) === 'stamp-docs')).toBe(true)
+  const sides = (Array.isArray(aside?.children) ? aside.children : [aside?.children]).filter(Boolean) as Drawn[]
+  expect(sides.map(keyOf)).toEqual(['rule-docs', 'rights-docs'])
+  expect(aside?.props?.flexShrink).toBe(1)
+  const [rule, rights] = sides
+  expect(nodesOf(rule as never).filter(n => n.type === 'Text' && textOf(n) === '│')).toHaveLength(6)
   expect(rights?.props?.borderStyle).toBe('round')
   expect(nodesOf(rights as never).some(n => keyOf(n) === 'mode-docs')).toBe(true)
   await ui.unmount()
