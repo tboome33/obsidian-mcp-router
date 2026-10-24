@@ -278,6 +278,7 @@
   "secondaries.pauseHint": "▶ active: a press pauses it · ❚❚ paused: a press resumes it as it was set (🔒 read-only, ✋ write if you agree, or ✏️ read and write)",
 
   "band.noOpen": "Nothing to open {name} with: no known local folder, no web UI.",
+  "mark.browser": "Browser",
 
   "hooks.title": "This workspace’s hooks",
   "hooks.intro": "For {workspace}. The read-only hooks run everywhere; the others only where you switch them on.",

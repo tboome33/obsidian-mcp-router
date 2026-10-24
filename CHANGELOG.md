@@ -32,6 +32,20 @@ workspace at a time.
   aside so it never runs twice, and the console says so (`setup-vault.mjs --uninstall-hooks`
   removes those entries).
 
+## [0.110.3] — 2026-10-24 — the band's marks: Obsidian, the planet and Claude
+
+Seen on screen after v0.110.2: the band kept an empty space where each name's mark should have
+been, while the pane's dots — the same kind of SVG, but described — were drawn. Every mark had
+`alt=""`. Each now says what it shows ("Obsidian", "Navigateur", "Claude"), on the band and in
+the pane. Asked with it: on the band, a local vault's name has Obsidian's purple mark (a press
+opens it in Obsidian); a remote one's has the planet (a press opens its web UI in the default
+browser), then Claude's mark with a "↗" key beside it (a mark is no button) that opens it in
+Claude's built-in browser. The band's width counts those marks only where they are drawn.
+
+- Reviewed by Codex before publishing: no P0/P1; a key collision it found ("band-open-x" +
+  "-ui" against a vault named "x-ui") fixed with a prefix of its own. Whether the desktop now
+  draws the marks is to be seen on screen. Tests: `tests/vault-panel.test.tsx` 104.
+
 ## [0.110.2] — 2026-10-24 — the band shows names and ▶ / ❚❚, not sentences
 
 Seen on screen after v0.110.1: the band read "Ouvrir obsidian-mcp-router dans le navigateur … Mettre

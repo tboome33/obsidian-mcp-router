@@ -206,21 +206,20 @@ function chipText(hidden: number, paused: number) {
 }
 // The secondaries on the band's line, active ones then paused ones, each as
 // its name, its badge (tier or ⏸) and its ■ or ▶; `paused[i]` says which.
-// `marks[i]` (and `primaryMark`): whether that name is drawn with its mark,
-// two cells and a gap.
+// `marks[i]` (and `primaryMark`): the cells that name's marks take beside it.
 function bandFit(
   primary: string | null,
   secondaries: string[],
   columns: number,
   paused: boolean[] = [],
-  marks: boolean[] = [],
-  primaryMark = false,
+  marks: number[] = [],
+  primaryMark = 0,
 ) {
   const toggle = 2 + Math.max(cells(t('band.show')), cells(t('band.hide'))) + 4
   const base =
     cells(t('band.primary')) +
     1 +
-    (primaryMark ? 3 : 0) +
+    primaryMark +
     cells(primary ?? t('band.none')) +
     1 +
     1 +
@@ -230,7 +229,7 @@ function bandFit(
   // A gap, "| " after the first, the mark and the name, a gap and its badge,
   // a gap and its control (▶, or ❚❚ while paused).
   const widths = secondaries.map(
-    (name, i) => 1 + (i > 0 ? 2 : 0) + (marks[i] ? 3 : 0) + cells(name) + 1 + 2 + 1 + (paused[i] ? 2 : 1),
+    (name, i) => 1 + (i > 0 ? 2 : 0) + (marks[i] ?? 0) + cells(name) + 1 + 2 + 1 + (paused[i] ? 2 : 1),
   )
   // The most secondaries that fit with the chip their remainder needs.
   for (let shown = secondaries.length; shown > 0; shown -= 1) {
@@ -1475,6 +1474,12 @@ async function setPaused($: EngineInterface, s: Secondary, paused: boolean) {
 // ---- Opening a vault from the band ------------------------------------------------
 // A local vault in Obsidian, a remote one's web UI in the default browser
 // (Chrome on this machine): what its row in the pane offers as 💎 and 🌐.
+// What each mark shows, for a reader that cannot see it — and the desktop's
+// band drew an empty space for a mark with no description (seen on screen in
+// v0.110.2), where the pane's described dots were drawn.
+const markAlt = (source: string) =>
+  source === OBSIDIAN_MARK ? 'Obsidian' : source === CLAUDE_PANE_MARK ? 'Claude' : t('mark.browser')
+
 // Where a vault opens from the band: Obsidian for a local one Obsidian lists
 // (or may list: not checked yet), the browser for a remote one with a web UI;
 // null when it opens nowhere, and the band then draws its name alone.
@@ -2314,7 +2319,7 @@ export const register: Register = on => {
             backgroundColor={o.value === value ? 'diffAddedDimmed' : undefined}
             paddingX={1}
           >
-            {o.mark && Svg && <Svg source={o.mark} alt="" width={14} height={14} />}
+            {o.mark && Svg && <Svg source={o.mark} alt={markAlt(o.mark)} width={14} height={14} />}
             <Button key={`${key}-${o.value}`} label={o.label} plain dimColor={o.value !== value} onPress={() => pick(o.value)} />
           </Box>
         ))}
@@ -2771,7 +2776,7 @@ export const register: Register = on => {
 
     // A drawn mark before a link (a Button holds text only, so the mark sits
     // beside it); a surface without SVG draws the link alone.
-    const mark = (source: string) => (Svg ? <Svg source={source} alt="" width={14} height={14} /> : null)
+    const mark = (source: string) => (Svg ? <Svg source={source} alt={markAlt(source)} width={14} height={14} /> : null)
     // Where a vault opens, with its mark: a remote one's web UI in the browser
     // or in Claude's pane, a local one in Obsidian. A remote one that does not
     // answer says so, with a retry; a local one Obsidian has closed offers to
@@ -3330,7 +3335,14 @@ export const register: Register = on => {
     // The terminal draws no SVG (its element draws nothing there): no mark is
     // drawn, and none is counted.
     const BandSvg = e.surface !== 'terminal' && 'Svg' in bandEls ? bandEls.Svg : null
-    const hasMark = (row: VaultRow) => !!BandSvg && openTarget(row) !== null
+    // The cells a name's marks take beyond the name: Obsidian's (2 and a gap)
+    // for a local vault; for a remote one the planet (3), then Claude's mark
+    // and its "↗" key (2, a gap, 1, a gap).
+    const markCells = (row: VaultRow) => {
+      const target = openTarget(row)
+
+      return !BandSvg || !target ? 0 : target === 'browser' ? 3 + 5 : 3
+    }
     // Read for its redraws only: the toggle says what the module knows, and
     // the texts follow the language.
     await read($, paneVersion)
@@ -3356,8 +3368,8 @@ export const register: Register = on => {
       entries.map(entry => entry.row.name),
       e.props.bodyColumns,
       entries.map(entry => entry.isPaused),
-      entries.map(entry => hasMark(entry.row)),
-      !!snap.primary && hasMark(snap.primary),
+      entries.map(entry => markCells(entry.row)),
+      snap.primary ? markCells(snap.primary) : 0,
     )
     const chip = chipText(fit.hidden, entries.slice(fit.shown).filter(entry => entry.isPaused).length)
     // A vault's name, pressed, opens it: Obsidian for a local one, the browser
@@ -3374,9 +3386,12 @@ export const register: Register = on => {
         )
       }
 
+      const markOf = (source: string) =>
+        BandSvg ? <BandSvg source={source} alt={markAlt(source)} width={14} height={14} /> : null
+
       return (
         <Box key={`${key}-box`} flexDirection="row" gap={1} alignItems="center">
-          {BandSvg && <BandSvg source={target === 'browser' ? GLOBE_MARK : OBSIDIAN_MARK} alt="" width={12} height={12} />}
+          {markOf(target === 'browser' ? GLOBE_MARK : OBSIDIAN_MARK)}
           {/* No label: the desktop draws a Button's label in place of its
               children, and a sentence pushed the band's names off its line
               (seen on screen in v0.110.1). The name is the control's text. */}
@@ -3385,6 +3400,17 @@ export const register: Register = on => {
               {row.name}
             </Text>
           </Button>
+          {target === 'browser' && BandSvg && (
+            // Claude's own browser: its mark, and a key beside it (a mark is
+            // no button).
+            <Box key={`${key}-claude`} flexDirection="row" gap={1} alignItems="center">
+              {markOf(CLAUDE_PANE_MARK)}
+              {/* Keyed by the vault's own name, under a prefix of its own: a
+                  key built on another key ("band-open-x" + "-ui") could be a
+                  vault named "x-ui"'s. */}
+              <Button key={`band-ui-${row.name}`} label="↗" plain dimColor onPress={() => void openUi($, row)} />
+            </Box>
+          )}
         </Box>
       )
     }

@@ -278,6 +278,7 @@
   "secondaries.pauseHint": "▶ actif : un appui le met en pause · ❚❚ en pause : un appui le reprend tel qu'il était réglé (🔒 lecture seule, ✋ écriture si tu l'acceptes ou ✏️ lecture et écriture)",
 
   "band.noOpen": "Rien pour ouvrir {name} : ni dossier local connu, ni interface web.",
+  "mark.browser": "Navigateur",
 
   "hooks.title": "Hooks de ce workspace",
   "hooks.intro": "Pour {workspace}. Les hooks en lecture seule tournent partout ; les autres seulement là où tu les actives.",
