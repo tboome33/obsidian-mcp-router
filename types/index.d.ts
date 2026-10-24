@@ -2,7 +2,7 @@
 export type SecondaryMode = 'locked' | 'soft' | 'writable'
 
 /** The panel tabs. */
-export type Tab = 'locaux' | 'distants'
+export type Tab = 'tous' | 'locaux' | 'distants'
 
 export type VaultRow = {
   name: string
@@ -106,10 +106,15 @@ declare module 'claude-code' {
       failure: string | null
       filter: string
       tab: Tab
+      /** The add list's tab, since the redesign (`tab` is an older panel's). */
+      addTab: Tab
       /** The closed secondaries are listed (folded by default). */
       showClosed: boolean
       /** The add list is shown (folded by default, unless there is no primary). */
       showAdd: boolean
+      /** The "add a vault" grid's search, and its order. */
+      addQuery: string
+      addSort: 'az' | 'za'
       /** Bumped at every open and close of the Vaults pane: the band reads it
        * to be drawn again. What it shows comes from the module, never from a
        * write made while drawing. */
