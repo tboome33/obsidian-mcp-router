@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, Timer } from 'claude-code'
+import type { EngineInterface, McpToolResult, Register, Timer } from 'claude-code'
 
 import type { AdminForm, CreateForm, Secondary, SecondaryMode, Snapshot, Tab, VaultRow, WireguardState, WorkspaceHooks } from '../../types'
 import { FR } from './locale-fr'
@@ -45,6 +45,8 @@ const language = atom({ plugin: 'obsidian-router', key: 'language' } as const, '
 const showAdmin = atom({ plugin: 'obsidian-router', key: 'showAdmin' } as const, false)
 // The pane's menu folded into "☰" on a narrow pane: whether its list is open.
 const navOpen = atom({ plugin: 'obsidian-router', key: 'navOpen' } as const, false)
+// Whether Claude in Chrome answers this session (see `checkChrome`).
+const chromeState = atom({ plugin: 'obsidian-router', key: 'chrome' } as const, 'unknown')
 const EMPTY_FORM: AdminForm = { kind: 'local', name: '', host: '127.0.0.1', port: '', uiPort: '', apiKey: '', scheme: 'https' }
 const adminForm = atom({ plugin: 'obsidian-router', key: 'adminForm' } as const, EMPTY_FORM)
 const confirmRemove = atom({ plugin: 'obsidian-router', key: 'confirmRemove' } as const, null)
@@ -507,6 +509,94 @@ async function openInBrowser($: EngineInterface, row: VaultRow) {
   await update($, failure, () => t('error.browser', { error: lastError }))
 }
 
+// Claude in Chrome, the extension that drives the user's own Chrome (debug
+// mode): the planet opens a remote vault's web UI there, and is drawn only
+// while it answers this session.
+const CHROME = 'claude-in-chrome'
+
+// Asks Claude in Chrome for its tab group. A refusal saying the server or its
+// extension is absent, disconnected or off — or a throw — means it is not
+// there; any other answer, "no group yet" included, means it is. One call at
+// a time, shared; each asker waits CHROME_TIMEOUT_MS at most, after which the
+// state stays as it was (the call, still running, is not started again).
+const CHROME_TIMEOUT_MS = 3000
+let chromeCall: Promise<McpToolResult | null> | null = null
+async function checkChrome($: EngineInterface): Promise<void> {
+  chromeCall ??= $.mcp
+    .call(CHROME, 'tabs_context_mcp', {})
+    .catch(() => null)
+    .finally(() => {
+      chromeCall = null
+    })
+  const result = await Promise.race([chromeCall, $.clock.sleep(CHROME_TIMEOUT_MS).then(() => undefined)])
+  if (result === undefined) {
+    return
+  }
+  const text = result ? result.content.map(block => block.text ?? '').join(' ') : ''
+  const isOff =
+    !result ||
+    (result.isError &&
+      /disconnect|not connected|not (?:found|available|installed)|unknown server|no (?:such )?server|disabled|turned off/i.test(text))
+  await update($, chromeState, () => (isOff ? 'off' : 'on'))
+}
+
+// The tab a Claude in Chrome answer names: "Tab ID: 123", or a "tabId": 123
+// key; nothing else is taken for one (a window's number is no tab's).
+function tabIdOf(text: string): number | null {
+  const id = /\bTab ID:\s*(\d+)/i.exec(text)?.[1] ?? /"tabId"\s*:\s*(\d+)/.exec(text)?.[1]
+
+  return id ? Number(id) : null
+}
+
+// Opens a remote vault's web UI in Chrome through Claude in Chrome: in the
+// empty tab of a group it has just made, else in a new tab of its own; never
+// in a tab it did not name. One open at a time: two quick presses would
+// otherwise both take the same empty tab.
+let chromeOpening: Promise<void> = Promise.resolve()
+function openInChrome($: EngineInterface, row: VaultRow): Promise<void> {
+  chromeOpening = chromeOpening.then(() => openInChromeNow($, row)).catch(() => undefined)
+
+  return chromeOpening
+}
+async function openInChromeNow($: EngineInterface, row: VaultRow) {
+  if (!row.uiUrl) {
+    return
+  }
+  const url = await uiTarget($, { ...row, uiUrl: row.uiUrl })
+  const said = (result: McpToolResult) => result.content.map(block => block.text ?? '').join(' ')
+  try {
+    const context = await $.mcp.call(CHROME, 'tabs_context_mcp', { createIfEmpty: true })
+    if (context.isError) {
+      throw new Error(said(context))
+    }
+    let tabs: { tabId?: number; url?: string }[] = []
+    try {
+      tabs = (JSON.parse(said(context).split('\n')[0] ?? '') as { availableTabs?: { tabId?: number; url?: string }[] }).availableTabs ?? []
+    } catch {
+      tabs = []
+    }
+    const fresh = tabs.length === 1 && /^chrome:\/\/newtab\/?$/.test(tabs[0]?.url ?? '') ? (tabs[0]?.tabId ?? null) : null
+    let tabId = fresh
+    if (tabId === null) {
+      const created = await $.mcp.call(CHROME, 'tabs_create_mcp', {})
+      if (created.isError) {
+        throw new Error(said(created))
+      }
+      tabId = tabIdOf(said(created))
+    }
+    if (tabId === null) {
+      throw new Error(t('error.chromeNoTab'))
+    }
+    const result = await $.mcp.call(CHROME, 'navigate', { url, tabId })
+    if (result.isError) {
+      throw new Error(said(result))
+    }
+    await update($, failure, () => null)
+  } catch (err) {
+    await update($, failure, () => t('error.chrome', { error: err instanceof Error ? err.message : String(err) }))
+  }
+}
+
 // Shows a remote vault's web UI in the app's own browser pane.
 async function openUi($: EngineInterface, row: VaultRow) {
   if (!row.uiUrl) {
@@ -826,8 +916,13 @@ function withTimeout<T>($: EngineInterface, work: Promise<T>): Promise<T> {
 async function refresh($: EngineInterface): Promise<boolean> {
   const id = ++lastRefresh
   reading += 1
+  // Claude in Chrome asked beside the router, and its answer awaited with the
+  // read's, so a drawing from this read knows whether to draw the planet.
+  // Bounded by its own timeout: a Chrome that never answers holds nothing up.
+  const chrome = checkChrome($).catch(() => undefined)
   try {
     const data = JSON.parse(await withTimeout($, call($, 'list_vaults'))) as ListVaults
+    await chrome
     const next = toSnapshot(data, await $.clock.now())
     next.defaultRoot = data.configPath ? await defaultVaultRoot($, data.configPath) : null
     await keepPausedOpeners($, next, data.configPath)
@@ -1485,7 +1580,19 @@ async function setPaused($: EngineInterface, s: Secondary, paused: boolean) {
 // band drew an empty space for a mark with no description (seen on screen in
 // v0.110.2), where the pane's described dots were drawn.
 const markAlt = (source: string) =>
-  source === OBSIDIAN_MARK ? 'Obsidian' : source === CLAUDE_PANE_MARK ? 'Claude' : t('mark.browser')
+  source === OBSIDIAN_MARK
+    ? 'Obsidian'
+    : source === CLAUDE_PANE_MARK
+      ? 'Claude'
+      : source === ROUTER_MARK
+        ? 'obsidian-mcp-router'
+        : source === GITHUB_MARK
+          ? 'GitHub'
+          : t('mark.browser')
+
+// The router's mark, at the left of the pane's menu: the left of the
+// repository's logo (docs/assets/logo.png), 64 px, its white made transparent.
+const ROUTER_MARK = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><image width="64" height="64" href="data:image/png;base64,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"/></svg>`
 
 // Where a vault opens from the band: Obsidian for a local one Obsidian lists
 // (or may list: not checked yet), the browser for a remote one with a web UI;
@@ -1907,6 +2014,8 @@ const isBandOn = () => isEnvKnown && !isOptedOut && !isBandOptedOut
 type PaneView = 'vaults' | 'add' | 'admin'
 // Each press of the menu: a later one supersedes it, whose scroll then stands.
 let navGeneration = 0
+// Claude in Chrome asked once at the pane's first drawing; a refresh asks again.
+let isChromeAsked = false
 async function showView($: EngineInterface, view: PaneView) {
   navGeneration += 1
   const generation = navGeneration
@@ -2171,6 +2280,11 @@ export const register: Register = on => {
     const languageCode = await read($, language)
     const isAdminShown = await read($, showAdmin)
     const isNavOpen = await read($, navOpen)
+    const isChrome = (await read($, chromeState)) === 'on'
+    if (!isChromeAsked) {
+      isChromeAsked = true
+      void checkChrome($).catch(() => undefined)
+    }
     const form = await read($, adminForm)
     const removing = await read($, confirmRemove)
     const picked = await read($, removePick)
@@ -2317,31 +2431,75 @@ export const register: Register = on => {
       ) : (
         <Button key={`${prefix}nav-${id}`} label={label} plain dimColor onPress={() => void showView($, id)} />
       )
-    // A pane too narrow for the three on one line folds them into "☰" and the
-    // view in sight; a press unfolds them one under the other. Counted as the
-    // terminal draws them: each label in "[ ]" (4 cells), a 2-cell gap between.
-    // Nothing to add before the router is read: no "+ Ajouter un vault" then.
+    // A mark that is a control: a Button holds text only and a mark is no
+    // button, so the mark is drawn and a blank Button laid over it, the one
+    // the click lands on; a surface with no SVG has a glyph key instead.
+    // The terminal draws no SVG (its element draws nothing there): a glyph.
+    const Mark = e.surface !== 'terminal' ? Svg : null
+    const iconKey = (source: string, glyph: string, key: string, onPress: () => void) =>
+      Mark ? (
+        <Box key={`icon-${key}`} flexDirection="row" alignItems="center" flexShrink={0}>
+          <Mark source={source} alt={markAlt(source)} width={16} height={16} />
+          <Box position="absolute" top={0} left={0}>
+            <Button key={key} label={'  '} plain onPress={onPress} />
+          </Box>
+        </Box>
+      ) : (
+        <Button key={key} label={glyph} plain dimColor onPress={onPress} />
+      )
+    // The router's mark at the menu's left; the version, the update badge and
+    // the repository at its right. On a pane too narrow for the three on one
+    // line, they fold into "☰" and the view in sight (a press unfolds them one
+    // under the other), with only the mark and the repository beside it.
+    // Counted as the terminal draws them: each label in "[ ]" (4 cells), 2-cell
+    // gaps, the mark (3) and what stands at the right. Nothing to add before
+    // the router is read: no "+ Ajouter un vault" then.
     const menuLabels: [PaneView, string][] = [
       ['vaults', t('nav.vaults')],
       ...(snap ? [['add', t('add.open')] as [PaneView, string]] : []),
       ['admin', t('nav.admin')],
     ]
     const menuColumns = e.props.bodyColumns ?? 60
-    const isBurger = menuLabels.reduce((sum, [, label]) => sum + cells(label) + 4, 0) + 2 * 2 > menuColumns
+    const version = upd?.installed ? `v${upd.installed}` : ''
+    const endCells =
+      (version ? cells(version) + 2 : 0) + (upd?.isAvailable ? cells(t('update.badge')) + 2 : 0) + (Mark ? 3 : cells(t('footer.github')) + 1)
+    const isBurger = menuLabels.reduce((sum, [, label]) => sum + cells(label) + 4 + 2, 0) + (Mark ? 3 : 0) + endCells > menuColumns
     const rule = (
       <Text dimColor wrap="truncate-end">
         {'─'.repeat(Math.max(1, menuColumns))}
       </Text>
     )
+    const brand = Mark ? <Mark source={ROUTER_MARK} alt={markAlt(ROUTER_MARK)} width={22} height={22} /> : null
+    const repository = (prefix: string) =>
+      iconKey(GITHUB_MARK, t('footer.github'), `${prefix}github`, () => void openUrl($, REPO_URL))
+    const menuEnd = (prefix: string) => (
+      <Box key={`${prefix}nav-end`} flexDirection="row" gap={2} alignItems="center" flexShrink={0}>
+        {version && (
+          <Text size="caption" dimColor>
+            {version}
+          </Text>
+        )}
+        {upd?.isAvailable && (
+          <Button key={`${prefix}update-badge`} label={t('update.badge')} plain onPress={() => void showView($, 'admin')} />
+        )}
+        {repository(prefix)}
+      </Box>
+    )
     const navMenu = (prefix: string) =>
       isBurger ? (
         <Box key={`${prefix}nav`} flexDirection="column">
-          <Button
-            key={`${prefix}nav-burger`}
-            label={`☰ ${menuLabels.find(([id]) => id === view)?.[1] ?? ''}`}
-            plain
-            onPress={() => void update($, navOpen, open => !open)}
-          />
+          <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+            <Box flexDirection="row" gap={1} alignItems="center">
+              {brand}
+              <Button
+                key={`${prefix}nav-burger`}
+                label={`☰ ${menuLabels.find(([id]) => id === view)?.[1] ?? ''}`}
+                plain
+                onPress={() => void update($, navOpen, open => !open)}
+              />
+            </Box>
+            {repository(prefix)}
+          </Box>
           {isNavOpen && (
             <Box key={`${prefix}nav-list`} flexDirection="column" paddingLeft={2}>
               {menuLabels.map(([id, label]) => menuItem(prefix, id, label))}
@@ -2351,12 +2509,48 @@ export const register: Register = on => {
         </Box>
       ) : (
         <Box key={`${prefix}nav`} flexDirection="column">
-          <Box flexDirection="row" gap={2} alignItems="center">
-            {menuLabels.map(([id, label]) => menuItem(prefix, id, label))}
+          <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={2}>
+            <Box flexDirection="row" gap={2} alignItems="center">
+              {brand}
+              {menuLabels.map(([id, label]) => menuItem(prefix, id, label))}
+            </Box>
+            {menuEnd(prefix)}
           </Box>
           {rule}
         </Box>
       )
+    // What each mark does, under the menu: Obsidian's, Claude's, the planet —
+    // or, while Claude in Chrome does not answer, how to turn it on.
+    const legendItem = (key: string, source: string, glyph: string, text: string) => (
+      <Box key={key} flexDirection="row" gap={1} alignItems="center">
+        {Mark ? <Mark source={source} alt={markAlt(source)} width={14} height={14} /> : <Text>{glyph}</Text>}
+        <Text size="caption" dimColor>
+          {text}
+        </Text>
+      </Box>
+    )
+    const legend = (
+      <Box key="legend" flexDirection="row" flexWrap="wrap" columnGap={2} alignItems="center">
+        {legendItem('legend-obsidian', OBSIDIAN_MARK, '💎', t('legend.obsidian'))}
+        <Text size="caption" dimColor>
+          |
+        </Text>
+        {legendItem('legend-claude', CLAUDE_PANE_MARK, '✳', t('legend.claude'))}
+        <Text size="caption" dimColor>
+          |
+        </Text>
+        {isChrome ? (
+          legendItem('legend-chrome', GLOBE_MARK, '🌐', t('legend.chrome'))
+        ) : (
+          <Box key="legend-chrome-off" flexDirection="row" gap={1} alignItems="center">
+            <Text size="caption" dimColor>
+              {t('legend.chromeOff')}
+            </Text>
+            <Button key="legend-chrome-enable" label={t('legend.chromeEnable')} plain onPress={() => void showView($, 'admin')} />
+          </Box>
+        )}
+      </Box>
+    )
     const sticky =
       scrolled > 0 ? (
         <Box key="sticky-bar" position="absolute" top={scrolled} left={0} right={0} flexDirection="column" backgroundColor="inverseText">
@@ -2364,26 +2558,10 @@ export const register: Register = on => {
         </Box>
       ) : null
 
-    // At the bottom: the version, the repository, the update badge, and the
-    // administration console's fold.
+    // At the bottom: the administration console's fold (the version, the
+    // repository and the update badge are in the menu).
     const footer = (
-      <Box key="pane-footer" flexDirection="row" justifyContent="space-between" alignItems="center" gap={1} flexWrap="wrap">
-        <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
-          {upd?.installed && (
-            <Text size="caption" dimColor>
-              v{upd.installed}
-            </Text>
-          )}
-          {upd?.installed && (
-            <Text size="caption" dimColor>
-              ·
-            </Text>
-          )}
-          <Button key="github" label={t('footer.github')} plain dimColor onPress={() => void openUrl($, REPO_URL)} />
-          {upd?.isAvailable && (
-            <Button key="update-badge" label={t('update.badge')} plain onPress={() => void showConsole($)} />
-          )}
-        </Box>
+      <Box key="pane-footer" flexDirection="row" justifyContent="flex-end" alignItems="center" gap={1} flexWrap="wrap">
         <Button
           key="toggle-admin"
           label={isAdminShown ? t('footer.back') : t('footer.admin')}
@@ -2453,7 +2631,7 @@ export const register: Register = on => {
               ? t('wg.absent')
               : t('wg.unknown')
     const removable = snap ? snap.available : []
-    // The console's four sections — general (language, plugin, WireGuard),
+    // The console's four sections — general (language, plugin, WireGuard, Chrome),
     // creating a vault, registering or removing an existing one, the hooks —
     // each a framed card under its grey title; side by side, three to a line,
     // in a wide pane.
@@ -2573,6 +2751,18 @@ export const register: Register = on => {
                   <Button key="wg-guide" label={t('wg.guide')} plain onPress={() => void openUrl($, GUIDE_URL)} />
                   <Button key="wg-prompt" label={t('wg.prompt')} plain onPress={() => void openUrl($, PROMPT_URL)} />
                 </Box>
+            </Box>
+
+            <Box key="admin-chrome" flexDirection="column" gap={1}>
+              <Text size="caption" dimColor>
+                {t('admin.chrome')}
+              </Text>
+              <Box key="admin-chrome-body" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+                <Text size="caption" color={isChrome ? 'success' : 'warning'}>
+                  {isChrome ? t('admin.chromeOn') : t('admin.chromeOff')}
+                </Text>
+                <Button key="chrome-check" label={t('admin.chromeCheck')} plain dimColor onPress={() => void checkChrome($)} />
+              </Box>
             </Box>
             </Box>,
           ),
@@ -2954,56 +3144,37 @@ export const register: Register = on => {
     // A drawn mark before a link (a Button holds text only, so the mark sits
     // beside it); a surface without SVG draws the link alone.
     const mark = (source: string) => (Svg ? <Svg source={source} alt={markAlt(source)} width={14} height={14} /> : null)
-    // Where a vault opens, with its mark: a remote one's web UI in the browser
-    // or in Claude's pane, a local one in Obsidian. A remote one that does not
-    // answer says so, with a retry; a local one Obsidian has closed offers to
-    // open it; one Obsidian has never listed says to open it once by hand.
+    // Where a vault opens, as its marks alone — the legend under the menu says
+    // what each one does: Obsidian's for a local vault, Claude's (its own
+    // browser) and the planet (Chrome, while Claude in Chrome answers) for a
+    // remote one. A remote one that does not answer says so, with a retry; a
+    // local one Obsidian has never listed says to open it once by hand.
     const links = (row: VaultRow) => {
       if (isRemote(row)) {
         // Its REST API silent: said, with a retry. Its web UI may answer all
-        // the same, so its links stay.
+        // the same, so its marks stay.
         const down =
           row.online === false
             ? [
-                <Box key={`down-${row.name}`} flexDirection="row" gap={1} alignItems="center">
-                  {!row.uiUrl && mark(GLOBE_MARK)}
-                  <Text size="caption" dimColor>
-                    {t('link.remoteShort')}
-                  </Text>
-                  <Text size="caption" color="error">
-                    {t('secondaries.unreachable')}
-                  </Text>
-                </Box>,
+                <Text key={`down-${row.name}`} size="caption" color="error">
+                  {t('secondaries.unreachable')}
+                </Text>,
                 <Button key={`retry-${row.name}`} label={t('link.retry')} plain onPress={() => background($)} />,
               ]
             : []
 
-        return row.uiUrl
-          ? [
-              ...down,
-              <Box key={`web-box-${row.name}`} flexDirection="row" gap={1} alignItems="center">
-                {mark(GLOBE_MARK)}
-                <Button key={`web-${row.name}`} label={t('link.remote')} plain dimColor onPress={() => void openInBrowser($, row)} />
-              </Box>,
-              <Box key={`ui-box-${row.name}`} flexDirection="row" gap={1} alignItems="center">
-                {mark(CLAUDE_PANE_MARK)}
-                <Button key={`ui-${row.name}`} label={t('link.claude')} plain dimColor onPress={() => void openUi($, row)} />
-              </Box>,
-            ]
-          : down.length > 0
-            ? down
-            : [
-                <Text key={`place-${row.name}`} size="caption" dimColor>
-                  {t('link.remoteShort')}
-                </Text>,
+        return [
+          ...(row.uiUrl
+            ? [
+                ...(isChrome ? [iconKey(GLOBE_MARK, '🌐', `web-${row.name}`, () => void openInChrome($, row))] : []),
+                iconKey(CLAUDE_PANE_MARK, '✳', `ui-${row.name}`, () => void openUi($, row)),
               ]
+            : []),
+          ...down,
+        ]
       }
       if (!row.path) {
-        return [
-          <Text key={`place-${row.name}`} size="caption" dimColor>
-            {t('link.localShort')}
-          </Text>,
-        ]
+        return []
       }
       if (row.isKnownToObsidian === false) {
         return [
@@ -3013,22 +3184,7 @@ export const register: Register = on => {
         ]
       }
 
-      return row.online === false
-        ? [
-            <Box key={`obsidian-box-${row.name}`} flexDirection="row" gap={1} alignItems="center">
-              {mark(OBSIDIAN_MARK)}
-              <Text size="caption" dimColor>
-                {t('link.localClosed')}
-              </Text>
-            </Box>,
-            <Button key={`obsidian-${row.name}`} label={t('link.openObsidian')} plain onPress={() => void openInObsidian($, row)} />,
-          ]
-        : [
-            <Box key={`obsidian-box-${row.name}`} flexDirection="row" gap={1} alignItems="center">
-              {mark(OBSIDIAN_MARK)}
-              <Button key={`obsidian-${row.name}`} label={t('link.local')} plain dimColor onPress={() => void openInObsidian($, row)} />
-            </Box>,
-          ]
+      return [iconKey(OBSIDIAN_MARK, '💎', `obsidian-${row.name}`, () => void openInObsidian($, row))]
     }
 
     // The tiles' grid, from the pane's width: as many per line as fit at the
@@ -3045,7 +3201,9 @@ export const register: Register = on => {
 
       return Math.max(least, columns)
     }
-    const boundWidth = fit(3, Math.max(TILE_WIDTH, modeWidth + 4))
+    // Wide enough for the tier's radios where the pane allows, never wider than
+    // the pane: a narrow one cuts the longest label instead.
+    const boundWidth = fit(3, Math.min(Math.max(TILE_WIDTH, modeWidth + 4), columns))
     // A tile to add holds less, but not so little that two squeeze in the side panel.
     const addWidth = fit(4, TILE_WIDTH + 4)
     // A vault's tile: its state and name on top, with what acts on the tile
@@ -3075,7 +3233,7 @@ export const register: Register = on => {
           </Box>
           {right as never}
         </Box>
-        {lines.map((line, i) => (
+        {lines.filter(line => !(Array.isArray(line) && line.length === 0)).map((line, i) => (
           <Box
             key={i === 0 ? `${key}-controls` : `${key}-line-${i}`}
             flexDirection="row"
@@ -3213,33 +3371,24 @@ export const register: Register = on => {
         </Box>
       </Box>
     )
-    const tierMenu = (s: Secondary) =>
-      Select ? (
-        // One width for every menu, whatever tier it shows: sized on the
-        // longest label, so the tiles line up.
-        <Box key={`mode-box-${s.name}`} width={modeWidth} minWidth={modeWidth} flexShrink={0}>
-          <Select
-            key={`mode-${s.name}`}
-            options={MODES.map(m => ({ value: m.mode, label: `${m.icon} ${modeLabel(m.mode)}` }))}
-            value={s.mode}
-            onSelect={(value: string) => setMode(s, value)}
+    // Its write tier as three radio buttons under a title, the one in force
+    // marked ◉ and lit, the others ○ and dim; a press sets it.
+    const tierMenu = (s: Secondary) => (
+      <Box key={`mode-${s.name}`} flexDirection="column" flexShrink={1}>
+        <Text size="caption" dimColor>
+          {t('mode.radioTitle')}
+        </Text>
+        {MODES.map(m => (
+          <Button
+            key={`tier-${m.mode}-${s.name}`}
+            label={`${s.mode === m.mode ? '◉' : '○'} ${m.icon} ${modeLabel(m.mode)}`}
+            plain
+            dimColor={s.mode !== m.mode}
+            onPress={() => setMode(s, m.mode)}
           />
-        </Box>
-      ) : (
-        // A surface with no menu (the phone) keeps the three choices, as
-        // quiet buttons, the current one lit.
-        <Box key={`modes-${s.name}`} flexDirection="row" flexWrap="wrap" flexShrink={1} gap={1}>
-          {MODES.map(m => (
-            <Button
-              key={`mode-${s.name}-${m.mode}`}
-              label={`${m.icon} ${modeLabel(m.mode)}`}
-              plain
-              dimColor={s.mode !== m.mode}
-              onPress={() => setMode(s, m.mode)}
-            />
-          ))}
-        </Box>
-      )
+        ))}
+      </Box>
+    )
     // A secondary's tile, paused or not, in its place: ✕ removes it from the
     // project, the links open it, the menu sets its tier, the switch pauses it.
     const secondaryTile = (s: Secondary, isPaused: boolean) =>
@@ -3409,16 +3558,7 @@ export const register: Register = on => {
               [
                 // Where it opens — a vault can be looked at before it is added.
                 <Box key={`av-where-${v.name}`} flexDirection="row" gap={1} alignItems="center" flexWrap="wrap" flexShrink={1}>
-                  {(isRemote(v) && v.uiUrl) || (!isRemote(v) && v.path && v.isKnownToObsidian !== false) ? (
-                    links(v)
-                  ) : (
-                    <Box key={`av-place-${v.name}`} flexDirection="row" gap={1} alignItems="center">
-                      {mark(isRemote(v) ? GLOBE_MARK : OBSIDIAN_MARK)}
-                      <Text size="caption" dimColor>
-                        {placeOf(v)}
-                      </Text>
-                    </Box>
-                  )}
+                  {links(v)}
                 </Box>,
               ],
               {
@@ -3471,6 +3611,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column" gap={1}>
         {navMenu('')}
+        {legend}
         {statusLine}
         {problems}
         {isTunnelDown && (
@@ -3530,13 +3671,14 @@ export const register: Register = on => {
     // A graphical surface frames each vault in its own chip; the terminal,
     // where a frame costs two rows, keeps one line and a "│" between them.
     const isChip = !!BandSvg
+    const isBandChrome = (await read($, chromeState)) === 'on'
     // The cells a name's controls take beyond the name: Obsidian's mark (2 and
     // a gap) for a local vault; for a remote one the planet and Claude's mark
     // (a gap and 2 each), on the terminal 🌐 and ✳ (a gap and 2, a gap and 1).
     const markCells = (row: VaultRow) => {
       const target = openTarget(row)
 
-      return !target ? 0 : target === 'browser' ? (BandSvg ? 6 : 5) : BandSvg ? 3 : 0
+      return !target ? 0 : target === 'browser' ? (BandSvg ? 3 : 2) + (isBandChrome ? 3 : 0) : BandSvg ? 3 : 0
     }
     // Read for its redraws only: the toggle says what the module knows, and
     // the texts follow the language.
@@ -3641,7 +3783,7 @@ export const register: Register = on => {
           <Text key={`band-${list}name-${name}`} dimColor={isDim} wrap="truncate-end">
             {row.name}
           </Text>
-          {iconKey(GLOBE_MARK, '🌐', `band-${list}web-${name}`, () => void openVault($, row))}
+          {isBandChrome && iconKey(GLOBE_MARK, '🌐', `band-${list}web-${name}`, () => void openInChrome($, row))}
           {iconKey(CLAUDE_PANE_MARK, '✳', `band-${list}ui-${name}`, () => void openUi($, row))}
         </Box>
       )
@@ -3749,7 +3891,9 @@ export const register: Register = on => {
         column(
           `band-list-webcell-${name}`,
           2,
-          target === 'browser' ? iconKey(GLOBE_MARK, '🌐', `band-list-web-${name}`, () => void openVault($, row)) : null,
+          target === 'browser' && isBandChrome
+            ? iconKey(GLOBE_MARK, '🌐', `band-list-web-${name}`, () => void openInChrome($, row))
+            : null,
         ),
         column(
           `band-list-uicell-${name}`,

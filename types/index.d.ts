@@ -135,6 +135,7 @@ declare module 'claude-code' {
       /** The administration console is unfolded. */
       showAdmin: boolean
       navOpen: boolean
+      chrome: 'unknown' | 'on' | 'off'
       adminForm: AdminForm
       /** The vault whose removal waits for its confirming press. */
       confirmRemove: string | null
