@@ -10,6 +10,33 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.112.0] — 2026-10-24 — the band: icons that act, framed vaults, a dropdown
+
+Asked on screen (band, v0.111.0):
+
+- **The icons are the controls.** A remote vault reads `name 🌐 ✳`: the planet opens it in the
+  default browser, Claude's mark in Claude's own browser; the name opens nothing any more and
+  the "↗" key is gone. A local vault keeps Obsidian's mark before its name, both opening it in
+  Obsidian. A Button holds text only and an SVG takes no press, so on the desktop each mark has
+  a blank Button laid over it (`position: "absolute"`); the terminal, which draws no SVG, has
+  🌐 and ✳ keys.
+- **Each vault in its own frame** on the desktop (a rounded border round the primary and each
+  secondary); the terminal keeps one line, with a "│" between secondaries.
+- **A dropdown.** When the secondaries do not fit, "… +N ▾" opens a framed list under the line:
+  every secondary in the binding's order, each with its controls (▶/❚❚, Obsidian, the browser,
+  Claude's browser). The chip reads "… +N ▴" while open, the same width, and `bandFit` reserves
+  it (it was two cells short).
+- **The primary's keys** live under `band-main-…`: a secondary named "primary" collides with
+  nothing.
+- **A scroll trace** for the pane's sticky bar (v0.111.0), which does not show on the desktop:
+  each `ui.scroll` the pane receives and each drawing's `scroll.offset` go to
+  `%TEMP%/obsidian-router-pane-scroll.json` (last 60, one writer), to learn whether the desktop
+  reports the pane's scroll at all.
+- Adversarial review by Codex, two passes. Fixed: the primary's keys, the chip's room, the
+  trace's concurrent writes. Kept and documented: the icon Buttons' blank label (the desktop
+  draws a label whole; the mark's `alt` names it). Left to see on screen: that a click on a mark
+  reaches the Button laid over it. Tests: `tests/vault-panel.test.tsx` 107.
+
 ## [0.111.0] — 2026-10-24 — the pane's top bar stays at the top
 
 Asked after v0.110.4: a menu at the top of the pane that stays while it scrolls.
