@@ -25,10 +25,15 @@ const busy = atom({ plugin: 'obsidian-router', key: 'busy' } as const, null)
 const error = atom({ plugin: 'obsidian-router', key: 'error' } as const, null)
 const failure = atom({ plugin: 'obsidian-router', key: 'failure' } as const, null)
 const filter = atom({ plugin: 'obsidian-router', key: 'filter' } as const, '')
-const tab = atom({ plugin: 'obsidian-router', key: 'tab' } as const, 'locaux')
+// The add list's tab: a key of its own since the redesign, so that a tab kept
+// by an older panel ("locaux") does not hold "all" back.
+const tab = atom({ plugin: 'obsidian-router', key: 'addTab' } as const, 'tous' as Tab)
 // The two folded parts of the pane: the closed secondaries, and adding one.
 const showClosed = atom({ plugin: 'obsidian-router', key: 'showClosed' } as const, false)
 const showAdd = atom({ plugin: 'obsidian-router', key: 'showAdd' } as const, false)
+// The "add a vault" grid's search and its order (A → Z, or Z → A).
+const addQuery = atom({ plugin: 'obsidian-router', key: 'addQuery' } as const, '')
+const addSort = atom({ plugin: 'obsidian-router', key: 'addSort' } as const, 'az' as 'az' | 'za')
 // Bumped at every open and close of the pane: the band reads it so that it is
 // drawn again; what the toggle says comes from isPanePlaced.
 const paneVersion = atom({ plugin: 'obsidian-router', key: 'paneVersion' } as const, 0)
@@ -1403,6 +1408,12 @@ const LATEST_MANIFEST = 'https://raw.githubusercontent.com/tboome33/obsidian-mcp
 // (@lobehub/icons-static-svg 1.98.0, obsidian-color.svg, MIT).
 const OBSIDIAN_MARK =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.643 14.012c.615-.183 1.605-.465 2.745-.534-.684-1.725-.849-3.235-.716-4.579.153-1.552.7-2.847 1.234-3.95.114-.235.223-.454.328-.664.149-.297.289-.577.42-.86.217-.47.378-.885.46-1.27.08-.38.08-.719-.014-1.044-.095-.325-.297-.675-.681-1.06a1.6 1.6 0 00-1.475.36l-4.95 4.453a1.602 1.602 0 00-.512.952l-.427 2.83c.67.592 2.327 2.317 3.335 4.71.09.213.174.432.253.656zM5.855 9.937c-.024.1-.057.197-.099.29L3.14 16.058a1.602 1.602 0 00.313 1.772l4.117 4.24c2.102-3.102 1.795-6.02.835-8.3-.728-1.73-1.832-3.083-2.55-3.833z" fill="#A88BFA"/><path d="M8.52 22.57c.073.01.146.018.22.02.781.023 2.095.091 3.16.288.87.16 2.593.642 4.011 1.056 1.082.316 2.197-.548 2.354-1.664.115-.814.33-1.735.725-2.58l-.009.004c-.67-1.87-1.523-3.077-2.417-3.847a5.294 5.294 0 00-2.777-1.258c-1.541-.216-2.952.189-3.841.45.532 2.218.368 4.828-1.425 7.53z" fill="#A88BFA"/><path d="M19.676 18.538a69.072 69.072 0 001.858-2.952.811.811 0 00-.061-.901c-.516-.684-1.504-2.075-2.042-3.362-.554-1.323-.636-3.378-.64-4.378a1.708 1.708 0 00-.359-1.051L15.235 1.83a3.757 3.757 0 01-.076.545c-.107.503-.307 1.004-.536 1.498-.135.29-.29.601-.446.915-.105.21-.21.42-.31.626-.517 1.068-.998 2.227-1.132 3.59-.125 1.262.046 2.73.814 4.484.128.01.257.025.386.043a6.364 6.364 0 013.327 1.506c.916.79 1.743 1.921 2.414 3.5z" fill="#A88BFA"/></svg>'
+// The marks before a vault's open links (the panel redesign): a remote vault's
+// web UI in the browser, the same in Claude's own browser pane.
+const GLOBE_MARK =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" rx="4" fill="#2A78D6"/><circle cx="8" cy="8" r="4.6" fill="none" stroke="#FFFFFF" stroke-width="1.1"/><path d="M3.4 8h9.2M8 3.4c1.4 1.3 2 2.9 2 4.6s-.6 3.3-2 4.6M8 3.4C6.6 4.7 6 6.3 6 8s.6 3.3 2 4.6" fill="none" stroke="#FFFFFF" stroke-width="1.1"/></svg>'
+const CLAUDE_PANE_MARK =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" rx="4" fill="#D97757"/><rect x="3.4" y="4.2" width="9.2" height="7.6" rx="1.4" fill="none" stroke="#FFFFFF" stroke-width="1.1"/><path d="M9.4 4.2v7.6" stroke="#FFFFFF" stroke-width="1.1"/></svg>'
 const GITHUB_MARK =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#6e7681" d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>'
 
@@ -1947,13 +1958,14 @@ export const register: Register = on => {
         background($)
       }
     }
-    // A tab kept from an earlier version of the panel reads as the first one.
-    const current: Tab = (await read($, tab)) === 'distants' ? 'distants' : 'locaux'
+    const storedTab = await read($, tab)
+    const current: Tab = storedTab === 'locaux' || storedTab === 'distants' ? storedTab : 'tous'
+    const addTyped = await read($, addQuery)
+    const order = (await read($, addSort)) === 'za' ? 'za' : 'az'
     const typed = await read($, filter)
     // A surface with no field to type in (the phone) ignores the filter: one
     // typed elsewhere would otherwise hide rows it cannot bring back.
     const query = Input ? typed.trim().toLowerCase() : ''
-    const isClosedShown = await read($, showClosed)
     const isAddShown = await read($, showAdd)
     const Select = !isPhone && 'Select' in els ? els.Select : null
     const Svg = 'Svg' in els ? els.Svg : null
@@ -2018,83 +2030,103 @@ export const register: Register = on => {
 
     const isRemote = (r: VaultRow) => r.type === 'remote'
     const bound = snap ? [snap.primary, ...snap.secondaries].filter((r): r is VaultRow => r !== null) : []
-    const openCount = bound.filter(r => r.online === true).length
-    const summary = snap
-      ? `${tn('summary.bound', bound.length)} · ${tn('summary.open', openCount)} · ${t('summary.updated', { time: time(snap.fetchedAt) })}`
+    // The vaults bound to this project, paused ones included; the ones to check
+    // are the active ones that do not answer (or whose state is not known).
+    const boundCount = bound.length + (snap?.paused ?? []).length
+    const toCheck = bound.filter(r => r.online !== true).length
+    const closedLocal = bound.filter(r => r.online === false && r.type !== 'remote').length
+    const headline = snap
+      ? `${tn('summary.bound', boundCount)} · ${toCheck === 0 ? t('status.allOpen') : tn('status.toCheck', toCheck)}`
       : isRefusal(err)
         ? t('summary.blocked')
         : err
           ? t('summary.unreachable')
           : t('summary.reading')
 
-    // The plugin's name and version on the left, the repository on the right,
-    // a badge when GitHub has a newer version (its press unfolds the console,
-    // where the update is). Then the summary and the refresh.
-    // The pane's name, version and links, then a rule under them: a line of
-    // box-drawing dashes, dimmed and cut at the pane's edge, so it reads as a
-    // separator on the terminal and the desktop alike.
-    const title = (
-      <Box key="pane-title-block" flexDirection="column">
-        <Box key="pane-title" flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
-          <Box flexDirection="row" gap={1} alignItems="center" flexShrink={1} flexWrap="wrap">
-            <Text weight="semibold">obsidian-mcp-router</Text>
-            {upd?.installed && (
-              <Text size="caption" dimColor>
-                v{upd.installed}
+    // The panel's state in one line: how many vaults, whether they all answer,
+    // when it was read; the refresh beside it.
+    const statusLine = (
+      <Box key="status" flexDirection="row" justifyContent="space-between" alignItems="center" gap={1} flexWrap="wrap">
+        <Box flexDirection="column" flexShrink={1}>
+          <Box flexDirection="row" gap={1} alignItems="center">
+            {snap && <Text color={toCheck === 0 ? 'success' : 'warning'}>●</Text>}
+            <Text weight="semibold">{headline}</Text>
+          </Box>
+          <Box paddingLeft={snap ? 2 : 0}>
+            {working ? (
+              <Text size="caption" color="warning">
+                {working}…
               </Text>
+            ) : (
+              snap && (
+                <Text size="caption" dimColor>
+                  {t('status.updated', { time: time(snap.fetchedAt) })}
+                </Text>
+              )
             )}
-            {upd?.isAvailable && (
-              <Button
-                key="update-badge"
-                label={t('update.badge')}
-                plain
-                onPress={() => void update($, showAdmin, () => true)}
-              />
-            )}
-          </Box>
-          <Box flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
-            {Svg && <Svg source={GITHUB_MARK} alt="GitHub" width={14} height={14} />}
-            <Button key="github" label={t('header.github')} plain dimColor onPress={() => void openUrl($, REPO_URL)} />
           </Box>
         </Box>
-        <Text dimColor wrap="truncate-end">
-          {'─'.repeat(240)}
-        </Text>
-      </Box>
-    )
-    const header = (
-      <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
-        <Box flexShrink={1}>
-          {working ? (
-            <Text size="caption" color="warning">
-              {working}…
-            </Text>
-          ) : (
-            <Text size="caption" dimColor>
-              {summary}
-            </Text>
+        <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+          {closedLocal > 0 && (
+            // Re-confirming the binding as it stands opens EVERY bound local
+            // vault whose Obsidian does not answer — the router's own way, which
+            // also opens one Obsidian has never listed.
+            <Button
+              key="open-closed"
+              label={closedLocal > 1 ? t('secondaries.openAll', { count: closedLocal }) : t('secondaries.openOne')}
+              plain
+              onPress={() =>
+                void rebind(
+                  $,
+                  { doing: t('action.openClosed.doing'), done: t('action.openClosed.done') },
+                  snap?.primary?.name ?? '',
+                  current => current,
+                  { isOpening: true },
+                )
+              }
+            />
           )}
+          <Button key="refresh" label={t('refresh')} variant="secondary" onPress={() => background($)} />
         </Box>
-        <Button key="refresh" label={t('refresh')} plain dimColor onPress={() => background($)} />
       </Box>
     )
 
-    // What the coloured marks say, in one line under the header. "Disponible"
-    // covers both kinds: a local vault open in Obsidian, a remote one that answers.
-    const legend = (
-      <Box key="status-legend" flexDirection="row" flexWrap="wrap" columnGap={2}>
-        {[
-          { id: 'available', mark: dot(true, false), text: t('legend.available') },
-          { id: 'closed', mark: dot(false, false), text: t('legend.closed') },
-          { id: 'unreachable', mark: dot(false, true), text: t('legend.unreachable') },
-        ].map(item => (
-          <Box key={`legend-${item.id}`} flexDirection="row" gap={1} alignItems="center">
-            {item.mark}
+    // At the bottom: the version, the repository, the update badge, and the
+    // administration console's fold.
+    const footer = (
+      <Box key="pane-footer" flexDirection="row" justifyContent="space-between" alignItems="center" gap={1} flexWrap="wrap">
+        <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+          {upd?.installed && (
             <Text size="caption" dimColor>
-              {item.text}
+              v{upd.installed}
             </Text>
-          </Box>
-        ))}
+          )}
+          {upd?.installed && (
+            <Text size="caption" dimColor>
+              ·
+            </Text>
+          )}
+          <Button key="github" label={t('footer.github')} plain dimColor onPress={() => void openUrl($, REPO_URL)} />
+          {upd?.isAvailable && (
+            <Button key="update-badge" label={t('update.badge')} plain onPress={() => void update($, showAdmin, () => true)} />
+          )}
+        </Box>
+        <Button
+          key="toggle-admin"
+          label={isAdminShown ? t('footer.adminOpen') : t('footer.admin')}
+          plain
+          dimColor={!isAdminShown}
+          onPress={() =>
+            void update($, showAdmin, shownNow => !shownNow).then(async () => {
+              if (await read($, showAdmin)) {
+                await checkWireguard($)
+              } else {
+                // Folded: a key typed but not sent is dropped.
+                await update($, adminForm, now => (now.apiKey ? { ...now, apiKey: '' } : now))
+              }
+            })
+          }
+        />
       </Box>
     )
 
@@ -2151,22 +2183,6 @@ export const register: Register = on => {
     const removable = snap ? snap.available : []
     const admin = (
       <Box key="admin" flexDirection="column" gap={1}>
-        <Button
-          key="toggle-admin"
-          label={`${isAdminShown ? '▾' : '▸'} ${t('admin.toggle')}`}
-          plain
-          dimColor={!isAdminShown}
-          onPress={() =>
-            void update($, showAdmin, shownNow => !shownNow).then(async () => {
-              if (await read($, showAdmin)) {
-                await checkWireguard($)
-              } else {
-                // Folded: a key typed but not sent is dropped.
-                await update($, adminForm, now => (now.apiKey ? { ...now, apiKey: '' } : now))
-              }
-            })
-          }
-        />
         {isAdminShown && (
           <Box key="admin-body" flexDirection="column" gap={1} paddingLeft={2}>
             <Box key="admin-language" flexDirection="column">
@@ -2460,9 +2476,9 @@ export const register: Register = on => {
     if (!snap) {
       return (
         <Box flexDirection="column" gap={1}>
-          {title}
-          {header}
+          {statusLine}
           {problems}
+          {footer}
           {admin}
         </Box>
       )
@@ -2472,78 +2488,142 @@ export const register: Register = on => {
     const shown = snap.primary?.name ?? ''
     const matches = (r: VaultRow) => !query || r.name.toLowerCase().includes(query)
 
-    // Re-confirming the binding as it stands opens EVERY bound vault whose
-    // Obsidian does not answer — the router's own way to open one. So it is
-    // one button for all of them, not one per row that would open them all.
-    const openAll = () =>
-      void rebind($, { doing: t('action.openClosed.doing'), done: t('action.openClosed.done') }, shown, current => current, {
-        isOpening: true,
-      })
+    // A drawn mark before a link (a Button holds text only, so the mark sits
+    // beside it); a surface without SVG draws the link alone.
+    const mark = (source: string) => (Svg ? <Svg source={source} alt="" width={14} height={14} /> : null)
+    // Where a vault opens, with its mark: a remote one's web UI in the browser
+    // or in Claude's pane, a local one in Obsidian. A remote one that does not
+    // answer says so, with a retry; a local one Obsidian has closed offers to
+    // open it; one Obsidian has never listed says to open it once by hand.
+    const links = (row: VaultRow) => {
+      if (isRemote(row)) {
+        // Its REST API silent: said, with a retry. Its web UI may answer all
+        // the same, so its links stay.
+        const down =
+          row.online === false
+            ? [
+                <Box key={`down-${row.name}`} flexDirection="row" gap={1} alignItems="center">
+                  {!row.uiUrl && mark(GLOBE_MARK)}
+                  <Text size="caption" dimColor>
+                    {t('link.remoteShort')}
+                  </Text>
+                  <Text size="caption" color="error">
+                    {t('secondaries.unreachable')}
+                  </Text>
+                </Box>,
+                <Button key={`retry-${row.name}`} label={t('link.retry')} plain onPress={() => background($)} />,
+              ]
+            : []
 
-    // A remote vault's web UI, two ways: 🌐 the default browser (Chrome), 🪟
-    // the app's own browser pane. Buttons both: each asks the view agent for
-    // its link at the click.
-    const uiLink = (row: VaultRow) =>
-      row.uiUrl ? (
-        <Box flexDirection="row" gap={1} alignItems="center">
-          <Button key={`web-${row.name}`} label="🌐" plain onPress={() => void openInBrowser($, row)} />
-          <Button key={`ui-${row.name}`} label="🪟" plain onPress={() => void openUi($, row)} />
-        </Box>
-      ) : null
+        return row.uiUrl
+          ? [
+              ...down,
+              <Box key={`web-box-${row.name}`} flexDirection="row" gap={1} alignItems="center">
+                {mark(GLOBE_MARK)}
+                <Button key={`web-${row.name}`} label={t('link.remote')} plain dimColor onPress={() => void openInBrowser($, row)} />
+              </Box>,
+              <Box key={`ui-box-${row.name}`} flexDirection="row" gap={1} alignItems="center">
+                {mark(CLAUDE_PANE_MARK)}
+                <Button key={`ui-${row.name}`} label={t('link.claude')} plain dimColor onPress={() => void openUi($, row)} />
+              </Box>,
+            ]
+          : down.length > 0
+            ? down
+            : [
+                <Text key={`place-${row.name}`} size="caption" dimColor>
+                  {t('link.remoteShort')}
+                </Text>,
+              ]
+      }
+      if (!row.path) {
+        return [
+          <Text key={`place-${row.name}`} size="caption" dimColor>
+            {t('link.localShort')}
+          </Text>,
+        ]
+      }
+      if (row.isKnownToObsidian === false) {
+        return [
+          <Text key={`once-${row.name}`} size="caption" color="warning">
+            {t('obsidian.openOnce')}
+          </Text>,
+        ]
+      }
 
-    // A local vault in Obsidian (💎): a closed one opens, an open one comes to
-    // the front on that vault — the same address does both. One Obsidian does
-    // not list yet cannot be opened that way — its protocol only finds vaults
-    // it knows — so the row says what to do instead. A button, not a link: on
-    // the desktop a link may only be https.
-    const obsidianLink = (row: VaultRow) =>
-      isRemote(row) || !row.path ? null : row.isKnownToObsidian === false ? (
-        <Text size="caption" color="warning">
-          {t('obsidian.openOnce')}
-        </Text>
-      ) : (
-        Svg ? (
-          // A Button holds text only: the mark sits before it, as GitHub's does.
-          <Box key={`obsidian-box-${row.name}`} flexDirection="row" gap={1} alignItems="center">
-            <Svg source={OBSIDIAN_MARK} alt="" width={14} height={14} />
-            <Button key={`obsidian-${row.name}`} label="Obsidian" plain onPress={() => void openInObsidian($, row)} />
-          </Box>
-        ) : (
-          <Button key={`obsidian-${row.name}`} label="💎" plain onPress={() => void openInObsidian($, row)} />
-        )
-      )
+      return row.online === false
+        ? [
+            <Box key={`obsidian-box-${row.name}`} flexDirection="row" gap={1} alignItems="center">
+              {mark(OBSIDIAN_MARK)}
+              <Text size="caption" dimColor>
+                {t('link.localClosed')}
+              </Text>
+            </Box>,
+            <Button key={`obsidian-${row.name}`} label={t('link.openObsidian')} plain onPress={() => void openInObsidian($, row)} />,
+          ]
+        : [
+            <Box key={`obsidian-box-${row.name}`} flexDirection="row" gap={1} alignItems="center">
+              {mark(OBSIDIAN_MARK)}
+              <Button key={`obsidian-${row.name}`} label={t('link.local')} plain dimColor onPress={() => void openInObsidian($, row)} />
+            </Box>,
+          ]
+    }
 
-    // A bound vault's tile: its state and name on top, local or remote (and a
-    // tag) under it, its controls below, wrapping inside the tile. One width
-    // for a whole grid, wide enough for the tier menu, so the tiles line up.
-    const boundWidth = Math.max(TILE_WIDTH, modeWidth + 4)
+    // The tiles' grid, from the pane's width: as many per line as fit at the
+    // least width, up to three bound vaults and four to add; one per line in
+    // the narrow side panel.
+    const columns = e.props.bodyColumns ?? 60
+    const fit = (most: number, least: number) => {
+      for (let n = most; n > 1; n -= 1) {
+        const width = Math.floor((columns - (n - 1)) / n)
+        if (width >= least) {
+          return width
+        }
+      }
+
+      return Math.max(least, columns)
+    }
+    const boundWidth = fit(3, Math.max(TILE_WIDTH, modeWidth + 4))
+    // A tile to add holds less, but not so little that two squeeze in the side panel.
+    const addWidth = fit(4, TILE_WIDTH + 4)
+    // A vault's tile: its state and name on top, with what acts on the tile
+    // as a whole on the right; then its lines, each wrapping inside it.
     const tile = (
       key: string,
       row: VaultRow,
-      controls: unknown,
-      opts: { isDim?: boolean; tag?: string; isHighlighted?: boolean } = {},
+      right: unknown,
+      lines: unknown[],
+      opts: { width: number; isDim?: boolean; isHighlighted?: boolean },
     ) => (
       <Box
         key={key}
         flexDirection="column"
-        width={boundWidth}
-        minWidth={boundWidth}
+        width={opts.width}
+        minWidth={opts.width}
         borderStyle="round"
         borderDimColor={!opts.isHighlighted}
         paddingX={1}
       >
-        <Box flexDirection="row" gap={1} alignItems="center">
-          {dot(row.online, isRemote(row))}
-          <Text weight="semibold" dimColor={opts.isDim || row.online === false} wrap="truncate-end">
-            {row.name}
-          </Text>
+        <Box key={`${key}-head`} flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+          <Box flexDirection="row" gap={1} alignItems="center" flexShrink={1}>
+            {dot(row.online, isRemote(row))}
+            <Text weight="semibold" dimColor={opts.isDim || row.online === false} wrap="truncate-end">
+              {row.name}
+            </Text>
+          </Box>
+          {right as never}
         </Box>
-        <Text size="caption" dimColor wrap="truncate-end">
-          {[isRemote(row) ? t('place.remote') : t('place.local'), opts.tag].filter(Boolean).join(' · ')}
-        </Text>
-        <Box key={`${key}-controls`} flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
-          {controls as never}
-        </Box>
+        {lines.map((line, i) => (
+          <Box
+            key={i === 0 ? `${key}-controls` : `${key}-line-${i}`}
+            flexDirection="row"
+            flexWrap="wrap"
+            gap={1}
+            alignItems="center"
+            paddingLeft={2}
+          >
+            {line as never}
+          </Box>
+        ))}
       </Box>
     )
     // Tiles side by side, wrapping to the next line when the pane is narrow.
@@ -2555,37 +2635,28 @@ export const register: Register = on => {
 
     const primary = (
       <Box flexDirection="column" gap={1}>
-        <Box key="primary-head" flexDirection="column">
-          {section(t('primary.title'))}
-          <Text size="caption" dimColor>
-            {t('primary.definition')}
-          </Text>
-        </Box>
+        {section(t('primary.title'))}
         {snap.primary ? (
           tile(
             'primary-row',
             snap.primary,
+            <Box key="primary-badge" flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
+              <Text color="claude">●</Text>
+              <Text size="caption">{t('primary.badge')}</Text>
+            </Box>,
             [
-              snap.isLocked && (
-                <Text key="primary-locked" size="caption" color="warning">
-                  {t('primary.locked')}
-                </Text>
-              ),
-              obsidianLink(snap.primary),
-              uiLink(snap.primary),
+              links(snap.primary),
+              <Text key="primary-access" size="caption" dimColor>
+                {snap.isLocked ? t('primary.locked') : t('primary.access')}
+              </Text>,
             ],
-            { isHighlighted: true },
+            { width: boundWidth, isHighlighted: true },
           )
         ) : (
           <Box key="primary-none" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
             <Text color="warning">{t('primary.none')}</Text>
             <Button key="primary-setup" label={t('primary.setup')} variant="primary" onPress={() => void update($, showAdmin, () => true)} />
           </Box>
-        )}
-        {snap.primary?.online === false && isRemote(snap.primary) && (
-          <Text size="caption" color="error">
-            {t('primary.unreachable')}
-          </Text>
         )}
         {snap.isImported && snap.primary && (
           <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
@@ -2629,282 +2700,292 @@ export const register: Register = on => {
           shows: snap => ({
             ...snap,
             secondaries: snap.secondaries.map(r => (r.name === s.name ? { ...r, mode: next.mode } : r)),
+            paused: (snap.paused ?? []).map(r => (r.name === s.name ? { ...r, mode: next.mode } : r)),
           }),
         })
       }
     }
-    const secondaryRow = (s: Secondary) =>
+    // A secondary's state, as two keys side by side: ▶ Actif and ❚❚ Pause, the
+    // one in force on a tinted ground (green, soft red): a ground the desktop
+    // draws, where a native button keeps no colour of its own text.
+    const stateSwitch = (s: Secondary, isPaused: boolean) => (
+      <Box key={`state-${s.name}`} flexDirection="row" alignItems="center">
+        <Box key={`state-on-${s.name}`} backgroundColor={isPaused ? undefined : 'diffAddedDimmed'}>
+          <Button
+            key={`resume-${s.name}`}
+            label={t('state.active')}
+            plain
+            dimColor={isPaused}
+            onPress={() => {
+              if (isPaused) {
+                void setPaused($, s, false)
+              }
+            }}
+          />
+        </Box>
+        <Box key={`state-off-${s.name}`} backgroundColor={isPaused ? 'diffRemovedDimmed' : undefined}>
+          <Button
+            key={`pause-${s.name}`}
+            label={t('state.pause')}
+            plain
+            dimColor={!isPaused}
+            onPress={() => {
+              if (!isPaused) {
+                void setPaused($, s, true)
+              }
+            }}
+          />
+        </Box>
+      </Box>
+    )
+    const tierMenu = (s: Secondary) =>
+      Select ? (
+        // One width for every menu, whatever tier it shows: sized on the
+        // longest label, so the tiles line up.
+        <Box key={`mode-box-${s.name}`} width={modeWidth} minWidth={modeWidth} flexShrink={0}>
+          <Select
+            key={`mode-${s.name}`}
+            options={MODES.map(m => ({ value: m.mode, label: `${m.icon} ${modeLabel(m.mode)}` }))}
+            value={s.mode}
+            onSelect={(value: string) => setMode(s, value)}
+          />
+        </Box>
+      ) : (
+        // A surface with no menu (the phone) keeps the three choices, as
+        // quiet buttons, the current one lit.
+        <Box key={`modes-${s.name}`} flexDirection="row" flexWrap="wrap" flexShrink={1} gap={1}>
+          {MODES.map(m => (
+            <Button
+              key={`mode-${s.name}-${m.mode}`}
+              label={`${m.icon} ${modeLabel(m.mode)}`}
+              plain
+              dimColor={s.mode !== m.mode}
+              onPress={() => setMode(s, m.mode)}
+            />
+          ))}
+        </Box>
+      )
+    // A secondary's tile, paused or not, in its place: ✕ removes it from the
+    // project, the links open it, the menu sets its tier, the switch pauses it.
+    const secondaryTile = (s: Secondary, isPaused: boolean) =>
       tile(
         `sec-${s.name}`,
         s,
-        [
-          s.online === false && isRemote(s) && (
-            <Text key={`unreachable-${s.name}`} size="caption" color="error">
-              {t('secondaries.unreachable')}
-            </Text>
-          ),
-          obsidianLink(s),
-          uiLink(s),
-          <Button key={`pause-${s.name}`} plain onPress={() => void setPaused($, s, true)}>
-            <Text color={PAUSE_COLOR}>■</Text>
-          </Button>,
-          <Button
-            key={`remove-${s.name}`}
-            label="✕"
-            plain
-            dimColor
-            onPress={() =>
-              void rebind(
-                $,
-                { doing: t('action.remove.doing', { name: s.name }), done: t('action.remove.done', { name: s.name }) },
-                shown,
-                current => current.filter(n => n !== s.name),
-                { shows: snap => ({ ...snap, secondaries: snap.secondaries.filter(r => r.name !== s.name) }) },
-              )
-            }
-          />,
-          Select ? (
-            // One width for every menu, whatever tier it shows: sized on the
-            // longest label, so the tiles line up.
-            <Box key={`mode-box-${s.name}`} width={modeWidth} minWidth={modeWidth} flexShrink={0}>
-              <Select
-                key={`mode-${s.name}`}
-                options={MODES.map(m => ({ value: m.mode, label: `${m.icon} ${modeLabel(m.mode)}` }))}
-                value={s.mode}
-                onSelect={(value: string) => setMode(s, value)}
-              />
-            </Box>
-          ) : (
-            // A surface with no menu (the phone) keeps the three choices, as
-            // quiet buttons, the current one lit.
-            <Box key={`modes-${s.name}`} flexDirection="row" flexWrap="wrap" flexShrink={1} gap={1}>
-              {MODES.map(m => (
-                <Button
-                  key={`mode-${s.name}-${m.mode}`}
-                  label={`${m.icon} ${modeLabel(m.mode)}`}
-                  plain
-                  dimColor={s.mode !== m.mode}
-                  onPress={() => setMode(s, m.mode)}
-                />
-              ))}
-            </Box>
-          ),
-        ],
+        <Button
+          key={`remove-${s.name}`}
+          label="✕"
+          plain
+          dimColor
+          onPress={() =>
+            void rebind(
+              $,
+              { doing: t('action.remove.doing', { name: s.name }), done: t('action.remove.done', { name: s.name }) },
+              shown,
+              current => current.filter(n => n !== s.name),
+              {
+                shows: snap => ({
+                  ...snap,
+                  secondaries: snap.secondaries.filter(r => r.name !== s.name),
+                  paused: (snap.paused ?? []).filter(r => r.name !== s.name),
+                }),
+              },
+            )
+          }
+        />,
+        [links(s), [tierMenu(s), stateSwitch(s, isPaused)]],
+        { width: boundWidth, isDim: isPaused },
       )
 
-    const shownSecondaries = snap.secondaries.filter(matches)
-    const up = shownSecondaries.filter(s => s.online !== false)
-    const closed = shownSecondaries.filter(s => s.online === false)
-    // What the open-all opens: every bound LOCAL vault that does not answer,
-    // the primary included and whatever the filter shows — so it is counted
-    // over all of them, not over the rows on screen.
-    const closedLocal = bound.filter(r => r.online === false && !isRemote(r)).length
-    const openN = up.filter(s => s.online === true).length
-    const unknownN = up.length - openN
+    // Every secondary in the binding's own order, the paused ones in their place.
+    const rank = (name: string) => {
+      const at = (snap.order ?? []).indexOf(name)
+
+      return at === -1 ? Number.MAX_SAFE_INTEGER : at
+    }
+    const allSecondaries = [
+      ...snap.secondaries.map(row => ({ row, isPaused: false })),
+      ...(snap.paused ?? []).map(row => ({ row, isPaused: true })),
+    ].sort((x, y) => rank(x.row.name) - rank(y.row.name))
+    const shownSecondaries = allSecondaries.filter(entry => matches(entry.row))
 
     const secondaries = (
       <Box flexDirection="column" gap={1}>
-        {/* Title, legend and filter one under the other: side by side, the
-            legend folded over four lines and squeezed the field to nothing. */}
-        <Box key="secondaries-head" flexDirection="column">
-          {section(t('secondaries.title', { count: snap.secondaries.length }))}
-          <Text size="caption" dimColor>
-            {t('secondaries.definition')}
-          </Text>
-          {/* The marks the tiles use, said once: Obsidian's own where it can be drawn. */}
-          <Box key="legend-links" flexDirection="row" flexWrap="wrap" columnGap={1} alignItems="center">
-            {Svg ? <Svg source={OBSIDIAN_MARK} alt="" width={12} height={12} /> : <Text size="caption">💎</Text>}
-            <Text size="caption" dimColor>
-              {t('legend.links')}
-            </Text>
-          </Box>
+        <Box key="secondaries-head" flexDirection="row" justifyContent="space-between" alignItems="center" gap={1} flexWrap="wrap">
+          {section(t('secondaries.title', { count: allSecondaries.length }))}
+          {Input && allSecondaries.length > 0 && (
+            <Box key="filter-box" width={22} minWidth={16} flexShrink={1}>
+              <Input
+                key="filter"
+                placeholder={t('filter.placeholder')}
+                value={typed}
+                submitLabel={t('filter.submit')}
+                onInput={(value: string) => void update($, filter, () => value)}
+                onSubmit={(value: string) => void update($, filter, () => value)}
+              />
+            </Box>
+          )}
         </Box>
-        {Input && (
-          <Input
-            key="filter"
-            placeholder={t('filter.placeholder')}
-            value={typed}
-            submitLabel={t('filter.submit')}
-            onInput={(value: string) => void update($, filter, () => value)}
-            onSubmit={(value: string) => void update($, filter, () => value)}
-          />
-        )}
-        {snap.secondaries.length === 0 && (snap.paused ?? []).length === 0 && (
+        {allSecondaries.length === 0 && (
           <Text size="caption" dimColor>
             {t('secondaries.none')}
           </Text>
         )}
-        {(snap.paused ?? []).length > 0 && (
-          <Box key="paused" flexDirection="column">
-            {label(t('secondaries.paused', { count: (snap.paused ?? []).length }))}
-            {grid(
-              'paused-tiles',
-              (snap.paused ?? []).map(p =>
-                tile(
-                  `paused-${p.name}`,
-                  p,
-                  [
-                    <Button key={`resume-${p.name}`} plain onPress={() => void setPaused($, p, false)}>
-                      <Text color={RESUME_COLOR}>▶</Text>
-                    </Button>,
-                    // A paused vault gone from the router is let go of here.
-                    <Button
-                      key={`remove-${p.name}`}
-                      label="✕"
-                      plain
-                      dimColor
-                      onPress={() =>
-                        void rebind(
-                          $,
-                          { doing: t('action.remove.doing', { name: p.name }), done: t('action.remove.done', { name: p.name }) },
-                          shown,
-                          current => current.filter(n => n !== p.name),
-                          { shows: snap => ({ ...snap, paused: (snap.paused ?? []).filter(r => r.name !== p.name) }) },
-                        )
-                      }
-                    />,
-                  ],
-                  { isDim: true, tag: `${iconOf(p.mode)} ${t('secondaries.pausedTag')}` },
-                ),
-              ),
-            )}
-          </Box>
-        )}
-        {(snap.secondaries.length > 0 || (snap.paused ?? []).length > 0) && (
-          <Text size="caption" dimColor>
-            {t('secondaries.pauseHint')}
-          </Text>
-        )}
-        {snap.secondaries.length > 0 && shownSecondaries.length === 0 && (
+        {allSecondaries.length > 0 && shownSecondaries.length === 0 && (
           <Text size="caption" dimColor>
             {t('secondaries.noMatch')}
           </Text>
         )}
-        {up.length > 0 && (
-          <Box flexDirection="column">
-            {(closed.length > 0 || unknownN > 0) &&
-              label(unknownN > 0 ? t('secondaries.openUnknown', { count: openN, unknown: unknownN }) : t('secondaries.open', { count: openN }))}
-            {grid('sec-tiles-open', up.map(secondaryRow))}
-          </Box>
-        )}
-        {closed.length > 0 && (
-          <Box flexDirection="column">
-            <Box key="closed-head" flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={1}>
-              <Button
-                key="toggle-closed"
-                label={`${isClosedShown ? '▾' : '▸'} ${t('secondaries.closed', { count: closed.length })}`}
-                plain
-                dimColor
-                onPress={() => void update($, showClosed, shownNow => !shownNow)}
-              />
-              {closedLocal > 0 && (
-                <Button
-                  key="open-closed"
-                  label={closedLocal > 1 ? t('secondaries.openAll', { count: closedLocal }) : t('secondaries.openOne')}
-                  plain
-                  onPress={openAll}
-                />
-              )}
-            </Box>
-            {isClosedShown && grid('sec-tiles-closed', closed.map(secondaryRow))}
-          </Box>
-        )}
+        {shownSecondaries.length > 0 &&
+          grid(
+            'sec-tiles',
+            shownSecondaries.map(({ row, isPaused }) => secondaryTile(row, isPaused)),
+          )}
       </Box>
     )
 
     // Adding: folded away until asked for — unless there is no primary yet,
-    // which is the one thing the pane cannot do without.
+    // which is the one thing the pane cannot do without. Then: all, local or
+    // remote ones, a search and an order, as tiles.
     const remotes = snap.available.filter(isRemote)
     const locals = snap.available.filter(v => !isRemote(v))
     const isTunnelDown =
       [...bound, ...remotes].some(isRemote) && [...bound, ...remotes].filter(isRemote).every(r => r.online === false)
     const isAddOpen = isAddShown || !snap.primary
-    const list = (current === 'locaux' ? locals : remotes).filter(matches)
+    const searched = Input ? addTyped.trim().toLowerCase() : ''
+    const list = (current === 'locaux' ? locals : current === 'distants' ? remotes : snap.available)
+      .filter(v => !searched || v.name.toLowerCase().includes(searched))
+      .sort((x, y) => x.name.localeCompare(y.name, undefined, { sensitivity: 'base' }) * (order === 'za' ? -1 : 1))
     const tabs: { id: Tab; label: string }[] = [
+      { id: 'tous', label: t('add.tabAll', { count: snap.available.length }) },
       { id: 'locaux', label: t('add.tabLocal', { count: locals.length }) },
       { id: 'distants', label: t('add.tabRemote', { count: remotes.length }) },
     ]
-    const adding = (
+    const placeOf = (v: VaultRow) =>
+      isRemote(v) ? t('link.remoteShort') : v.online === true ? t('add.localOpen') : t('link.localShort')
+    const adding = isAddOpen ? (
       <Box flexDirection="column" gap={1}>
-        <Button
-          key="toggle-add"
-          label={`${isAddOpen ? '▾' : '▸'} ${tn(snap.primary ? 'add.toggle' : 'add.choosePrimary', snap.available.length)}`}
-          plain
-          dimColor={!isAddOpen}
-          onPress={() => void update($, showAdd, shownNow => !shownNow)}
-        />
-        {isAddOpen && (
-          <Box flexDirection="column" gap={1}>
-            {/* Two real buttons, side by side: the open tab is the primary
-                one, so which list shows is plain at a glance. */}
-            <Box key="tabs" flexDirection="row" gap={1}>
-              {tabs.map(one => (
-                <Button
-                  key={`tab-${one.id}`}
-                  label={one.label}
-                  variant={current === one.id ? 'primary' : 'secondary'}
-                  onPress={() => void update($, tab, () => one.id)}
+        <Box key="add-head" flexDirection="row" justifyContent="space-between" alignItems="center" gap={1} flexWrap="wrap">
+          <Box flexDirection="row" gap={1} alignItems="center">
+            {section(snap.primary ? t('add.title') : t('add.titlePrimary'))}
+            <Text size="caption" dimColor>
+              {tn('add.count', snap.available.length)}
+            </Text>
+          </Box>
+          {snap.primary && (
+            <Button key="toggle-add" label={t('add.close')} plain dimColor onPress={() => void update($, showAdd, () => false)} />
+          )}
+        </Box>
+        {/* Three real buttons: the open one is the primary one, so which
+            list shows is plain at a glance. */}
+        <Box key="tabs" flexDirection="row" gap={1} flexWrap="wrap">
+          {tabs.map(one => (
+            <Button
+              key={`tab-${one.id}`}
+              label={one.label}
+              variant={current === one.id ? 'primary' : 'secondary'}
+              onPress={() => void update($, tab, () => one.id)}
+            />
+          ))}
+        </Box>
+        {(Input || Select) && (
+          <Box key="add-tools" flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+            {Input && (
+              <Box key="add-search-box" flexGrow={1} flexShrink={1} minWidth={16}>
+                <Input
+                  key="add-search"
+                  placeholder={t('add.search')}
+                  value={addTyped}
+                  submitLabel={t('filter.submit')}
+                  onInput={(value: string) => void update($, addQuery, () => value)}
+                  onSubmit={(value: string) => void update($, addQuery, () => value)}
                 />
-              ))}
-            </Box>
-            {list.length === 0 && (
-              <Text size="caption" dimColor>
-                {t('add.noMatch')}
-              </Text>
+              </Box>
             )}
-            {/* The vaults that can be added: the same tile as the primary's
-                and the secondaries', in a grid that wraps. */}
-            {grid(
-              'av-tiles',
-              list.map(v =>
-                tile(`av-${v.name}`, v, [
-                  uiLink(v),
-                  snap.primary ? (
-                    <Button
-                      key={`add-${v.name}`}
-                      label={t('add.button')}
-                      plain
-                      onPress={() =>
-                        void rebind(
-                          $,
-                          { doing: t('action.add.doing', { name: v.name }), done: t('action.add.done', { name: v.name }) },
-                          shown,
-                          current => (current.includes(v.name) ? current : [...current, v.name]),
-                          {
-                            shows: snap => ({
-                              ...snap,
-                              // Already a secondary (another session added it, the retry
-                              // kept it): the tile on screen, tier and all, stays as is.
-                              secondaries: snap.secondaries.some(r => r.name === v.name)
-                                ? snap.secondaries
-                                : [...snap.secondaries, { ...v, mode: 'soft' }],
-                              available: snap.available.filter(r => r.name !== v.name),
-                            }),
-                          },
-                        )
-                      }
-                    />
-                  ) : (
-                    <Button
-                      key={`primary-${v.name}`}
-                      label={t('add.primaryButton')}
-                      plain
-                      onPress={() => void choosePrimary($, v.name)}
-                    />
-                  ),
-                ]),
-              ),
+            {Select && (
+              <Box key="add-sort-box" width={10} minWidth={10} flexShrink={0}>
+                <Select
+                  key="add-sort"
+                  options={[
+                    { value: 'az', label: t('add.sortAz') },
+                    { value: 'za', label: t('add.sortZa') },
+                  ]}
+                  value={order}
+                  onSelect={(value: string) => void update($, addSort, () => (value === 'za' ? 'za' : 'az'))}
+                />
+              </Box>
             )}
           </Box>
         )}
+        {list.length === 0 && (
+          <Text size="caption" dimColor>
+            {t('add.noMatch')}
+          </Text>
+        )}
+        {grid(
+          'av-tiles',
+          list.map(v =>
+            tile(
+              `av-${v.name}`,
+              v,
+              null,
+              [
+                // A remote vault with a web UI can be looked at before it is added.
+                isRemote(v) && v.uiUrl ? (
+                  links(v)
+                ) : (
+                  <Box key={`av-place-${v.name}`} flexDirection="row" gap={1} alignItems="center">
+                    {mark(isRemote(v) ? GLOBE_MARK : OBSIDIAN_MARK)}
+                    <Text size="caption" dimColor>
+                      {placeOf(v)}
+                    </Text>
+                  </Box>
+                ),
+                snap.primary ? (
+                  <Button
+                    key={`add-${v.name}`}
+                    label={t('add.button')}
+                    plain
+                    onPress={() =>
+                      void rebind(
+                        $,
+                        { doing: t('action.add.doing', { name: v.name }), done: t('action.add.done', { name: v.name }) },
+                        shown,
+                        current => (current.includes(v.name) ? current : [...current, v.name]),
+                        {
+                          shows: snap => ({
+                            ...snap,
+                            // Already a secondary (another session added it, the retry
+                            // kept it): the tile on screen, tier and all, stays as is.
+                            secondaries: snap.secondaries.some(r => r.name === v.name)
+                              ? snap.secondaries
+                              : [...snap.secondaries, { ...v, mode: 'soft' }],
+                            available: snap.available.filter(r => r.name !== v.name),
+                          }),
+                        },
+                      )
+                    }
+                  />
+                ) : (
+                  <Button key={`primary-${v.name}`} label={t('add.primaryButton')} plain onPress={() => void choosePrimary($, v.name)} />
+                ),
+              ],
+              { width: addWidth },
+            ),
+          ),
+        )}
+      </Box>
+    ) : (
+      <Box key="add-row" flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+        <Button key="toggle-add" label={t('add.open')} variant="secondary" onPress={() => void update($, showAdd, () => true)} />
+        <Text size="caption" dimColor>
+          {tn('add.count', snap.available.length)}
+        </Text>
       </Box>
     )
 
     return (
       <Box flexDirection="column" gap={1}>
-        {title}
-        {header}
-        {legend}
+        {statusLine}
         {problems}
         {isTunnelDown && (
           // Every remote vault silent at once: the tunnel, not the vaults. Said
@@ -2935,6 +3016,7 @@ export const register: Register = on => {
         {primary}
         {secondaries}
         {adding}
+        {footer}
         {admin}
       </Box>
     )

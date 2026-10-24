@@ -10,6 +10,33 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.109.0] — 2026-10-24 — the vault panel redrawn
+
+From Roland's design (Claude Design canvas "obsidian-mcp-router — refonte du panneau"):
+
+- **A status line** on top: "3 liés · tous ouverts" (or "k à vérifier", with a green or amber
+  dot), "Mis à jour à 01:05", "↻ Rafraîchir", and the router's open-all when a bound local vault
+  is closed. No legend any more: the dots speak in place.
+- **The primary's tile**: its "Par défaut" badge, its links, and "Lecture et écriture, sans
+  confirmation".
+- **The secondaries' tiles**, in the binding's order, paused ones in their place: ✕ to remove,
+  the links, the tier menu and a switch **▶ Actif / ❚❚ Pause** — the state in force on a tinted
+  ground (green, soft red: the desktop keeps no colour on a native button's text, it does on a
+  Box's ground); pressing the state already in force does nothing.
+- **Links with their marks**: "Distant · navigateur ↗" and "Dans Claude" for a remote vault's web
+  UI, "Local · Obsidian ↗" (Obsidian's mark), "Local · Obsidian fermé" with "Ouvrir Obsidian ↗",
+  and for a remote vault whose REST API is silent "injoignable" with "↻ Réessayer" — its web UI
+  links kept.
+- **Adding a vault**: "+ Ajouter un vault · N disponibles", then Tous / Locaux / Distants, a
+  search, A → Z or Z → A regardless of case, and tiles with "Ajouter" (or "Principal" with no
+  primary yet). Its tab is stored under a new key, so an older "Locaux" does not hold "Tous" back.
+- **A grid from the pane's width**: one tile per line in the side panel, up to three bound ones
+  and four to add per line in a wide pane.
+- **A footer**: the version, "GitHub ↗", the update badge, and "Administration ›", which folds
+  the console. v0.108.4's rule under the title is gone with the title: the app's own pane bar
+  names it.
+- Checked by Codex (no P0/P1; its four P2/P3 fixed). Tests: `tests/vault-panel.test.tsx` 99.
+
 ## [0.108.4] — 2026-10-24 — a rule under the pane's title
 
 Asked: a horizontal separator under "obsidian-mcp-router v0.108.x". The pane's title row is now
