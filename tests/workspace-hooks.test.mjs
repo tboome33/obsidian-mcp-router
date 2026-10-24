@@ -1,5 +1,5 @@
 /**
- * v0.111.0 — the opt-in hooks run per workspace.
+ * v0.112.0 — the opt-in hooks run per workspace.
  *
  * The three read-only hooks run everywhere (hooks/hooks.json); every other one
  * is declared there behind hooks/opt-in-gate.mjs, which runs it only in a

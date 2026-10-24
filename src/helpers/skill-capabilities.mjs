@@ -1658,7 +1658,7 @@ export function countArtifacts(repoRoot, { toolCount = null } = {}) {
     commands: listDir('commands', (e) => e.isFile() && e.name.endsWith('.md')),
     agents: listDir('agents', (e) => e.isFile() && e.name.endsWith('.md')),
     // opt-in-gate.mjs is not a hook of its own: it runs one of the others,
-    // where a workspace switched it on (v0.111.0).
+    // where a workspace switched it on (v0.112.0).
     hooks: listDir('hooks', (e) => e.isFile() && e.name.endsWith('.mjs') && !e.name.startsWith('_') && e.name !== 'opt-in-gate.mjs'),
     tools: toolCount,
     errors,

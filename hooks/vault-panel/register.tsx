@@ -2144,9 +2144,13 @@ export const register: Register = on => {
           : t('summary.reading')
 
     // The panel's state in one line: how many vaults, whether they all answer,
-    // when it was read; the refresh beside it.
-    const statusLine = (
-      <Box key="status" flexDirection="row" justifyContent="space-between" alignItems="center" gap={1} flexWrap="wrap">
+    // when it was read; the refresh beside it. Drawn twice once the body
+    // scrolls (see `sticky`): the copy's keys carry `prefix`. The bar in the
+    // flow keeps its controls, so nothing under it moves as the window leaves
+    // the top and Tab walks them where they were; the copy's are the ones on
+    // screen.
+    const statusBar = (prefix: string) => (
+      <Box key={`${prefix}status`} flexDirection="row" justifyContent="space-between" alignItems="center" gap={1} flexWrap="wrap">
         <Box flexDirection="column" flexShrink={1}>
           <Box flexDirection="row" gap={1} alignItems="center">
             {snap && <Text color={toCheck === 0 ? 'success' : 'warning'}>●</Text>}
@@ -2172,7 +2176,7 @@ export const register: Register = on => {
             // vault whose Obsidian does not answer — the router's own way, which
             // also opens one Obsidian has never listed.
             <Button
-              key="open-closed"
+              key={`${prefix}open-closed`}
               label={closedLocal > 1 ? t('secondaries.openAll', { count: closedLocal }) : t('secondaries.openOne')}
               plain
               onPress={() =>
@@ -2186,10 +2190,36 @@ export const register: Register = on => {
               }
             />
           )}
-          <Button key="refresh" label={t('refresh')} variant="secondary" onPress={() => background($)} />
+          <Button key={`${prefix}refresh`} label={t('refresh')} variant="secondary" onPress={() => background($)} />
         </Box>
       </Box>
     )
+    // The status bar stays at the top while the body scrolls: a copy, drawn
+    // over the content at the first row the window shows, on an opaque
+    // ground, the bar in the flow scrolling away under it. No `position:
+    // sticky` exists; the engine asks again at every move of the window, so
+    // the copy follows it (a move the terminal's engine makes on its own, a
+    // clamp or a focus kept in view, waits for the next drawing). Nothing
+    // while the window is at the top.
+    const scrolled = Math.max(0, Math.floor(e.props.scroll?.offset ?? 0))
+    const statusLine = statusBar('')
+    const sticky =
+      scrolled > 0 ? (
+        <Box
+          key="sticky-bar"
+          position="absolute"
+          top={scrolled}
+          left={0}
+          right={0}
+          flexDirection="column"
+          backgroundColor="inverseText"
+          borderStyle="bold"
+          borderColor="inactive"
+          paddingX={1}
+        >
+          {statusBar('sticky-')}
+        </Box>
+      ) : null
 
     // At the bottom: the version, the repository, the update badge, and the
     // administration console's fold.
@@ -2766,6 +2796,7 @@ export const register: Register = on => {
           {statusLine}
           {problems}
           {footer}
+          {sticky}
         </Box>
       )
     }
@@ -3325,6 +3356,7 @@ export const register: Register = on => {
         {secondaries}
         {adding}
         {footer}
+        {sticky}
       </Box>
     )
   })

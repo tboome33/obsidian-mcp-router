@@ -2642,6 +2642,33 @@ test('the band keys each Claude key by its vault name: a vault named "x-ui" coll
   await band.unmount()
 })
 
+test('the status bar stays at the top while the pane scrolls: a copy over the first row the window shows', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    // At the top, the bar is the one in the flow, and no copy is drawn.
+    const top = await $.ui.mount({ ...PANE, surface })
+    expect(await top.find({ type: 'Button', key: 'refresh' })).toBeTruthy()
+    expect(await top.find({ key: 'sticky-bar' })).toBeFalsy()
+    await top.unmount()
+
+    // Scrolled down 7 rows: the copy sits at row 7, opaque and over the rest, with its own keys;
+    // the bar in the flow keeps its controls, so nothing under it moves.
+    const down = await $.ui.mount({ ...PANE, props: { ...PANE.props, scroll: { offset: 7, bodyRows: 20 } }, surface })
+    const nodes = nodesOf(await down.drawn())
+    const bar = nodes.find(n => keyOf(n) === 'sticky-bar')
+    expect(bar?.props).toMatchObject({ position: 'absolute', top: 7, left: 0, right: 0, backgroundColor: 'inverseText' })
+    expect(nodesOf(bar as never).find(n => keyOf(n) === 'sticky-refresh')?.props?.label).toBe('↻ Rafraîchir')
+    expect(nodesOf(bar as never).some(n => keyOf(n) === 'sticky-open-closed')).toBe(true)
+    expect(nodesOf(nodes.find(n => keyOf(n) === 'status') as never).some(n => keyOf(n) === 'refresh')).toBe(true)
+    // Drawn last, so it paints over the tiles.
+    const root = (await down.drawn()) as { children?: unknown[] }
+    expect(keyOf((root.children ?? []).at(-1) as never)).toBe('sticky-bar')
+    await down.press({ key: 'sticky-refresh' })
+    await down.unmount()
+  }
+})
+
 // The workspace's hooks, as scripts/workspace-hooks.mjs answers them: the
 // console runs it with node, for the session's folder.
 function hooksScript(on: On, state: { enabled: string[]; global: string[]; runs: (readonly string[])[] }) {
