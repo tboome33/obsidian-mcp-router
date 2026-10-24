@@ -202,8 +202,9 @@ const cells = (text: string) => [...text].reduce((sum, char) => sum + charCells(
 function chipText(hidden: number, paused: number) {
   return [hidden > 0 ? `… +${hidden}` : '', paused > 0 ? `⏸ ${paused}` : ''].filter(Boolean).join(' ')
 }
-// The secondaries on the band's line, active ones then paused ones, each as
-// its name, its badge (tier or ⏸) and its ■ or ▶; `paused[i]` says which.
+// The secondaries on the band's line, in the binding's order, each as its
+// name, its badge and its ▶; `paused[i]` says which are paused (counted in the
+// chip, the ▶ the same width either way).
 // `marks[i]` (and `primaryMark`): the cells that name's marks take beside it.
 // `isChip`: each vault drawn in its own frame (a graphical surface), its frame
 // and padding four cells, in place of the "│ " between secondaries.
@@ -229,10 +230,8 @@ function bandFit(
     cells(t('band.secondaries')) +
     toggle
   // A gap, its frame (or "│ " after the first), the marks and the name, a gap
-  // and its badge, a gap and its control (▶, or ❚❚ while paused).
-  const widths = secondaries.map(
-    (name, i) => 1 + (isChip ? 4 : i > 0 ? 2 : 0) + (marks[i] ?? 0) + cells(name) + 1 + 2 + 1 + (paused[i] ? 2 : 1),
-  )
+  // and its badge, a gap and its control (▶, dimmed while paused).
+  const widths = secondaries.map((name, i) => 1 + (isChip ? 4 : i > 0 ? 2 : 0) + (marks[i] ?? 0) + cells(name) + 1 + 2 + 1 + 1)
   // The most secondaries that fit with the chip their remainder needs.
   for (let shown = secondaries.length; shown > 0; shown -= 1) {
     const chip = chipText(secondaries.length - shown, paused.slice(shown).filter(Boolean).length)
@@ -1839,6 +1838,7 @@ const isBandOn = () => isEnvKnown && !isOptedOut && !isBandOptedOut
 // bar draws from `scroll.offset`; this says whether a surface reports it.
 const scrollTrace: Record<string, unknown>[] = []
 let lastTracedOffset = -1
+let lastTracedBand = ''
 // One writer: an entry while a write runs marks the trace dirty, and the
 // writer writes again, the latest state, so no older snapshot lands last.
 let isTraceWriting = false
@@ -3347,6 +3347,26 @@ export const register: Register = on => {
       isChip,
     )
     const chip = chipText(fit.hidden, entries.slice(fit.shown).filter(entry => entry.isPaused).length)
+    // The band's width and what fitted, in the trace (see `traceScroll`): what
+    // `bandFit` counts, beside what a surface draws, sets the count right.
+    const bandLine = JSON.stringify([
+      e.surface,
+      e.props.bodyColumns,
+      fit.shown,
+      snap.primary?.name ?? '',
+      entries.map(entry => [entry.row.name, entry.isPaused]),
+    ])
+    if (bandLine !== lastTracedBand) {
+      lastTracedBand = bandLine
+      void traceScroll($, {
+        kind: 'band',
+        surface: e.surface,
+        bodyColumns: e.props.bodyColumns,
+        shown: fit.shown,
+        hidden: fit.hidden,
+        names: entries.map(entry => entry.row.name),
+      }).catch(() => undefined)
+    }
     // A mark that is a control. A Button holds text only and a mark is no
     // button, so the mark is drawn and a blank Button laid over it, the one
     // the click lands on; the terminal, which draws no mark, has a glyph key.
@@ -3410,11 +3430,12 @@ export const register: Register = on => {
     const isUnfolded = isListOpen && fit.hidden > 0
     const onLine = entries.slice(0, fit.shown)
     // A secondary's control: ▶ on a green ground while it runs (a press pauses
-    // it), ❚❚ on a red one while it is paused (a press resumes it).
+    // it); while it is paused, the same ▶ dimmed on no ground, a key that
+    // reads as off (a press resumes it). Asked for in place of a red ❚❚.
     const control = (row: Secondary, isPaused: boolean, list = '') =>
       isPaused ? (
-        <Box key={`band-${list}state-${row.name}`} backgroundColor="diffRemovedDimmed">
-          <Button key={`band-${list}resume-${row.name}`} label="❚❚" plain onPress={() => void setPaused($, row, false)} />
+        <Box key={`band-${list}state-${row.name}`}>
+          <Button key={`band-${list}resume-${row.name}`} label="▶" plain dimColor onPress={() => void setPaused($, row, false)} />
         </Box>
       ) : (
         <Box key={`band-${list}state-${row.name}`} backgroundColor="diffAddedDimmed">
@@ -3461,6 +3482,69 @@ export const register: Register = on => {
       </Text>,
       control(row, isPaused, list),
     ]
+    // The dropdown's rows in columns of fixed widths, so each control stands
+    // under the one above: Obsidian's mark (a local vault), the name, the
+    // planet and Claude's mark (a remote one), the tier, the ▶. A row draws
+    // what its vault has and leaves the other cells empty.
+    // Capped to what the band leaves the name once the frame, its padding, the
+    // four 2-cell columns, the ▶ and the gaps are counted: a long name is cut,
+    // never a control pushed off the band.
+    const nameWidth = Math.max(
+      6,
+      Math.min(Math.max(0, ...entries.map(({ row }) => cells(row.name))) + 1, e.props.bodyColumns - (2 + 2 + 4 * 2 + 1 + 5)),
+    )
+    const column = (key: string, width: number, child: unknown) => (
+      <Box key={key} width={width} minWidth={width} flexShrink={0} flexDirection="row" alignItems="center">
+        {child as never}
+      </Box>
+    )
+    const listRow = (row: Secondary, isPaused: boolean) => {
+      const target = openTarget(row)
+      const name = row.name
+
+      return [
+        column(
+          `band-list-lead-${name}`,
+          2,
+          target === 'obsidian' && BandSvg
+            ? iconKey(OBSIDIAN_MARK, '', `band-list-obsidian-${name}`, () => void openVault($, row))
+            : null,
+        ),
+        column(
+          `band-list-label-${name}`,
+          nameWidth,
+          target === 'obsidian' ? (
+            <Button key={`band-list-open-${name}`} plain onPress={() => void openVault($, row)}>
+              <Text dimColor={isPaused} wrap="truncate-end">
+                {name}
+              </Text>
+            </Button>
+          ) : (
+            <Text key={`band-list-name-${name}`} dimColor={isPaused || !target} wrap="truncate-end">
+              {name}
+            </Text>
+          ),
+        ),
+        column(
+          `band-list-webcell-${name}`,
+          2,
+          target === 'browser' ? iconKey(GLOBE_MARK, '🌐', `band-list-web-${name}`, () => void openVault($, row)) : null,
+        ),
+        column(
+          `band-list-uicell-${name}`,
+          2,
+          target === 'browser' ? iconKey(CLAUDE_PANE_MARK, '✳', `band-list-ui-${name}`, () => void openUi($, row)) : null,
+        ),
+        column(
+          `band-list-tiercell-${name}`,
+          2,
+          <Text key={`band-list-tier-${name}`} dimColor={isPaused} wrap="truncate-end">
+            {iconOf(row.mode)}
+          </Text>,
+        ),
+        control(row, isPaused, 'list-'),
+      ]
+    }
 
     return (
       <Box flexDirection="column">
@@ -3497,7 +3581,7 @@ export const register: Register = on => {
           <Box key="band-list" flexDirection="column" borderStyle="round" borderColor="inactive" paddingX={1} alignSelf="flex-start">
             {entries.map(({ row, isPaused }) => (
               <Box key={`band-list-row-${row.name}`} flexDirection="row" alignItems="center" columnGap={1}>
-                {entry(row, isPaused, 'list-')}
+                {listRow(row, isPaused)}
               </Box>
             ))}
           </Box>
