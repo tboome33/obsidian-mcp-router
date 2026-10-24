@@ -247,5 +247,6 @@ export const FR: Record<string, string> = {
   "secondaries.paused": "En pause · {count}",
   "secondaries.pausedTag": "en pause",
   "secondaries.pauseHint": "▶ actif : un appui le met en pause · ❚❚ en pause : un appui le reprend tel qu'il était réglé (🔒 lecture seule, ✋ écriture si tu l'acceptes ou ✏️ lecture et écriture)",
-  "band.noOpen": "Rien pour ouvrir {name} : ni dossier local connu, ni interface web."
+  "band.noOpen": "Rien pour ouvrir {name} : ni dossier local connu, ni interface web.",
+  "mark.browser": "Navigateur"
 }
