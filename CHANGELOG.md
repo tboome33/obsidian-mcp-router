@@ -10,6 +10,32 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.116.1] — 2026-10-25 — the menu's keys as tabs on a shelf
+
+Asked by Roland: the three keys of the pane's menu (Vaults, + Ajouter un vault,
+⚙ Administration) drawn as tabs — rounded at the top, square where they meet the rule under
+the menu, the one in sight open onto the page as a browser's tab is:
+
+- **A tab per key**: a round frame round the key (the Box API has one border style for the
+  four sides and no corner of its own), whose bottom row is painted over with the two sides
+  going on down to the rule, so the frame reads as three sides on a shelf. The frame sizes
+  itself to the key, so the cover fits it on every surface without a cell being counted.
+- **The tab in sight is open**: a second cover, one row lower, hides the rule over the tab's
+  width and turns it up at each end ("╯" … "╰"), so the tab and the page below are one; the
+  others stay closed by the rule under them. The rule is drawn first in the tree, the tabs
+  after it, so the opening paints over it. The key in sight keeps its filled variant.
+- Unchanged: the router's mark at the left, the version, the update badge and GitHub at the
+  right, the fold into "☰" on a narrow pane (each tab now counts two cells more towards it),
+  and the pinned copy of the menu at the scroll offset.
+- Adversarial review by Codex: three findings fixed — the covers erased by the ground's
+  colour alone (now by their own blanks, as wide as the terminal draws the key, the ground
+  filling what a surface draws wider); the test pinned the opening's row but not its
+  geometry; it never cycled the three views nor pressed a pinned key. Tests:
+  `tests/vault-panel.test.tsx` 121, the new one seen red under four mutations (an opening
+  under every tab, the rule drawn after the tabs, a cover with no blanks, an opening with no
+  geometry). What no test here can see — the rows as the desktop and the terminal actually
+  paint them — was checked on screen.
+
 ## [0.116.0] — 2026-10-25 — the band as one line of chips, turned page by page
 
 Asked from a screenshot of the band ("très très moche") and a look at a web ticker:
