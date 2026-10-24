@@ -5378,6 +5378,9 @@ function pluginProvidedHookBasenames(pluginRoot = REPO_ROOT) {
     for (const event of Object.keys(manifest.hooks || {})) {
       for (const block of manifest.hooks[event] || []) {
         for (const entry of block.hooks || []) {
+          // An opt-in hook behind hooks/opt-in-gate.mjs is off until a
+          // workspace switches it on: the plugin does not provide it.
+          if (typeof entry.command === 'string' && entry.command.includes('opt-in-gate.mjs')) continue;
           const bn = commandBasename(entry.command);
           if (bn) found.add(bn);
         }
@@ -5781,6 +5784,19 @@ function maybeAutoInstallHooks({ quiet = false, noHooks = false } = {}) {
     if (!quiet) {
       info('Skipped hook wiring (--no-hooks / OBSIDIAN_ROUTER_NO_AUTO_INSTALL_HOOKS).');
       console.log(c('gray', '   Run `node scripts/setup-vault.mjs --install-hooks` when ready.'));
+    }
+    return;
+  }
+
+  // With the plugin installed, nothing is wired machine-wide any
+  // more. Its three read-only hooks already run everywhere, and every other
+  // one is declared behind hooks/opt-in-gate.mjs, switched on per workspace
+  // from the vault panel's administration console. Wiring them here would run
+  // them in EVERY project — the opposite of opt-in.
+  if (isRouterPluginInstalled()) {
+    if (!quiet) {
+      info('Router hooks: the plugin runs its 3 read-only hooks everywhere; switch the others on per workspace');
+      console.log(c('gray', '   from the Vaults panel → Administration › Hooks de ce workspace (nothing written to settings.json).'));
     }
     return;
   }

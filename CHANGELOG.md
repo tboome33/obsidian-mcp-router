@@ -10,6 +10,28 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### Opt-in hooks, switched on per workspace from the vault panel
+
+The three read-only hooks (`hot-cache-load`, `workspace-briefing`, `decisions-recall`) still run
+everywhere. The eight others no longer run machine-wide: each is switched on, or not, for one
+workspace at a time.
+
+- **Administration › Hooks de ce workspace**: the read-only hooks listed as always on; every
+  other one with a line on what it does and an On / Off button, off by default.
+- `hooks/hooks.json` declares each opt-in hook behind `hooks/opt-in-gate.mjs <name>`, on the
+  events `hooks.example.json` gives it. The gate runs the hook only where the workspace
+  (`CLAUDE_PROJECT_DIR`) switched it on, in `workspace-hooks.json` beside the router's config;
+  otherwise it exits 0 having written and printed nothing. Switched on, the hook gets the same
+  stdin and its exit code comes through (exit 2 still blocks).
+- `scripts/workspace-hooks.mjs status|set`: what the console runs.
+- **The console in four cards**: General (language, plugin version and update, WireGuard and
+  the ways to open a vault, which were cards of their own), Create an Obsidian vault, Register an existing vault (removing
+  one from the router now sits at its bottom), and the workspace's hooks.
+- With the plugin installed, a vault's bootstrap no longer wires hooks into
+  `~/.claude/settings.json`. A hook still wired there keeps running everywhere: the gate steps
+  aside so it never runs twice, and the console says so (`setup-vault.mjs --uninstall-hooks`
+  removes those entries).
+
 ## [0.115.0] — 2026-10-24 — vault activity, the ways to open a vault, tiles as the mockup
 
 Asked after v0.114.1 (the planet no longer opened anything):

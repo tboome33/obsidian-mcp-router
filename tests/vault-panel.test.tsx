@@ -2635,10 +2635,13 @@ test('the console holds the pane while open: its cards, wiki types and conventio
   const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 130 }, surface: 'desktop' })
   expect(await ui.find({ type: 'Button', key: 'toggle-admin' })).toMatchObject({ props: { label: '⚙ Administration ›', variant: 'secondary' } })
   await ui.press({ key: 'toggle-admin' })
-  // The vaults hidden, the five cards drawn, three to a line.
+  // The vaults hidden, the four cards drawn, three to a line: general (with
+  // WireGuard), creating a vault, registering or removing one, the hooks.
   expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
   const nodes = nodesOf(await ui.drawn())
-  for (const key of ['admin-general', 'admin-create', 'admin-wireguard', 'admin-register', 'admin-unregister']) {
+  const cards = nodes.filter(n => /^admin-[a-z]+$/.test(keyOf(n) ?? '') && n.props?.width === 42).map(n => keyOf(n))
+  expect(cards).toEqual(['admin-general', 'admin-create', 'admin-register', 'admin-hooks'])
+  for (const key of ['admin-general', 'admin-create', 'admin-register', 'admin-hooks']) {
     expect(nodes.find(n => keyOf(n) === key)?.props?.width).toBe(42)
     expect(nodes.find(n => keyOf(n) === `${key}-card`)?.props?.borderStyle).toBe('bold')
   }
@@ -3028,5 +3031,71 @@ test("a recent file the router gives no link to says so, opens nothing; with no 
   expect(await ui.find({ type: 'Button', key: 'note-0-docs' })).toBeFalsy()
   const back = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'recent-docs') as never)
   expect(back.some(n => n.type === 'Text' && textOf(n) === 'a.md')).toBe(true)
+  await ui.unmount()
+})
+
+// The workspace's hooks, as scripts/workspace-hooks.mjs answers them: the
+// console runs it with node, for the session's folder.
+function hooksScript(on: On, state: { enabled: string[]; global: string[]; runs: (readonly string[])[] }) {
+  const OPT_IN = ['wiki-query-first-nudge', 'session-auto-journal', 'wiki-autocommit', 'vault-link-linter']
+  on('session.cwd', () => ({ value: '/work/project' }))
+  on('process.run', (_, e) => {
+    if (e.argv[0] !== 'node') {
+      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    state.runs.push(e.argv)
+    const args = e.argv.slice(2)
+    if (args[0] === 'set') {
+      const name = args[args.indexOf('--hook') + 1]!
+      state.enabled = args.includes('--on') ? [...state.enabled, name] : state.enabled.filter(h => h !== name)
+    }
+    const stdout = JSON.stringify({
+      workspace: args[args.indexOf('--workspace') + 1],
+      alwaysOn: ['hot-cache-load', 'workspace-briefing', 'decisions-recall'],
+      optIn: OPT_IN.map(name => ({ name, enabled: state.enabled.includes(name), global: state.global.includes(name) })),
+    })
+
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+}
+
+test('the console shows the read-only hooks always on and switches the others for this workspace', async ($, on) => {
+  const toasts: string[] = []
+  wire(on, { list: LIST, toasts })
+  const hooks = { enabled: [] as string[], global: ['vault-link-linter'], runs: [] as (readonly string[])[] }
+  hooksScript(on, hooks)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdmin(ui)
+
+  expect(hooks.runs[0]?.slice(2)).toEqual(['status', '--workspace', '/work/project'])
+  expect(await ui.find({ type: 'Text', text: /^Pour \/work\/project\./ })).toBeTruthy()
+  // The read-only ones: listed, with no switch.
+  expect(await ui.find({ type: 'Text', text: 'hot-cache-load' })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'hook-hot-cache-load-on' })).toBeFalsy()
+  // An opt-in one: off by default (pressing Off again changes nothing), switched on, then off again.
+  await ui.press({ key: 'hook-wiki-autocommit-off' })
+  expect(hooks.runs.some(argv => argv.includes('set'))).toBe(false)
+  await ui.press({ key: 'hook-wiki-autocommit-on' })
+  expect(hooks.runs.at(-1)?.slice(2)).toEqual(['set', '--hook', 'wiki-autocommit', '--on', '--workspace', '/work/project'])
+  expect(hooks.enabled).toEqual(['wiki-autocommit'])
+  expect(toasts).toContain('wiki-autocommit activé pour ce workspace')
+  await ui.press({ key: 'hook-wiki-autocommit-off' })
+  expect(hooks.enabled).toEqual([])
+  // Still wired machine-wide: said so, and no switch that would not hold.
+  expect(await ui.find({ type: 'Button', key: 'hook-vault-link-linter-on' })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /^Encore installé globalement/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('the console opened from the pane menu reads this workspace’s hooks too', async ($, on) => {
+  wire(on, { list: LIST })
+  const hooks = { enabled: ['wiki-autocommit'], global: [] as string[], runs: [] as (readonly string[])[] }
+  hooksScript(on, hooks)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80 }, surface: 'desktop' })
+  await ui.press({ key: 'nav-admin' })
+  expect(hooks.runs.some(argv => argv[2] === 'status')).toBe(true)
+  expect(await ui.find({ type: 'Button', key: 'hook-wiki-autocommit-on' })).toBeTruthy()
   await ui.unmount()
 })

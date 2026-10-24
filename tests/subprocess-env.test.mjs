@@ -743,7 +743,9 @@ describe('GUARD — every spawn in src/, scripts/, hooks/, bin/ passes subproces
    */
   // 2026-09-26: +1 exempt — scripts/identify-build.mjs runs git over this
   // repository (developer tooling, listed in EXEMPT with its reason).
-  const EXPECTED = Object.freeze({ total: 39, guarded: 22, exempt: 17, sdkTransports: 1 });
+  // 2026-10-23: +1 exempt — hooks/opt-in-gate.mjs runs an opt-in hook in
+  // Claude Code's place (listed in EXEMPT with its reason).
+  const EXPECTED = Object.freeze({ total: 40, guarded: 22, exempt: 18, sdkTransports: 1 });
 
   /**
    * Sites that inherit the environment ON PURPOSE. Each entry pins the file,
@@ -768,6 +770,7 @@ describe('GUARD — every spawn in src/, scripts/, hooks/, bin/ passes subproces
     // import. Still three commands, still one file — the count is the whole
     // point of this table, and a copy in a second file would show up here as a
     // fourth entry rather than hiding.
+    { file: 'hooks/opt-in-gate.mjs', commands: ['process.execPath'], why: 'runs one of the router’s own opt-in hooks IN CLAUDE CODE’S PLACE, where a workspace switched it on: the hook must get exactly the environment Claude Code gives a hook (CLAUDE_PROJECT_DIR, the session’s variables, its own opt-outs), as it would wired directly — a filtered one would make the gated hook behave differently from the same hook in settings.json' },
     { file: 'src/helpers/obsidian-launcher.mjs', commands: ['cmd', 'open', 'xdg-open'], why: 'launching the user desktop app through the OS protocol handler (cmd start / open / xdg-open) — it must see the user session; the ONE launcher, shared by setup-vault and the MCP server' },
   ];
 
