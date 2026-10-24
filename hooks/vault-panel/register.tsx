@@ -245,33 +245,56 @@ const charCells = (code: number) =>
       ? 2
       : 1
 const cells = (text: string) => [...text].reduce((sum, char) => sum + charCells(char.codePointAt(0) ?? 0), 0)
-// "›+N": the secondaries the line could not show, a press turns the page.
+// The band's page keys, each an arrow with a count in it: "N▶" the
+// secondaries the line could not show after the page, "◀N" those before it;
+// a press turns the page. On a graphical surface the arrow is a black
+// pentagon with the count in white inside (asked from a mockup: the dim "‹"
+// and "›+N" of v0.116.0 could hardly be seen); the terminal draws the texts.
 function moreText(hidden: number) {
-  return hidden > 0 ? `›+${hidden}` : ''
+  return hidden > 0 ? `${hidden}▶` : ''
+}
+function backText(before: number) {
+  return before > 0 ? `◀${before}` : ''
+}
+// The cells a page key takes, with its gap, as the wider surface draws it:
+// the pentagon is 18 + 7 px a digit, a cell being 7 px (a 14 px mark counts
+// 2 cells and a gap), so 3 cells and one a digit, and the gap.
+function pageKeyCells(count: number) {
+  return 4 + String(count).length
+}
+function pageKeyWidth(count: number) {
+  return 18 + 7 * String(count).length
+}
+function pageKeyMark(direction: 'back' | 'more', count: number) {
+  const w = pageKeyWidth(count)
+  const shape = direction === 'back' ? `M7 0H${w}V16H7L0 8Z` : `M0 0H${w - 7}L${w} 8L${w - 7} 16H0Z`
+  const x = direction === 'back' ? (w + 7) / 2 : (w - 7) / 2
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} 16"><path d="${shape}" fill="#1f1f1f"/><text x="${x}" y="8.5" font-family="system-ui, sans-serif" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle" dominant-baseline="central">${count}</text></svg>`
 }
 // The secondaries the band's line shows from `start` on, in the binding's
 // order, each as its name, its marks, its badge and its ▶, a "·" between two
 // (a "│" on the terminal); `paused[i]` says which are paused (the ▶ the same
 // width either way). `marks[i]` (and `primaryMark`): the cells that name's
-// marks take beside it. Past the first page the line starts with "‹" (two
-// cells); what does not fit ends it as "›+N".
+// marks take beside it. Past the first page the line starts with "◀N" (the
+// key and its gap); what does not fit ends it as "N▶".
 function bandFit(primary: string | null, secondaries: string[], columns: number, paused: boolean[] = [], marks: number[] = [], primaryMark = 0, start = 0) {
   void paused
   const toggle = 2 + Math.max(cells(t('band.show')), cells(t('band.hide'))) + 4
   // "Principal :", a gap, "● " and the name with its marks; two gaps and
   // "Secondaires :"; the pane's toggle at the right.
   const base =
-    cells(t('band.primary')) + 1 + 2 + primaryMark + cells(primary ?? t('band.none')) + 1 + 1 + 1 + cells(t('band.secondaries')) + toggle + (start > 0 ? 2 : 0)
+    cells(t('band.primary')) + 1 + 2 + primaryMark + cells(primary ?? t('band.none')) + 1 + 1 + 1 + cells(t('band.secondaries')) + toggle + (start > 0 ? pageKeyCells(start) : 0)
   const rest = secondaries.slice(start)
   // A gap, "· " after the first, the marks and the name, a gap and its badge,
   // a gap and its control (▶, dimmed while paused).
   const widths = rest.map((name, i) => 1 + (i > 0 ? 2 : 0) + (marks[start + i] ?? 0) + cells(name) + 1 + 2 + 1 + 1)
-  // The most secondaries that fit with the "›+N" their remainder needs. A
+  // The most secondaries that fit with the "N▶" their remainder needs. A
   // page one turned to shows at least one, cut where it runs over: a page
-  // with nothing on it would be a page "›+N" leads nowhere from.
+  // with nothing on it would be a page "N▶" leads nowhere from.
   for (let shown = rest.length; shown > 0; shown -= 1) {
-    const more = moreText(rest.length - shown)
-    const room = more ? 1 + cells(more) : 0
+    const hidden = rest.length - shown
+    const room = hidden > 0 ? pageKeyCells(hidden) : 0
     const used = base + widths.slice(0, shown).reduce((a, b) => a + b, 0) + room
     if (used <= columns) {
       return { shown, hidden: rest.length - shown }
@@ -2395,46 +2418,32 @@ export const register: Register = on => {
         <Button key={`${prefix}nav-${id}`} label={label} plain dimColor onPress={() => void showView($, id)} />
       )
     // A key of the wide menu drawn as a tab on a shelf: a round frame round
-    // the key, whose bottom row (its "╰──╯") is painted over with the two
-    // sides going on down, so the frame has rounded corners at the top and
-    // meets the rule under the menu square. The Box API has one border style
-    // for the four sides and no corner of its own, hence the cover: a Box
-    // laid absolute on the frame's bottom row, the ground's colour, a "│" at
-    // each end. The frame sizes itself to the key, so the cover fits it on
-    // every surface without a cell being counted. The tab in sight is open
-    // onto the page: a second cover, one row lower, hides the rule over the
-    // tab's width and turns it up at each end ("╯" and "╰"), so the tab and
-    // the page below are one. The others stay closed by the rule under them.
-    // The rule is drawn first and the tabs after it, so the covers paint over
-    // the rule (what comes later in the tree paints over what came before).
-    // Between the two ends, blanks as wide as the terminal draws the key
-    // ("[ label ]"): there the cover erases by its own cells, not by the
-    // ground's colour alone; a surface that draws the key wider fills the
-    // rest with the ground.
-    const tabEnds = (left: string, right: string, dim: boolean, bottom: number, inner: number) => (
-      <Box
-        position="absolute"
-        bottom={bottom}
-        left={-1}
-        right={-1}
-        height={1}
-        flexDirection="row"
-        justifyContent="space-between"
-        backgroundColor="inverseText"
-      >
-        <Text dimColor={dim}>{left}</Text>
-        <Text>{' '.repeat(inner)}</Text>
-        <Text dimColor={dim}>{right}</Text>
-      </Box>
-    )
+    // the key, cut short of its bottom edge by a Box that hides what overflows
+    // its height — the Box API has one border style for the four sides and no
+    // corner of its own, so the frame's rounded top is kept and its bottom
+    // ("╰──╯", or the desktop's thin line) is cut away. Under the key, a row
+    // of blanks keeps the frame's bottom edge well below the cut on every
+    // surface: a closed tab shows two rows of it, the frame's top and the
+    // key; the tab in sight shows three, the blanks too, so its sides go on
+    // one row past the rule under the menu, and its ground, opaque, hides
+    // the rule across its width: the tab and the page below are one. The
+    // rule stands on the row the closed tabs end on, so they are closed by
+    // it. (v0.116.1 covered the frame's bottom row with absolute Boxes: the
+    // desktop laid them under the frame, over the rule and the legend.)
     const menuTab = (prefix: string, id: PaneView, label: string) => {
       const isOpen = id === view
-      const inner = cells(label) + 4
       return (
-        <Box key={`${prefix}navtab-${id}`} borderStyle="round" borderDimColor={!isOpen} flexShrink={0}>
-          {menuItem(prefix, id, label)}
-          {tabEnds('│', '│', !isOpen, -1, inner)}
-          {isOpen && tabEnds('╯', '╰', true, -2, inner)}
+        <Box key={`${prefix}navtab-${id}`} height={isOpen ? 3 : 2} overflow="hidden" flexShrink={0}>
+          <Box
+            borderStyle="round"
+            borderDimColor={!isOpen}
+            backgroundColor={isOpen ? 'inverseText' : undefined}
+            flexDirection="column"
+            paddingBottom={1}
+          >
+            {menuItem(prefix, id, label)}
+            <Text>{' '.repeat(cells(label) + 4)}</Text>
+          </Box>
         </Box>
       )
     }
@@ -2494,8 +2503,10 @@ export const register: Register = on => {
     const brand = Mark ? <Mark source={ROUTER_MARK} alt={markAlt(ROUTER_MARK)} width={22} height={22} /> : null
     const repository = (prefix: string) =>
       iconKey(GITHUB_MARK, t('footer.github'), `${prefix}github`, () => void openUrl($, REPO_URL))
+    // Two rows tall, as a closed tab is, so the version and the marks stand
+    // level with the keys on the wide menu.
     const menuEnd = (prefix: string) => (
-      <Box key={`${prefix}nav-end`} flexDirection="row" gap={2} alignItems="center" flexShrink={0}>
+      <Box key={`${prefix}nav-end`} flexDirection="row" gap={2} alignItems="center" flexShrink={0} height={2}>
         {version && (
           <Text size="caption" dimColor>
             {version}
@@ -2535,15 +2546,23 @@ export const register: Register = on => {
           {rule}
         </Box>
       ) : (
-        // The rule sits on the column's last row (the padding), drawn before
-        // the tabs so the tab in sight paints its opening over it.
-        <Box key={`${prefix}nav`} flexDirection="column" paddingBottom={1}>
-          <Box key={`${prefix}nav-rule`} position="absolute" bottom={0} left={0} right={0} height={1}>
-            {rule}
+        // The rule stands on the third row, where the closed tabs end and the
+        // open one goes on: a Box's top border rather than a Text, so that the
+        // desktop draws it on the row's upper edge, against the tabs' sides,
+        // not mid-row as a glyph; its corners and sides are laid a cell past
+        // the pane's edges and its lower rows cut, so one line is left. Drawn
+        // before the tabs, so the open tab's ground paints over it.
+        <Box key={`${prefix}nav`} flexDirection="column">
+          <Box key={`${prefix}nav-rule`} position="absolute" top={2} left={0} right={0} height={1} overflow="hidden">
+            <Box position="absolute" top={0} left={-1} right={-1} height={2} borderStyle="single" borderDimColor />
           </Box>
-          <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={2}>
-            <Box flexDirection="row" gap={2} alignItems="center">
-              {brand}
+          <Box flexDirection="row" justifyContent="space-between" alignItems="flex-start" gap={2}>
+            <Box flexDirection="row" gap={2} alignItems="flex-start">
+              {brand && (
+                <Box height={2} alignItems="center">
+                  {brand}
+                </Box>
+              )}
               {menuLabels.map(([id, label]) => menuTab(prefix, id, label))}
             </Box>
             {menuEnd(prefix)}
@@ -3979,6 +3998,23 @@ export const register: Register = on => {
     const entry = (row: Secondary, isPaused: boolean, list = '') => [opener(row, row.name, isPaused, list), tier(row, isPaused, list), control(row, isPaused, list)]
     // From the page shown (the kept one, brought within the pages), not the kept one itself.
     const turnPage = (by: number) => void update($, bandPage, () => Math.min(Math.max(0, pageAt + by), pages.length - 1)).catch(() => undefined)
+    // A page key: the arrow with its count, drawn as a mark with a blank
+    // Button laid over it, as wide as the mark (see `iconKey`); its `alt` is
+    // the terminal's text, which the terminal draws as the key itself.
+    const pageKey = (key: string, direction: 'back' | 'more', count: number, onPress: () => void) => {
+      const text = direction === 'back' ? backText(count) : moreText(count)
+
+      return BandSvg ? (
+        <Box key={`icon-${key}`} flexDirection="row" alignItems="center" flexShrink={0}>
+          <BandSvg source={pageKeyMark(direction, count)} alt={text} width={pageKeyWidth(count)} height={16} />
+          <Box position="absolute" top={0} left={0}>
+            <Button key={key} label={' '.repeat(3 + String(count).length)} plain onPress={onPress} />
+          </Box>
+        </Box>
+      ) : (
+        <Button key={key} label={text} plain onPress={onPress} />
+      )
+    }
     return (
       <Box flexDirection="column">
         <Box key="vault-band" flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={2}>
@@ -3995,16 +4031,10 @@ export const register: Register = on => {
             <Box width={1} />
             {heading(t('band.secondaries'))}
             {names.length === 0 && paused.length === 0 && caption(t('band.none'))}
-            {start > 0 && (
-              <Button key="band-back" plain dimColor onPress={() => turnPage(-1)}>
-                <Text dimColor>‹</Text>
-              </Button>
-            )}
+            {start > 0 && pageKey('band-back', 'back', start, () => turnPage(-1))}
             {onLine.map(({ row, isPaused }, i) => slot(`band-row-${row.name}`, i === 0, entry(row, isPaused)))}
             {more && pages.length > 1 ? (
-              <Button key="band-more" plain dimColor onPress={() => turnPage(1)}>
-                <Text dimColor>{more}</Text>
-              </Button>
+              pageKey('band-more', 'more', fit.hidden, () => turnPage(1))
             ) : (
               more && <Text key="band-count" dimColor>{more}</Text>
             )}
