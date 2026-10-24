@@ -32,6 +32,22 @@ workspace at a time.
   aside so it never runs twice, and the console says so (`setup-vault.mjs --uninstall-hooks`
   removes those entries).
 
+## [0.112.1] — 2026-10-24 — the dropdown in columns, a paused ▶ that reads as off
+
+Seen on screen with a third secondary (v0.112.0):
+
+- **The dropdown in columns.** Each row is laid in fixed-width columns — Obsidian's mark, the
+  name (as wide as the longest, capped to what the band leaves it), the planet, Claude's mark,
+  the tier, the ▶ — so every control stands under the one above.
+- **Paused: a dimmed ▶.** In place of ❚❚ on a red ground, a paused secondary shows the same ▶,
+  dimmed and on no ground, a key that reads as off; a press resumes it. `bandFit` counts the ▶
+  at one cell either way.
+- **The trace** records the band's width and what fitted (surface, `bodyColumns`, names), to
+  set `bandFit` against what the desktop draws: v0.112.0 folded a third secondary away with
+  room left on the line.
+- Adversarial review by Codex: three P2 fixed (a long name capped, the paused width, the
+  trace's change detection). Tests: `tests/vault-panel.test.tsx` 109.
+
 ## [0.112.0] — 2026-10-24 — the band: icons that act, framed vaults, a dropdown
 
 Asked on screen (band, v0.111.0):

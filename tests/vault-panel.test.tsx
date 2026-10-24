@@ -2305,9 +2305,9 @@ test('❚❚ Pause pauses a secondary through the router, which keeps it in plac
   expect(await ground('state-on-docs')).toBeUndefined()
   expect(await ui.find({ key: 'mode-docs' })).toBeTruthy()
   expect(await ui.find({ type: 'Button', key: 'add-docs' })).toBeFalsy()
-  // The band shows it on its line, with its ❚❚ (a press resumes it).
+  // The band shows it on its line, with a dimmed ▶ that reads as off (a press resumes it).
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await band.find({ type: 'Button', key: 'band-resume-docs' })).toMatchObject({ props: { label: '❚❚' } })
+  expect(await band.find({ type: 'Button', key: 'band-resume-docs' })).toMatchObject({ props: { label: '▶', dimColor: true } })
   expect(await band.find({ type: 'Button', key: 'band-pause-notes' })).toBeTruthy()
   await band.unmount()
   await ui.press({ key: 'resume-docs' })
@@ -2429,8 +2429,10 @@ test('a paused secondary keeps its place on the band: ▶ on green while it runs
   expect(at('band-state-docs')).toBeGreaterThan(-1)
   expect(at('band-state-docs')).toBeLessThan(at('band-state-notes'))
   // One key each, its glyph on its ground: a Button's label is what the desktop draws.
-  expect(prop('band-resume-docs', 'label')).toBe('❚❚')
-  expect(prop('band-state-docs', 'backgroundColor')).toBe('diffRemovedDimmed')
+  // Paused: the same ▶, dimmed, on no ground — a key that reads as off.
+  expect(prop('band-resume-docs', 'label')).toBe('▶')
+  expect(prop('band-resume-docs', 'dimColor')).toBe(true)
+  expect(prop('band-state-docs', 'backgroundColor')).toBeUndefined()
   expect(prop('band-pause-notes', 'label')).toBe('▶')
   expect(prop('band-state-notes', 'backgroundColor')).toBe('diffAddedDimmed')
   expect(at('band-pause-docs')).toBe(-1)
@@ -2720,6 +2722,69 @@ test('a secondary named "primary" collides with nothing on the band: the primary
   const keys = nodesOf(await band.drawn()).map(n => keyOf(n)).filter((k): k is string => !!k)
   expect(keys.length).toBe(new Set(keys).size)
   expect(keys).toEqual(expect.arrayContaining(['band-main-web-extra', 'band-main-ui-extra', 'band-web-primary', 'band-ui-primary', 'band-row-primary']))
+  await band.unmount()
+})
+
+test('the dropdown lays its rows in columns: each control under the one above, whatever the name', async ($, on) => {
+  // A local vault (Obsidian's mark before its name) and two remote ones of unequal names.
+  const list = {
+    ...LIST,
+    routerBuild: { version: '0.108.0' },
+    workspaceBinding: { ...LIST.workspaceBinding, also: ['notes', 'extra', 'a-much-longer-remote', 'n1', 'n2', 'n3'], alsoPaused: ['extra'] },
+    vaults: [
+      ...LIST.vaults.filter(v => v.name !== 'notes'),
+      { name: 'notes', type: 'local', online: true, path: 'C:\\VAULTS\\Notes' },
+      { name: 'a-much-longer-remote', type: 'remote', online: true, baseUrl: 'http://10.8.0.1:27192', description: 'Conteneur (UI :3011)' },
+      { name: 'n1', type: 'local', online: true },
+      { name: 'n2', type: 'local', online: true },
+      { name: 'n3', type: 'local', online: true },
+    ],
+  }
+  wire(on, { list })
+  engineBand(on)
+  await begin($)
+  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 100 }, surface: 'desktop' })
+  await band.press({ key: 'band-more' })
+  const nodes = nodesOf(await band.drawn())
+  const width = (key: string) => nodes.find(n => keyOf(n) === key)?.props?.width
+  // The name column is as wide as the longest name and a gap, on every row.
+  const names = ['notes', 'extra', 'a-much-longer-remote']
+  expect(names.map(name => width(`band-list-label-${name}`))).toEqual(names.map(() => 'a-much-longer-remote'.length + 1))
+  for (const name of names) {
+    for (const cell of ['lead', 'webcell', 'uicell', 'tiercell']) {
+      expect(width(`band-list-${cell}-${name}`)).toBe(2)
+    }
+  }
+  // Each control in its own column: Obsidian's before a local name, the planet and Claude after a remote one.
+  const inCell = (cell: string, key: string) => nodesOf(nodes.find(n => keyOf(n) === cell) as never).some(n => keyOf(n) === key)
+  expect(inCell('band-list-lead-notes', 'band-list-obsidian-notes')).toBe(true)
+  expect(inCell('band-list-webcell-notes', 'band-list-web-notes')).toBe(false)
+  expect(inCell('band-list-webcell-extra', 'band-list-web-extra')).toBe(true)
+  expect(inCell('band-list-uicell-extra', 'band-list-ui-extra')).toBe(true)
+  // A paused one in the list has the dimmed ▶ too.
+  expect(nodes.find(n => keyOf(n) === 'band-list-resume-extra')?.props).toMatchObject({ label: '▶', dimColor: true })
+  const keys = nodes.map(n => keyOf(n)).filter((k): k is string => !!k)
+  expect(keys.length).toBe(new Set(keys).size)
+  await band.unmount()
+})
+
+test('a long name in the dropdown is cut to what the band leaves it, never pushing its ▶ off', async ($, on) => {
+  const long = 'a-vault-name-far-too-long-for-a-narrow-band'
+  const list = {
+    ...LIST,
+    workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'notes', long] },
+    vaults: [...LIST.vaults, { name: long, type: 'local', online: true }],
+  }
+  wire(on, { list })
+  engineBand(on)
+  await begin($)
+  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 40 }, surface: 'desktop' })
+  await band.press({ key: 'band-more' })
+  const nodes = nodesOf(await band.drawn())
+  const width = nodes.find(n => keyOf(n) === `band-list-label-${long}`)?.props?.width as number
+  // 40 columns less the frame, its padding, four 2-cell columns, the ▶ and the gaps.
+  expect(width).toBe(40 - (2 + 2 + 4 * 2 + 1 + 5))
+  expect(nodes.some(n => keyOf(n) === `band-list-pause-${long}`)).toBe(true)
   await band.unmount()
 })
 
