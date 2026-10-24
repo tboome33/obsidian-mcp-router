@@ -47,6 +47,30 @@ const showAdmin = atom({ plugin: 'obsidian-router', key: 'showAdmin' } as const,
 const navOpen = atom({ plugin: 'obsidian-router', key: 'navOpen' } as const, false)
 // The tiles turned over to their last files (the vaults' names).
 const flipped = atom({ plugin: 'obsidian-router', key: 'flipped' } as const, [] as string[])
+// A tile turned over comes back on its own after BACK_FOR_MS — a peek, as a
+// flip box on a web page returns once the pointer leaves — unless its back is
+// used: opening a note restarts the wait; turning it back by hand ends it.
+// One pending return per vault; a hot reload cancels them with the plugin.
+const BACK_FOR_MS = 8_000
+const returns = new Map<string, { cancel: () => void }>()
+function keepTurned($: EngineInterface, name: string) {
+  returns.get(name)?.cancel()
+  returns.set(
+    name,
+    $.clock.after(BACK_FOR_MS, () => {
+      returns.delete(name)
+      void update($, flipped, now => now.filter(n => n !== name)).catch(() => undefined)
+    }),
+  )
+}
+function letTurnBack(name: string) {
+  returns.get(name)?.cancel()
+  returns.delete(name)
+}
+// A turned tile is a peek, not a setting: the ones left turned when a session
+// ended (or the plugin reloaded, its pending returns cancelled with it) come
+// back at the first drawing — they would stay turned for ever otherwise.
+let backsReset = false
 // Which ways of opening a vault the console allows, kept in the plugin's
 // store: a local vault in Obsidian, a remote one in the default browser, a
 // remote one in Claude's own browser. A way turned off draws no mark.
@@ -2186,7 +2210,14 @@ export const register: Register = on => {
     const isAdminShown = await read($, showAdmin)
     const isNavOpen = await read($, navOpen)
     const open = await read($, openers)
-    const turned = await read($, flipped)
+    let turned = await read($, flipped)
+    if (!backsReset) {
+      backsReset = true
+      if (turned.length > 0) {
+        turned = []
+        void update($, flipped, () => []).catch(() => undefined)
+      }
+    }
     const form = await read($, adminForm)
     const removing = await read($, confirmRemove)
     const picked = await read($, removePick)
@@ -2337,16 +2368,24 @@ export const register: Register = on => {
     // the click lands on; a surface with no SVG has a glyph key instead.
     // The terminal draws no SVG (its element draws nothing there): a glyph.
     const Mark = e.surface !== 'terminal' ? Svg : null
-    const iconKey = (source: string, glyph: string, key: string, onPress: () => void) =>
+    // `pressed`: the key drawn held down (a grey ground; on the terminal, its
+    // glyph lit instead of dim), for a control whose effect is still on.
+    const iconKey = (source: string, glyph: string, key: string, onPress: () => void, pressed = false) =>
       Mark ? (
-        <Box key={`icon-${key}`} flexDirection="row" alignItems="center" flexShrink={0}>
+        <Box
+          key={`icon-${key}`}
+          flexDirection="row"
+          alignItems="center"
+          flexShrink={0}
+          backgroundColor={pressed ? 'inactive' : undefined}
+        >
           <Mark source={source} alt={markAlt(source)} width={16} height={16} />
           <Box position="absolute" top={0} left={0}>
             <Button key={key} label={'  '} plain onPress={onPress} />
           </Box>
         </Box>
       ) : (
-        <Button key={key} label={glyph} plain dimColor onPress={onPress} />
+        <Button key={key} label={glyph} plain dimColor={!pressed} onPress={onPress} />
       )
     // The router's mark at the menu's left; the version, the update badge and
     // the repository at its right. On a pane too narrow for the three on one
@@ -3046,8 +3085,20 @@ export const register: Register = on => {
     }
     const activityOf = (row: VaultRow) => snap.activity?.[row.name]
     const isTurned = (row: VaultRow) => turned.includes(row.name)
+    // The return starts or ends on the state the update finds, not the one
+    // drawn: a return that fired between the drawing and the press would
+    // otherwise turn the tile over again with no return pending.
     const turn = (row: VaultRow) =>
-      void update($, flipped, now => (now.includes(row.name) ? now.filter(n => n !== row.name) : [...now, row.name]))
+      void update($, flipped, now => {
+        if (now.includes(row.name)) {
+          letTurnBack(row.name)
+
+          return now.filter(n => n !== row.name)
+        }
+        keepTurned($, row.name)
+
+        return [...now, row.name]
+      }).catch(() => undefined)
     const lastUpdate = (row: VaultRow) => {
       const done = activityOf(row)
 
@@ -3069,7 +3120,7 @@ export const register: Register = on => {
           <Text size="caption" dimColor>
             {t('activity.recent')}
           </Text>
-          {iconKey(LIST_MARK, '☰', `flip-${row.name}`, () => turn(row))}
+          {iconKey(LIST_MARK, '☰', `flip-${row.name}`, () => turn(row), true)}
         </Box>
         {(activityOf(row)?.recent ?? []).map((entry, at) =>
           // A link only where the console allows a way to open it: Obsidian for
@@ -3081,7 +3132,10 @@ export const register: Register = on => {
               label={entry.path}
               plain
               dimColor
-              onPress={() => void openNote($, row, entry.path, open.claude)}
+              onPress={() => {
+                keepTurned($, row.name)
+                void openNote($, row, entry.path, open.claude)
+              }}
             />
           ) : (
             <Text key={`note-${at}-${row.name}`} size="caption" dimColor wrap="truncate-end">
@@ -3126,7 +3180,8 @@ export const register: Register = on => {
         width={opts.width}
         minWidth={opts.width}
         borderStyle="bold"
-        borderColor={opts.isHighlighted ? 'claude' : 'inactive'}
+        // Turned over, the frame changes colour: one sees one is at the back.
+        borderColor={isTurned(row) ? 'permission' : opts.isHighlighted ? 'claude' : 'inactive'}
         paddingX={1}
       >
         <Box key={`${key}-head`} flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>

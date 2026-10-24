@@ -134,6 +134,8 @@ Ce qu'il montre, dans un panneau **Vaults** et via la commande `/vaults` :
 
 **La tuile centrée** (v0.115.1). Dans la tuile d'un vault secondaire, les deux moitiés sont à mi-hauteur avec une ligne d'air au-dessus et au-dessous : à gauche ▶ Actif / ❚❚ Pause au-dessus de « Dernière mise à jour », centrés dans la place que laissent les droits ; un filet vertical entre les deux ; les droits encadrés à droite. Trop étroit, le cadre des droits (et son filet) passe sous l'état.
 
+**La tuile retournée** (v0.115.2). Une tuile retournée sur ses derniers fichiers revient d'elle-même sur sa face avant après huit secondes ; ouvrir une note relance l'attente, la retourner à la main l'arrête. Pendant qu'elle montre son dos, son bouton rond est dessiné enfoncé et son cadre change de couleur.
+
 **Icônes à droite du nom** (v0.114.1). Dans chaque tuile, les icônes (planète, Claude, Obsidian) sont sur la ligne du titre, à droite du nom du vault ; « ▶ Actif / ❚❚ Pause » est aligné sur le dernier bouton radio.
 
 **Logo, légende et liens par icônes** (v0.114.0). Le menu porte le logo du router à gauche, la version, le badge de mise à jour et l'icône GitHub à droite. Sous le menu, une légende explique les icônes : Obsidian (local, ouvre dans Obsidian), Claude (distant, navigateur interne), planète (distant, Chrome en mode debug, si Claude in Chrome est activé ; sinon la légende propose de l'activer depuis la console). Les tuiles n'affichent plus que les icônes, chacune cliquable. Les droits d'écriture se choisissent par trois boutons radio.
