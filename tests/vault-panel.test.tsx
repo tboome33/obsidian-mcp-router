@@ -2806,9 +2806,15 @@ test('the console holds the pane while open: its sections one under the other, t
   for (const name of ADMIN_SECTIONS) {
     expect(nodes.find(n => keyOf(n) === `admin-${name}`)?.props?.width).toBeUndefined()
     expect(nodes.some(n => n.props?.borderStyle === 'bold')).toBe(false)
-    const rule = nodesOf(nodes.find(n => keyOf(n) === `admin-${name}-rule`) as never).find(n => n.type === 'Text')
+    // One row high, the overflow clipped: no "…" where the desktop's "─" runs wider than a cell.
+    const ruleBox = nodes.find(n => keyOf(n) === `admin-${name}-rule`)
+    expect(ruleBox?.props).toMatchObject({ height: 1, overflow: 'hidden' })
+    const rule = nodesOf(ruleBox as never).find(n => n.type === 'Text')
     expect(textOf(rule as Drawn)).toBe('─'.repeat(130))
     expect(rule?.props?.dimColor).toBe(true)
+    expect(rule?.props?.wrap).toBeUndefined()
+    // The open header on a subtle ground, the folded ones on none.
+    expect(nodes.find(n => keyOf(n) === `admin-${name}-head`)?.props?.backgroundColor).toBe(name === 'general' ? 'diffAddedDimmed' : undefined)
   }
   await ui.press({ key: 'admin-sec-create' })
   // The wiki type: the one in force framed and lit.

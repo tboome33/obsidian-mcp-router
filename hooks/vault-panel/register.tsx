@@ -2666,11 +2666,12 @@ export const register: Register = on => {
     // cells with a line of air above and below; a thin dim rule between two.
     // The body's keys are the section's own, unchanged by the folding.
     const cardColumns = e.props.bodyColumns ?? 60
+    // The rule: a row of "─" one row high, what overflows clipped — never
+    // truncated, since a truncation ends in "…" (the desktop's font draws
+    // "─" wider than the cell the columns are counted in).
     const sectionRule = (key: string) => (
-      <Box key={`${key}-rule`}>
-        <Text dimColor wrap="truncate-end">
-          {'─'.repeat(Math.max(1, cardColumns))}
-        </Text>
+      <Box key={`${key}-rule`} height={1} overflow="hidden">
+        <Text dimColor>{'─'.repeat(Math.max(1, cardColumns))}</Text>
       </Box>
     )
     const card = (key: string, title: string, body: unknown) => {
@@ -2680,7 +2681,10 @@ export const register: Register = on => {
 
       return (
         <Box key={key} flexDirection="column">
-          <Box key={`${key}-head`} flexDirection="row" alignItems="center">
+          {/* The open header on a subtle ground: the desktop draws a Button's
+              text in its own colour, so the title's colour alone (kept for the
+              terminal) does not light it there. */}
+          <Box key={`${key}-head`} flexDirection="row" alignItems="center" backgroundColor={isOpen ? 'diffAddedDimmed' : undefined}>
             {/* The chevron is part of the Button (a Text child, which a Button
                 may hold; an Svg it may not): a press on it folds or unfolds
                 too. Dim, so that the title carries the eye. */}
