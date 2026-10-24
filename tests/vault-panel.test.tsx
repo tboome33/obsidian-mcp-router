@@ -1339,8 +1339,11 @@ test('the primary, the secondaries and the vaults to add are the same tile, in g
       expect(tile.props?.flexDirection).toBe('column')
       const nameText = nodesOf(tile as never).find(n => n.type === 'Text' && n.props?.weight === 'semibold')
       expect(nameText).toBeTruthy()
-      // Its controls wrap inside the tile rather than run past its edge.
-      expect(nodes.find(n => keyOf(n) === `${keyOf(tile)}-controls`)?.props?.flexWrap).toBe('wrap')
+      // Its marks in its head, right of its name; its lines (when it has any) wrap inside it.
+      const head = nodes.find(n => keyOf(n) === `${keyOf(tile)}-head`)
+      expect(nodesOf(head as never).some(n => keyOf(n) === `marks-${keyOf(tile)}`)).toBe(true)
+      const controls = nodes.find(n => keyOf(n) === `${keyOf(tile)}-controls`)
+      expect(controls === undefined || controls.props?.flexWrap === 'wrap').toBe(true)
     }
     // A bold frame for every tile, the primary's in Claude's colour.
     expect(tiles.map(n => n.props?.borderColor)).toEqual(['claude', 'inactive', 'inactive', 'inactive', 'inactive'])
@@ -2549,7 +2552,10 @@ test('adding: all, local or remote ones, a search, and A → Z or Z → A regard
   expect(foot?.props?.justifyContent).toBe('flex-end')
   expect(nodesOf(foot as never).some(n => keyOf(n) === 'add-Zeta')).toBe(true)
   expect(tileNodes.find(n => keyOf(n) === 'spacer-av-Zeta')?.props?.flexGrow).toBe(1)
-  expect(nodesOf(tileNodes.find(n => keyOf(n) === 'av-where-Zeta') as never).some(n => keyOf(n) === 'add-Zeta')).toBe(false)
+  // Its Obsidian mark in its head, never beside "+ Ajouter".
+  const head = tileNodes.find(n => keyOf(n) === 'av-Zeta-head')
+  expect(nodesOf(head as never).some(n => keyOf(n) === 'obsidian-Zeta')).toBe(true)
+  expect(nodesOf(head as never).some(n => keyOf(n) === 'add-Zeta')).toBe(false)
   // The tabs, the search and the order share one bar; "Fermer" folds the list back.
   const bar = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'add-bar')
   expect(bar?.props?.flexDirection).toBe('row')
@@ -2959,5 +2965,22 @@ test('Claude in Chrome refusing as disconnected counts as off, even when it spea
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: /^Chrome : Claude in Chrome n'est pas activé$/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test("a tile's marks sit in its head, right of its name; the state keys level with the last radio", async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdd(ui)
+  await ui.press({ key: 'tab-distants' })
+  const nodes = nodesOf(await ui.drawn())
+  // extra (remote, a web UI): the planet then Claude's mark, in the head, after the name.
+  const head = nodesOf(nodes.find(n => keyOf(n) === 'av-extra-head') as never)
+  const at = (key: string) => head.findIndex(n => keyOf(n) === key)
+  expect(head.findIndex(n => n.type === 'Text' && textOf(n) === 'extra')).toBeLessThan(at('web-extra'))
+  expect(at('web-extra')).toBeLessThan(at('ui-extra'))
+  // A secondary: ▶ Actif / ❚❚ Pause at the bottom of the line its radios stand on.
+  expect(nodes.find(n => keyOf(n) === 'state-docs')?.props?.alignSelf).toBe('flex-end')
   await ui.unmount()
 })

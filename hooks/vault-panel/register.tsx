@@ -3010,48 +3010,41 @@ export const register: Register = on => {
     // A drawn mark before a link (a Button holds text only, so the mark sits
     // beside it); a surface without SVG draws the link alone.
     const mark = (source: string) => (Svg ? <Svg source={source} alt={markAlt(source)} width={14} height={14} /> : null)
-    // Where a vault opens, as its marks alone — the legend under the menu says
-    // what each one does: Obsidian's for a local vault, Claude's (its own
-    // browser) and the planet (Chrome, while Claude in Chrome answers) for a
-    // remote one. A remote one that does not answer says so, with a retry; a
-    // local one Obsidian has never listed says to open it once by hand.
-    const links = (row: VaultRow) => {
-      if (isRemote(row)) {
-        // Its REST API silent: said, with a retry. Its web UI may answer all
-        // the same, so its marks stay.
-        const down =
-          row.online === false
-            ? [
-                <Text key={`down-${row.name}`} size="caption" color="error">
-                  {t('secondaries.unreachable')}
-                </Text>,
-                <Button key={`retry-${row.name}`} label={t('link.retry')} plain onPress={() => background($)} />,
-              ]
-            : []
-
-        return [
-          ...(row.uiUrl
-            ? [
-                ...(isChrome ? [iconKey(GLOBE_MARK, '🌐', `web-${row.name}`, () => void openInChrome($, row))] : []),
-                iconKey(CLAUDE_PANE_MARK, '✳', `ui-${row.name}`, () => void openUi($, row)),
-              ]
-            : []),
-          ...down,
-        ]
-      }
-      if (!row.path) {
-        return []
-      }
-      if (row.isKnownToObsidian === false) {
-        return [
-          <Text key={`once-${row.name}`} size="caption" color="warning">
-            {t('obsidian.openOnce')}
-          </Text>,
-        ]
-      }
-
-      return [iconKey(OBSIDIAN_MARK, '💎', `obsidian-${row.name}`, () => void openInObsidian($, row))]
-    }
+    // Where a vault opens, as its marks alone, right of its name in the tile's
+    // head — the legend under the menu says what each one does: the planet
+    // (Chrome, while Claude in Chrome answers) and Claude's mark (its own
+    // browser) for a remote one, Obsidian's for a local one Obsidian lists.
+    const marks = (row: VaultRow) =>
+      isRemote(row)
+        ? row.uiUrl
+          ? [
+              ...(isChrome ? [iconKey(GLOBE_MARK, '🌐', `web-${row.name}`, () => void openInChrome($, row))] : []),
+              iconKey(CLAUDE_PANE_MARK, '✳', `ui-${row.name}`, () => void openUi($, row)),
+            ]
+          : []
+        : row.path && row.isKnownToObsidian !== false
+          ? [iconKey(OBSIDIAN_MARK, '💎', `obsidian-${row.name}`, () => void openInObsidian($, row))]
+          : []
+    // What a vault's marks cannot say, on a line under its head: a remote one
+    // that does not answer (its web UI may, so its marks stay), with a retry;
+    // a local one Obsidian has never listed, to open once by hand.
+    const notes = (row: VaultRow) =>
+      isRemote(row)
+        ? row.online === false
+          ? [
+              <Text key={`down-${row.name}`} size="caption" color="error">
+                {t('secondaries.unreachable')}
+              </Text>,
+              <Button key={`retry-${row.name}`} label={t('link.retry')} plain onPress={() => background($)} />,
+            ]
+          : []
+        : row.path && row.isKnownToObsidian === false
+          ? [
+              <Text key={`once-${row.name}`} size="caption" color="warning">
+                {t('obsidian.openOnce')}
+              </Text>,
+            ]
+          : []
 
     // The tiles' grid, from the pane's width: as many per line as fit at the
     // least width, up to three bound vaults and four to add; one per line in
@@ -3096,6 +3089,9 @@ export const register: Register = on => {
             <Text weight="semibold" dimColor={opts.isDim || row.online === false} wrap="truncate-end">
               {row.name}
             </Text>
+            <Box key={`marks-${key}`} flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
+              {marks(row) as never}
+            </Box>
           </Box>
           {right as never}
         </Box>
@@ -3144,7 +3140,7 @@ export const register: Register = on => {
               <Text size="caption">{t('primary.badge')}</Text>
             </Box>,
             [
-              links(snap.primary),
+              notes(snap.primary),
               <Text key="primary-access" size="caption" dimColor>
                 {snap.isLocked ? t('primary.locked') : t('primary.access')}
               </Text>,
@@ -3208,7 +3204,7 @@ export const register: Register = on => {
     // one in force on a tinted ground (green, soft red): a ground the desktop
     // draws, where a native button keeps no colour of its own text.
     const stateSwitch = (s: Secondary, isPaused: boolean) => (
-      <Box key={`state-${s.name}`} flexDirection="row" alignItems="center">
+      <Box key={`state-${s.name}`} flexDirection="row" alignItems="center" alignSelf="flex-end">
         <Box key={`state-on-${s.name}`} backgroundColor={isPaused ? undefined : 'diffAddedDimmed'}>
           <Button
             key={`resume-${s.name}`}
@@ -3282,7 +3278,7 @@ export const register: Register = on => {
             )
           }
         />,
-        [links(s), [tierMenu(s), stateSwitch(s, isPaused)]],
+        [notes(s), [tierMenu(s), stateSwitch(s, isPaused)]],
         { width: boundWidth, isDim: isPaused },
       )
 
@@ -3422,10 +3418,7 @@ export const register: Register = on => {
               v,
               null,
               [
-                // Where it opens — a vault can be looked at before it is added.
-                <Box key={`av-where-${v.name}`} flexDirection="row" gap={1} alignItems="center" flexWrap="wrap" flexShrink={1}>
-                  {links(v)}
-                </Box>,
+                notes(v),
               ],
               {
                 width: addWidth,
