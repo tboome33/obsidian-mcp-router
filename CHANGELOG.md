@@ -10,6 +10,27 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.116.2] — 2026-10-25 — the administration as an accordion
+
+Asked by Roland, after a web accordion (a list of headers, the active one's panel shown),
+drawn the way a pane of Box and Text can: a section opens or closes on a press, at once.
+
+- **Six sections one under the other**, the whole width — Général, Ouverture des vaults,
+  Créer un vault Obsidian, WireGuard, Enregistrer un vault, Retirer un vault du router — in
+  place of the framed cards in a wrapping grid. Each has a header (a chevron, "▸" folded or
+  "▾" unfolded, and its title in semibold, one Button) and a thin dim rule under it.
+- **One open at a time**: a press on a header unfolds that section and folds the others; a
+  press on the open one's header folds it. The open section's title is lit, its body indented
+  two cells with a line of air above and below; the folded headers are dim.
+- **Kept across redraws** (`adminSection`): the console folded and unfolded, the pane closed
+  and reopened, keep the section. Général is open at first use.
+- **A flow that leads there unfolds its section**: `/vault-setup` and "Configurer un vault"
+  open Créer un vault; the update badge opens Général.
+- Adversarial review by Codex: one finding fixed — the chevron, drawn beside the header,
+  could not fold the section; it is part of the header Button now. Tests:
+  `tests/vault-panel.test.tsx` 124 (the six headers in order on the terminal and the desktop,
+  Général first, one open at a time, the second press, the section kept, the flows).
+
 ## [0.116.1] — 2026-10-25 — the menu's keys as tabs on a shelf
 
 Asked by Roland: the three keys of the pane's menu (Vaults, + Ajouter un vault,
