@@ -1830,7 +1830,7 @@ test('the console lists the language files and switches the language', async ($,
   ])
   await pane.select({ key: 'admin-language-select', value: 'en' })
   // The console, in English, holds the pane; back to the vaults, they are in English too.
-  expect(await pane.find({ type: 'Text', text: /^General$/ })).toBeTruthy()
+  expect(await pane.find({ type: 'Text', text: /^GENERAL$/ })).toBeTruthy()
   await pane.press({ key: 'toggle-admin' })
   expect(await pane.find({ type: 'Text', text: /^Primary$/ })).toBeTruthy()
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
@@ -2734,10 +2734,23 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const nodes = nodesOf(first)
     for (const [i, name] of ADMIN_SECTIONS.entries()) {
       const header = nodes.find(n => n.type === 'Button' && keyOf(n) === `admin-sec-${name}`) as Drawn
-      expect(nodesOf(header as never).some(n => n.type === 'Text' && textOf(n) === ADMIN_TITLES[i])).toBe(true)
+      // The title in capitals, as the pane's "PRINCIPAL :" labels.
+      expect(nodesOf(header as never).some(n => n.type === 'Text' && textOf(n) === ADMIN_TITLES[i]!.toLocaleUpperCase())).toBe(true)
       // The open header lit, the folded ones dim.
       expect(header.props?.dimColor).toBe(name !== 'general')
     }
+    // At the right of each header, one dim line on the section's state, open or folded.
+    const noteOf = (tree: unknown, name: string) =>
+      nodesOf(nodesOf(tree).find(n => keyOf(n) === `admin-sec-${name}-note`) as never)
+        .filter(n => n.type === 'Text')
+        .map(n => textOf(n))
+        .join(' ')
+    expect(noteOf(first, 'general')).toBe('Français')
+    expect(noteOf(first, 'open')).toBe('3 sur 3')
+    expect(noteOf(first, 'create')).toBe('un vault neuf, ses conventions')
+    expect(noteOf(first, 'wireguard')).toMatch(/^● \S/)
+    expect(noteOf(first, 'register')).toBe('local ou distant')
+    expect(noteOf(first, 'unregister')).toBe('2 retirables')
     expect(nodes.some(n => keyOf(n) === 'admin-language-select')).toBe(true)
     expect(nodes.some(n => keyOf(n) === 'create-submit')).toBe(false)
     expect(nodes.some(n => keyOf(n) === 'admin-register-submit')).toBe(false)
@@ -3043,6 +3056,8 @@ test('the console turns each way of opening a vault on or off: its mark, its leg
   // The default browser off: no planet in the tiles, the legend or the band.
   await ui.press({ key: 'open-browser-off' })
   expect(stored.openers).toEqual({ obsidian: true, browser: false, claude: true })
+  // The header's line follows.
+  expect(nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'admin-sec-open-note') as never).some(n => n.type === 'Text' && textOf(n) === '2 sur 3')).toBe(true)
   await ui.press({ key: 'nav-vaults' })
   expect(await ui.find({ type: 'Button', key: 'web-extra' })).toBeFalsy()
   expect(await ui.find({ type: 'Button', key: 'ui-extra' })).toBeTruthy()
