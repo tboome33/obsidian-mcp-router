@@ -581,4 +581,21 @@ describe('I-3 — scaffold spawns never touch the real ~/.claude', () => {
       'setup-vault wrote settings.json OUTSIDE the throwaway home — a spawn is inheriting the real HOME',
     );
   });
+
+  test('with the plugin installed, a bootstrap wires no hook machine-wide (v0.111.0)', () => {
+    // The opt-in hooks are switched on per workspace from the vault panel;
+    // wiring them into settings.json would run them in every project.
+    const pluginHome = path.join(workDir, 'plugin-home');
+    const installPath = path.join(pluginHome, '.claude', 'plugins', 'cache', 'mp', 'obsidian-router', '0.107.0');
+    fs.mkdirSync(installPath, { recursive: true });
+    fs.writeFileSync(
+      path.join(pluginHome, '.claude', 'plugins', 'installed_plugins.json'),
+      JSON.stringify({ version: 2, plugins: { 'obsidian-router@obsidian-mcp-router-marketplace': [{ version: '0.107.0', installPath }] } }),
+    );
+
+    const r = spawnScript([path.join(workDir, 'newborn-plugin')], { OBSIDIAN_ROUTER_CONFIG: configPath }, pluginHome);
+    assert.equal(r.status, 0, `expected exit 0, got ${r.status}. stderr=${r.stderr}`);
+    assert.equal(fs.existsSync(path.join(pluginHome, '.claude', 'settings.json')), false, 'nothing written to settings.json');
+    assert.match(r.stdout, /per workspace/);
+  });
 });

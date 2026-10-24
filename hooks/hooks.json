@@ -16,6 +16,23 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/workspace-briefing.mjs\""
           }
         ]
+      },
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/opt-in-gate.mjs\" check-router-update"
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/opt-in-gate.mjs\" session-auto-journal"
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/opt-in-gate.mjs\" vault-doc-startup-check"
+          }
+        ]
       }
     ],
     "PostCompact": [
@@ -40,6 +57,74 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/decisions-recall.mjs\""
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/opt-in-gate.mjs\" wiki-query-first-nudge"
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/opt-in-gate.mjs\" session-auto-journal"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__.*(?:write_file|patch_file|append_to_file|set_frontmatter|merge_frontmatter|delete_file|move_file|execute_template|write_bundle)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/opt-in-gate.mjs\" wiki-autocommit"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/opt-in-gate.mjs\" doc-propagation-checker"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit|Bash|mcp__.*(?:write_file|patch_file|append_to_file|set_frontmatter|merge_frontmatter|delete_file|move_file|execute_template|write_bundle)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/opt-in-gate.mjs\" session-auto-journal"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/opt-in-gate.mjs\" vault-link-linter"
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/opt-in-gate.mjs\" hot-cache-update-prompt"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/opt-in-gate.mjs\" session-auto-journal"
           }
         ]
       }

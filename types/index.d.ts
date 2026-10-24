@@ -34,6 +34,17 @@ export type WireguardState = {
   tunnels: string[]
 }
 
+/** The router's hooks as they stand in this session's workspace. */
+export type WorkspaceHooks = {
+  /** The workspace the choices are kept for (the session's folder). */
+  workspace: string
+  /** The read-only hooks the plugin runs everywhere. */
+  alwaysOn: string[]
+  /** The others, each switched on or off for this workspace; `global`: still
+   * wired machine-wide in ~/.claude/settings.json, so it runs everywhere. */
+  optIn: { name: string; enabled: boolean; global: boolean }[]
+}
+
 /** The administration console's form: a vault to register by its REST address. */
 export type AdminForm = {
   /** Local: this machine's Obsidian (127.0.0.1); remote: over WireGuard. */
@@ -136,6 +147,8 @@ declare module 'claude-code' {
       pendingConventions: { vault: string; ids: string[]; languages: string[] } | null
       /** WireGuard as last detected; null before the first read. */
       wireguard: WireguardState | null
+      /** This workspace's hooks as last read; null before the first read. */
+      workspaceHooks: WorkspaceHooks | null
     }
   }
 }

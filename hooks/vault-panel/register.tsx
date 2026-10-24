@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { AdminForm, CreateForm, Secondary, SecondaryMode, Snapshot, Tab, VaultRow, WireguardState } from '../../types'
+import type { AdminForm, CreateForm, Secondary, SecondaryMode, Snapshot, Tab, VaultRow, WireguardState, WorkspaceHooks } from '../../types'
 import { FR } from './locale-fr'
 
 const PANE = 'vault-panel'
@@ -53,6 +53,8 @@ const createForm = atom({ plugin: 'obsidian-router', key: 'createForm' } as cons
 const bandListOpen = atom({ plugin: 'obsidian-router', key: 'bandListOpen' } as const, false)
 const pendingConventions = atom({ plugin: 'obsidian-router', key: 'pendingConventions' } as const, null)
 const wireguard = atom({ plugin: 'obsidian-router', key: 'wireguard' } as const, null)
+// This workspace's hooks, read when the console is drawn.
+const workspaceHooks = atom({ plugin: 'obsidian-router', key: 'workspaceHooks' } as const, null)
 
 // ---- Texts ----------------------------------------------------------------
 // Every text the pane and the band show comes from locales/<code>.json in the
@@ -1278,6 +1280,70 @@ function readSoon($: EngineInterface) {
   $.clock.after(5_000, () => background($))
 }
 
+// ---- Hooks ------------------------------------------------------------------
+// The plugin runs its three read-only hooks everywhere; every other one runs
+// behind hooks/opt-in-gate.mjs, only in a workspace switched on here. The
+// choices live in the user's own workspace-hooks.json, beside the router's
+// config; scripts/workspace-hooks.mjs reads and writes it (a hooks module has
+// no Node of its own), for the session's folder.
+async function hooksCli($: EngineInterface, args: string[]): Promise<WorkspaceHooks> {
+  const root = pluginRoot($)
+  if (!root) {
+    throw new Error(t('hooks.noRoot'))
+  }
+  const cwd = await $.session.cwd()
+  const ran = await $.process.run(['node', `${root}/scripts/workspace-hooks.mjs`, ...args, '--workspace', cwd], {
+    timeoutMs: 10_000,
+  })
+  const answer = JSON.parse(ran.stdout.trim() || '{}') as Partial<WorkspaceHooks> & { error?: string }
+  if (ran.exitCode !== 0 || answer.error || !Array.isArray(answer.optIn) || !Array.isArray(answer.alwaysOn)) {
+    throw new Error(answer.error ?? (ran.stderr.trim() || t('error.launcherExit', { program: 'node', code: ran.exitCode })))
+  }
+
+  return { workspace: answer.workspace ?? cwd, alwaysOn: answer.alwaysOn, optIn: answer.optIn }
+}
+
+// A read in flight: the console, drawn again meanwhile, does not start another.
+let isReadingHooks = false
+
+async function readHooks($: EngineInterface) {
+  if (isReadingHooks) {
+    return
+  }
+  isReadingHooks = true
+  try {
+    const found = await hooksCli($, ['status'])
+    await update($, workspaceHooks, () => found)
+  } catch (err) {
+    await update($, failure, () => t('hooks.readFailed', { error: message(err) }))
+  } finally {
+    isReadingHooks = false
+  }
+}
+
+// Shown switched at once; the answer (or a re-read, on a failure) is what stays.
+async function setHook($: EngineInterface, name: string, isOn: boolean) {
+  await update($, workspaceHooks, now =>
+    now ? { ...now, optIn: now.optIn.map(hook => (hook.name === name ? { ...hook, enabled: isOn } : hook)) } : now,
+  )
+  try {
+    const found = await hooksCli($, ['set', '--hook', name, isOn ? '--on' : '--off'])
+    await update($, workspaceHooks, () => found)
+    await update($, failure, () => null)
+    $.ui.toast(t(isOn ? 'hooks.toastOn' : 'hooks.toastOff', { name }))
+  } catch (err) {
+    await update($, failure, () => t('hooks.writeFailed', { name, error: message(err) }))
+    await readHooks($)
+  }
+}
+
+// The console unfolded from anywhere (the update badge, /vault-setup, the
+// primary's set-up button): its hooks are read with it.
+async function showConsole($: EngineInterface) {
+  await update($, showAdmin, () => true)
+  void readHooks($)
+}
+
 // Bumped by every registration sent: an older one finishing late leaves the
 // form alone.
 let submission = 0
@@ -1924,7 +1990,7 @@ export const register: Register = on => {
   // registering a vault — not a conversation with the model.
   on('command.run', { command: 'vault-setup' }, async $ => {
     isStartupCancelled = false
-    await update($, showAdmin, () => true)
+    await showConsole($)
     await openPane($)
     await refresh($)
     void checkWireguard($).catch(() => undefined)
@@ -2004,6 +2070,7 @@ export const register: Register = on => {
     const removing = await read($, confirmRemove)
     const picked = await read($, removePick)
     const wg = await read($, wireguard)
+    const hooks = await read($, workspaceHooks)
     const languages = isAdminShown ? await availableLanguages($) : []
     const upd = await read($, updateState)
     const creating = await read($, createForm)
@@ -2136,7 +2203,7 @@ export const register: Register = on => {
           )}
           <Button key="github" label={t('footer.github')} plain dimColor onPress={() => void openUrl($, REPO_URL)} />
           {upd?.isAvailable && (
-            <Button key="update-badge" label={t('update.badge')} plain onPress={() => void update($, showAdmin, () => true)} />
+            <Button key="update-badge" label={t('update.badge')} plain onPress={() => void showConsole($)} />
           )}
         </Box>
         <Button
@@ -2146,7 +2213,7 @@ export const register: Register = on => {
           onPress={() =>
             void update($, showAdmin, shownNow => !shownNow).then(async () => {
               if (await read($, showAdmin)) {
-                await checkWireguard($)
+                await Promise.all([checkWireguard($), readHooks($)])
               } else {
                 // Folded: a key typed but not sent is dropped.
                 await update($, adminForm, now => (now.apiKey ? { ...now, apiKey: '' } : now))
@@ -2208,8 +2275,10 @@ export const register: Register = on => {
               ? t('wg.absent')
               : t('wg.unknown')
     const removable = snap ? snap.available : []
-    // The console's sections (the redesign): each a framed card under its grey
-    // title; side by side, three to a line, in a wide pane.
+    // The console's four sections — general (language, plugin, WireGuard),
+    // creating a vault, registering or removing an existing one, the hooks —
+    // each a framed card under its grey title; side by side, three to a line,
+    // in a wide pane.
     const cardColumns = e.props.bodyColumns ?? 60
     const cardWidth = (() => {
       for (let n = 3; n > 1; n -= 1) {
@@ -2303,6 +2372,29 @@ export const register: Register = on => {
                   {upd.log}
                 </Text>
               )}
+            </Box>
+
+            <Box key="admin-wireguard" flexDirection="column" gap={1}>
+              <Text size="caption" dimColor>
+                {t('wg.title')}
+              </Text>
+                <Box key="admin-wireguard-line" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+                  {wg?.state === 'active' && <Text color="success">●</Text>}
+                  <Text size="caption" color={wg?.state === 'active' ? undefined : wg?.state === 'checking' || !wg ? undefined : 'warning'} dimColor={!wg || wg.state === 'checking'}>
+                    {wgLine}
+                  </Text>
+                  <Button key="wg-check" label={t('wg.check')} plain dimColor onPress={() => void checkWireguard($)} />
+                </Box>
+                <Box key="admin-wireguard-actions" flexDirection="row" flexWrap="wrap" gap={1}>
+                  {wg?.state === 'inactive' && (
+                    <Button key="wg-open" label={t('wg.openApp')} variant="primary" onPress={() => void openWireguard($)} />
+                  )}
+                  {wg?.state === 'absent' && (
+                    <Button key="wg-install" label={t('wg.install')} variant="primary" onPress={() => void openUrl($, WG_INSTALL_URL)} />
+                  )}
+                  <Button key="wg-guide" label={t('wg.guide')} plain onPress={() => void openUrl($, GUIDE_URL)} />
+                  <Button key="wg-prompt" label={t('wg.prompt')} plain onPress={() => void openUrl($, PROMPT_URL)} />
+                </Box>
             </Box>
             </Box>,
           ),
@@ -2440,32 +2532,10 @@ export const register: Register = on => {
               ),
           ),
           card(
-            'admin-wireguard',
-            t('wg.title'),
-            <Box key="admin-wireguard-body" flexDirection="column" gap={1}>
-              <Box key="admin-wireguard-line" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
-                {wg?.state === 'active' && <Text color="success">●</Text>}
-                <Text size="caption" color={wg?.state === 'active' ? undefined : wg?.state === 'checking' || !wg ? undefined : 'warning'} dimColor={!wg || wg.state === 'checking'}>
-                  {wgLine}
-                </Text>
-                <Button key="wg-check" label={t('wg.check')} plain dimColor onPress={() => void checkWireguard($)} />
-              </Box>
-              <Box key="admin-wireguard-actions" flexDirection="row" flexWrap="wrap" gap={1}>
-                {wg?.state === 'inactive' && (
-                  <Button key="wg-open" label={t('wg.openApp')} variant="primary" onPress={() => void openWireguard($)} />
-                )}
-                {wg?.state === 'absent' && (
-                  <Button key="wg-install" label={t('wg.install')} variant="primary" onPress={() => void openUrl($, WG_INSTALL_URL)} />
-                )}
-                <Button key="wg-guide" label={t('wg.guide')} plain onPress={() => void openUrl($, GUIDE_URL)} />
-                <Button key="wg-prompt" label={t('wg.prompt')} plain onPress={() => void openUrl($, PROMPT_URL)} />
-              </Box>
-            </Box>,
-          ),
-          card(
             'admin-register',
             t('register.title'),
-            !Input ? (
+            <Box key="admin-register-body" flexDirection="column" gap={1}>
+              {!Input ? (
                 <Text size="caption" dimColor>
                   {t('register.phone')}
                 </Text>
@@ -2528,71 +2598,131 @@ export const register: Register = on => {
                     <Button key="admin-register-submit" label={t('register.submit')} variant="primary" onPress={() => void registerVault($)} />
                   </Box>
                 </Box>
-              ),
+              )}
+              <Box key="admin-unregister" flexDirection="column" gap={1}>
+                <Text size="caption" weight="semibold">
+                  {t('unregister.title')}
+                </Text>
+                {removable.length === 0 && (
+                  <Text size="caption" dimColor>
+                    {t('unregister.none')}
+                  </Text>
+                )}
+                {Select && removable.length > 0 && (
+                  <Box key="admin-remove" flexDirection="column" gap={1}>
+                    {removing ? (
+                      <Box key="admin-remove-ask" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+                        <Text color="warning">{t('unregister.ask', { name: removing })}</Text>
+                        <Button key="admin-remove-confirm" label={t('unregister.confirm')} variant="primary" onPress={() => void unregisterVault($, removing)} />
+                        <Button key="admin-remove-cancel" label={t('unregister.cancel')} plain dimColor onPress={() => void update($, confirmRemove, () => null)} />
+                      </Box>
+                    ) : (
+                      <Box key="admin-remove-pick" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+                        <Select
+                          key="admin-remove-select"
+                          options={removable.map(v => ({
+                            value: v.name,
+                            label: `${v.name} (${v.type === 'remote' ? t('place.remote') : t('place.local')})`,
+                          }))}
+                          value={picked && removable.some(v => v.name === picked) ? picked : removable[0]!.name}
+                          onSelect={(name: string) => void update($, removePick, () => name)}
+                        />
+                        <Button
+                          key="admin-remove-button"
+                          label={t('unregister.button')}
+                          onPress={() =>
+                            void update($, confirmRemove, () =>
+                              picked && removable.some(v => v.name === picked) ? picked : removable[0]!.name,
+                            )
+                          }
+                        />
+                      </Box>
+                    )}
+                  </Box>
+                )}
+                {!Select && removable.map(v => (
+                  <Box key={`rm-${v.name}`} flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={1}>
+                    <Box flexDirection="row" gap={1} flexShrink={1} alignItems="center">
+                      {dot(v.online, v.type === 'remote')}
+                      <Text wrap="truncate-end">{v.name}</Text>
+                      <Text size="caption" dimColor>
+                        {v.type === 'remote' ? t('place.remote') : t('place.local')}
+                      </Text>
+                    </Box>
+                    {removing === v.name ? (
+                      <Box key={`rm-confirm-${v.name}`} flexDirection="row" gap={1}>
+                        <Button key={`unregister-confirm-${v.name}`} label={t('unregister.confirm')} variant="primary" onPress={() => void unregisterVault($, v.name)} />
+                        <Button key={`unregister-cancel-${v.name}`} label={t('unregister.cancel')} plain dimColor onPress={() => void update($, confirmRemove, () => null)} />
+                      </Box>
+                    ) : (
+                      <Button key={`unregister-${v.name}`} label={t('unregister.button')} plain dimColor onPress={() => void update($, confirmRemove, () => v.name)} />
+                    )}
+                  </Box>
+                ))}
+                <Text size="caption" dimColor>
+                  {t('unregister.hint')}
+                </Text>
+              </Box>
+            </Box>,
           ),
           card(
-            'admin-unregister',
-            t('unregister.title'),
-            <Box key="admin-unregister-body" flexDirection="column" gap={1}>
-              {removable.length === 0 && (
-                <Text size="caption" dimColor>
-                  {t('unregister.none')}
-                </Text>
-              )}
-              {Select && removable.length > 0 && (
-                <Box key="admin-remove" flexDirection="column" gap={1}>
-                  {removing ? (
-                    <Box key="admin-remove-ask" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
-                      <Text color="warning">{t('unregister.ask', { name: removing })}</Text>
-                      <Button key="admin-remove-confirm" label={t('unregister.confirm')} variant="primary" onPress={() => void unregisterVault($, removing)} />
-                      <Button key="admin-remove-cancel" label={t('unregister.cancel')} plain dimColor onPress={() => void update($, confirmRemove, () => null)} />
-                    </Box>
-                  ) : (
-                    <Box key="admin-remove-pick" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
-                      <Select
-                        key="admin-remove-select"
-                        options={removable.map(v => ({
-                          value: v.name,
-                          label: `${v.name} (${v.type === 'remote' ? t('place.remote') : t('place.local')})`,
-                        }))}
-                        value={picked && removable.some(v => v.name === picked) ? picked : removable[0]!.name}
-                        onSelect={(name: string) => void update($, removePick, () => name)}
-                      />
-                      <Button
-                        key="admin-remove-button"
-                        label={t('unregister.button')}
-                        onPress={() =>
-                          void update($, confirmRemove, () =>
-                            picked && removable.some(v => v.name === picked) ? picked : removable[0]!.name,
-                          )
-                        }
-                      />
-                    </Box>
-                  )}
-                </Box>
-              )}
-              {!Select && removable.map(v => (
-                <Box key={`rm-${v.name}`} flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={1}>
-                  <Box flexDirection="row" gap={1} flexShrink={1} alignItems="center">
-                    {dot(v.online, v.type === 'remote')}
-                    <Text wrap="truncate-end">{v.name}</Text>
-                    <Text size="caption" dimColor>
-                      {v.type === 'remote' ? t('place.remote') : t('place.local')}
-                    </Text>
-                  </Box>
-                  {removing === v.name ? (
-                    <Box key={`rm-confirm-${v.name}`} flexDirection="row" gap={1}>
-                      <Button key={`unregister-confirm-${v.name}`} label={t('unregister.confirm')} variant="primary" onPress={() => void unregisterVault($, v.name)} />
-                      <Button key={`unregister-cancel-${v.name}`} label={t('unregister.cancel')} plain dimColor onPress={() => void update($, confirmRemove, () => null)} />
-                    </Box>
-                  ) : (
-                    <Button key={`unregister-${v.name}`} label={t('unregister.button')} plain dimColor onPress={() => void update($, confirmRemove, () => v.name)} />
-                  )}
-                </Box>
-              ))}
+            'admin-hooks',
+            t('hooks.title'),
+            <Box key="admin-hooks-body" flexDirection="column" gap={1}>
               <Text size="caption" dimColor>
-                {t('unregister.hint')}
+                {hooks ? t('hooks.intro', { workspace: hooks.workspace }) : t('hooks.reading')}
               </Text>
+              {hooks && (
+                <Box key="admin-hooks-always" flexDirection="column">
+                  <Text size="caption" weight="semibold">
+                    {t('hooks.alwaysOn')}
+                  </Text>
+                  {hooks.alwaysOn.map(name => (
+                    <Box key={`hook-always-${name}`} flexDirection="row" gap={1}>
+                      <Text color="success">✓</Text>
+                      <Box flexDirection="column" flexShrink={1}>
+                        <Text>{name}</Text>
+                        <Text size="caption" dimColor>
+                          {t(`hook.${name}`)}
+                        </Text>
+                      </Box>
+                    </Box>
+                  ))}
+                </Box>
+              )}
+              {hooks && (
+                <Box key="admin-hooks-optin" flexDirection="column" gap={1}>
+                  <Text size="caption" weight="semibold">
+                    {t('hooks.optIn')}
+                  </Text>
+                  {hooks.optIn.map(hook => (
+                    <Box key={`hook-${hook.name}`} flexDirection="column">
+                      <Text weight={hook.enabled || hook.global ? 'semibold' : 'regular'}>{hook.name}</Text>
+                      <Text size="caption" dimColor>
+                        {t(`hook.${hook.name}`)}
+                      </Text>
+                      {hook.global ? (
+                        <Text size="caption" color="warning">
+                          {t('hooks.global')}
+                        </Text>
+                      ) : (
+                        toggle<'on' | 'off'>(
+                          `hook-${hook.name}`,
+                          [
+                            { value: 'off', label: t('hooks.off') },
+                            { value: 'on', label: t('hooks.on') },
+                          ],
+                          hook.enabled ? 'on' : 'off',
+                          value => (value === 'on') !== hook.enabled && void setHook($, hook.name, value === 'on'),
+                        )
+                      )}
+                    </Box>
+                  ))}
+                  <Text size="caption" dimColor>
+                    {t('hooks.whenApplied')}
+                  </Text>
+                </Box>
+              )}
             </Box>,
           ),
         ]}
@@ -2806,7 +2936,7 @@ export const register: Register = on => {
         ) : (
           <Box key="primary-none" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
             <Text color="warning">{t('primary.none')}</Text>
-            <Button key="primary-setup" label={t('primary.setup')} variant="primary" onPress={() => void update($, showAdmin, () => true)} />
+            <Button key="primary-setup" label={t('primary.setup')} variant="primary" onPress={() => void showConsole($)} />
           </Box>
         )}
         {snap.isImported && snap.primary && (

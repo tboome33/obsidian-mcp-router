@@ -24,7 +24,6 @@
  */
 
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 import { resolveScaffold } from '../../src/helpers/wiki-meta-scaffolds.mjs';
@@ -39,6 +38,7 @@ import {
   remoteVaultLocalPath,
 } from '../../src/helpers/vault-slug.mjs';
 import { normalizePathForCompare } from '../../src/helpers/vault-path-identity.mjs';
+import { routerConfigPath as configPathOf } from '../../src/helpers/workspace-hooks.mjs';
 
 // ---------------------------------------------------------------------------
 // Dotenv autoload
@@ -80,10 +80,7 @@ export function loadWorkspaceDotenv(cwd) {
  * env var, falls back to `~/.claude/obsidian-mcp-router/config.json`).
  */
 export function routerConfigPath() {
-  if (process.env.OBSIDIAN_ROUTER_CONFIG) {
-    return path.resolve(process.env.OBSIDIAN_ROUTER_CONFIG);
-  }
-  return path.join(os.homedir(), '.claude', 'obsidian-mcp-router', 'config.json');
+  return configPathOf(process.env);
 }
 
 /**
