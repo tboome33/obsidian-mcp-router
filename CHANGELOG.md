@@ -10,6 +10,25 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.113.0] — 2026-10-24 — a menu at the top of the pane, pinned while it scrolls
+
+Asked after v0.112.1: the bar that stays at the top must be a menu, flush at the top, no panel
+look, a rule under it — "Vaults", "+ Ajouter un vault", "⚙ Administration".
+
+- **The menu.** At the top of the pane in every view: Vaults, + Ajouter un vault (once the
+  router is read), ⚙ Administration; the view in sight on a primary key, the others plain; a
+  rule under the line. A press shows its view and brings it into the window — the top, or the
+  adding list's head (the tabs and the search just under the pinned menu).
+- **Pinned.** Once the body scrolls, a copy of the menu is drawn at the first row the window
+  shows, on an opaque ground with no frame; it replaces v0.111.0's framed status-bar copy. The
+  console has it too.
+- **"☰" on a narrow pane.** When the three do not fit on one line, the menu folds into
+  "☰ <view in sight>"; a press lists them one under the other, a pick folds it again.
+- Adversarial review by Codex, two passes: five P2 fixed (the scroll waits a redraw and is
+  retried until the target is drawn, a later press supersedes an earlier one's retries, the
+  head rather than the bar is aimed at, no "+ Ajouter un vault" before the router is read).
+  Tests: `tests/vault-panel.test.tsx` 111.
+
 ## [0.112.1] — 2026-10-24 — the dropdown in columns, a paused ▶ that reads as off
 
 Seen on screen with a third secondary (v0.112.0):
