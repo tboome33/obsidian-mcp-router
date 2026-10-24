@@ -33,6 +33,18 @@ workspace at a time.
   aside so it never runs twice, and the console says so (`setup-vault.mjs --uninstall-hooks`
   removes those entries).
 
+## [0.116.4] — 2026-10-25 — the accordion's rule without "…", its open header on a ground
+
+Two retouches seen on the first screenshot of v0.116.2:
+
+- **The rule under each section no longer ends in "…"**: it is a Box one row high with its
+  overflow clipped, not a truncated Text — on the desktop "─" runs wider than the cell the
+  columns are counted in, and the truncation drew an ellipsis at the right edge.
+- **The open section's header sits on a subtle green ground**: the desktop draws a Button's
+  text in its own colour, so the title's colour alone did not light it there (the colour is
+  kept for the terminal). Tests: `tests/vault-panel.test.tsx` 125 (both retouches, each seen
+  red under its mutation).
+
 ## [0.116.3] — 2026-10-25 — the menu keeps its shape while the router is read
 
 Seen on the terminal with v0.116.1 (`claude /vaults` in a 49-column pane): the menu was
