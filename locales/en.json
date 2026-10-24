@@ -275,13 +275,9 @@
 
   "secondaries.paused": "Paused · {count}",
   "secondaries.pausedTag": "paused",
-  "secondaries.pauseHint": "■ pauses a secondary without removing it · ▶ resumes it as it was set: 🔒 read-only, ✋ write if you agree, or ✏️ read and write",
+  "secondaries.pauseHint": "▶ active: a press pauses it · ❚❚ paused: a press resumes it as it was set (🔒 read-only, ✋ write if you agree, or ✏️ read and write)",
 
   "band.noOpen": "Nothing to open {name} with: no known local folder, no web UI.",
-  "band.openObsidian": "Open {name} in Obsidian",
-  "band.openBrowser": "Open {name} in the browser",
-  "band.pauseOne": "Pause {name}",
-  "band.resumeOne": "Resume {name}",
 
   "hooks.title": "This workspace’s hooks",
   "hooks.intro": "For {workspace}. The read-only hooks run everywhere; the others only where you switch them on.",

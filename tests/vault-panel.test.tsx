@@ -2295,7 +2295,7 @@ test('❚❚ Pause pauses a secondary through the router, which keeps it in plac
   expect(await ui.find({ type: 'Button', key: 'add-docs' })).toBeFalsy()
   // The band shows it on its line, with its ❚❚ (a press resumes it).
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await band.find({ type: 'Button', key: 'band-resume-docs' })).toMatchObject({ props: { label: 'Reprendre docs' } })
+  expect(await band.find({ type: 'Button', key: 'band-resume-docs' })).toMatchObject({ props: { label: '❚❚' } })
   expect(await band.find({ type: 'Button', key: 'band-pause-notes' })).toBeTruthy()
   await band.unmount()
   await ui.press({ key: 'resume-docs' })
@@ -2412,18 +2412,18 @@ test('a paused secondary keeps its place on the band: ▶ on green while it runs
   const prop = (key: string, name: string) => nodes.find(n => keyOf(n) === key)?.props?.[name]
   expect(at('band-state-docs')).toBeGreaterThan(-1)
   expect(at('band-state-docs')).toBeLessThan(at('band-state-notes'))
-  // One key each, its state on its ground, named for what a press does.
-  expect(prop('band-resume-docs', 'label')).toBe('Reprendre docs')
-  expect(textOf(nodes.find(n => keyOf(n) === 'band-resume-docs')!)).toBe('❚❚')
+  // One key each, its glyph on its ground: a Button's label is what the desktop draws.
+  expect(prop('band-resume-docs', 'label')).toBe('❚❚')
   expect(prop('band-state-docs', 'backgroundColor')).toBe('diffRemovedDimmed')
-  expect(prop('band-pause-notes', 'label')).toBe('Mettre notes en pause')
-  expect(textOf(nodes.find(n => keyOf(n) === 'band-pause-notes')!)).toBe('▶')
+  expect(prop('band-pause-notes', 'label')).toBe('▶')
   expect(prop('band-state-notes', 'backgroundColor')).toBe('diffAddedDimmed')
   expect(at('band-pause-docs')).toBe(-1)
   expect(at('band-resume-notes')).toBe(-1)
   // A name that opens has its mark and a button named for where; one that opens nowhere is its name alone.
   expect(nodesOf(nodes.find(n => keyOf(n) === 'band-open-extra-box') as never).some(n => n.type === 'Svg')).toBe(true)
-  expect(prop('band-open-extra', 'label')).toBe('Ouvrir extra dans le navigateur')
+  // Its name is the button's text, never a sentence: the desktop draws a label in its place.
+  expect(textOf(nodes.find(n => keyOf(n) === 'band-open-extra')!)).toBe('extra')
+  expect(['extra', undefined]).toContain(prop('band-open-extra', 'label'))
   expect(at('band-open-docs')).toBe(-1)
   await band.unmount()
 })

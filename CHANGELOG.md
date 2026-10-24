@@ -32,6 +32,18 @@ workspace at a time.
   aside so it never runs twice, and the console says so (`setup-vault.mjs --uninstall-hooks`
   removes those entries).
 
+## [0.110.2] — 2026-10-24 — the band shows names and ▶ / ❚❚, not sentences
+
+Seen on screen after v0.110.1: the band read "Ouvrir obsidian-mcp-router dans le navigateur … Mettre
+Stacks techniques en pause", and those sentences pushed "Principal :" and the last names off its
+line. The desktop draws a Button's `label` in place of its children, so the labels v0.110.1 gave
+the band's buttons for a screen reader became their text. They are gone: a name is its button's
+own text, and the pause key's label is its glyph — ▶ on green while a secondary runs, ❚❚ on red
+while paused. The pause hint says the same.
+
+- Reviewed by Codex before publishing: no P0/P1/P2; 51 of 51 buttons checked, none drawing
+  anything but what should show. Tests: `tests/vault-panel.test.tsx` 102.
+
 ## [0.110.1] — 2026-10-24 — tiles that stand out, marks that say where a vault opens
 
 Asked after v0.110.0, with the design's capture beside it:
