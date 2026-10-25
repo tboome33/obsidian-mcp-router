@@ -10,7 +10,7 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
-## [0.116.9] — 2026-10-25 — the console behind a gear at the menu's right; no tab, no footer
+## [0.116.10] — 2026-10-25 — the console behind a gear at the menu's right; no tab, no footer
 
 - **The gear**: the administration console is no tab any more. A gear (the octicon, in
   GitHub's grey) stands at the menu's right just before GitHub's mark, on the wide menu and
