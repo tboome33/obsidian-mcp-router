@@ -1469,15 +1469,21 @@ test('the band shows the primary, each secondary with its write badge, and keeps
     const texts = await bandTexts(ui)
     expect(texts).toContain('main')
     // docs is read-only, notes writes on request: one badge each, in order, on
-    // the terminal, with a "│" between the two; the desktop draws the tiers as
-    // marks (named by their alt) and a "·" between the two. No frame anywhere.
+    // the terminal, with a "│" between the two and no frame; the desktop draws
+    // the tiers as marks (named by their alt), each vault in its own thin round
+    // frame (the primary too) and nothing between two — no "·", no "│".
     expect(texts.slice(texts.indexOf('docs'), texts.indexOf('notes') + (surface === 'terminal' ? 2 : 1))).toEqual(
-      surface === 'terminal' ? ['docs', '🔒', '│', 'notes', '✋'] : ['docs', '·', 'notes'],
+      surface === 'terminal' ? ['docs', '🔒', '│', 'notes', '✋'] : ['docs', 'notes'],
     )
     const nodes = nodesOf(await ui.drawn())
     const slots = nodes.filter(n => /^band-(main-)?row/.test(keyOf(n) ?? ''))
     expect(slots.map(n => keyOf(n))).toEqual(['band-main-row', 'band-row-docs', 'band-row-notes'])
-    expect(slots.some(n => n.props?.borderStyle)).toBe(false)
+    if (surface === 'desktop') {
+      expect(slots.map(n => [n.props?.borderStyle, n.props?.borderColor])).toEqual(Array.from({ length: 3 }, () => ['round', 'inactive']))
+      expect(texts.some(t => t === '·' || t === '│')).toBe(false)
+    } else {
+      expect(slots.some(n => n.props?.borderStyle)).toBe(false)
+    }
     if (surface === 'desktop') {
       const alts = nodes.filter(n => n.type === 'Svg').map(n => n.props?.alt)
       expect(alts).toContain('Lecture seule')
@@ -1485,7 +1491,7 @@ test('the band shows the primary, each secondary with its write badge, and keeps
       // The primary after its orange dot.
       expect(nodesOf(slots[0] as never).some(n => n.type === 'Text' && textOf(n) === '●' && n.props?.color === 'claude')).toBe(true)
     }
-    expect(texts.some(t => t.startsWith('›'))).toBe(false)
+    expect(texts.some(t => /^\d+▶$/.test(t))).toBe(false)
     expect(texts).toContain('engine band')
     await ui.unmount()
   }
@@ -1511,7 +1517,7 @@ test('a band too narrow for every secondary ends with "N▶": how many it left o
   const wide = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 200 }, surface: 'desktop' })
   const all = await bandTexts(wide)
   expect(names.every(n => all.includes(n))).toBe(true)
-  expect(all.some(t => t.startsWith('›'))).toBe(false)
+  expect(all.some(t => /^\d+▶$/.test(t))).toBe(false)
   await wide.unmount()
 })
 
@@ -1640,11 +1646,12 @@ test('a band too narrow for even one secondary counts them all', async ($, on) =
   await ui.unmount()
 })
 
-// The band's line, cell by cell, for main + docs + notes: "Principal : ● main",
-// spacer, "Secondaires :" and the toggle take 61; " ▶ docs 🔒" 10 more;
-// " · ▶ notes ✋" 13. At 76, docs would fit alone but not with the "+1" arrow
-// (six cells with its gap) after it: the counter's room is kept, so nothing
-// is shown and both are counted. At 84, both fit.
+// The band's line, cell by cell, for main + docs + notes on the desktop:
+// "Principal : [● main]" (a frame, a cell each side), spacer, "Secondaires :"
+// and the toggle take 63; " [▶ docs 🔒]" 12 more; " [▶ notes ✋]" 13. At 80,
+// docs would fit alone but not with the "+1" arrow (six cells with its gap)
+// after it: the counter's room is kept, so nothing is shown and both are
+// counted. At 88, both fit.
 test('the band keeps room for "N▶" before it shows a secondary', async ($, on) => {
   wire(on, { list: LIST })
   engineBand(on)
@@ -1673,9 +1680,9 @@ test('the band keeps room for "N▶" before it shows a secondary', async ($, on)
   // notes, once it fits, takes the counter's room: no "›" any more.
   expect((await at(notesAt)).some(t => /^\d+▶$/.test(t))).toBe(false)
   // Neither opens anywhere (no folder, no web UI): no mark, no bar. notes' own width
-  // (gap, "· ", control, 5 cells, badge) less the counter it frees ("+1" in its arrow, six cells with its gap).
+  // (gap, its frame, control, 5 cells, badge) less the counter it frees ("+1" in its arrow, six cells with its gap).
   expect(notesAt - docsAt).toBe(1 + 2 + 1 + 1 + 5 + 1 + 2 - 6)
-  expect([docsAt, notesAt]).toEqual([77, 84])
+  expect([docsAt, notesAt]).toEqual([81, 88])
 })
 
 test('the band counts a name\'s mark where it is drawn: on the desktop, for a vault that opens', async ($, on) => {
@@ -1704,8 +1711,9 @@ test('the band counts a name\'s mark where it is drawn: on the desktop, for a va
   // its bar and Obsidian mark, 5 cells; extra (remote) its bar, the planet and
   // Claude's mark, 8.
   expect([await firstShowing('extra', 'terminal'), await firstShowing('notes', 'terminal')]).toEqual([83, 92])
-  // (extra's threshold also pays the "+1" arrow's cell: 83 + 2 + 1.)
-  expect([await firstShowing('extra', 'desktop'), await firstShowing('notes', 'desktop')]).toEqual([86, 98])
+  // (The desktop also frames the primary and each slot, two cells each, and
+  // extra's threshold pays the "+1" arrow's cell: 83 + 2 + 2 + 2 + 1.)
+  expect([await firstShowing('extra', 'desktop'), await firstShowing('notes', 'desktop')]).toEqual([90, 102])
 })
 
 // Two cells per CJK character: "資料庫一" is 8 cells, not 4. With main + two
@@ -2507,8 +2515,8 @@ test("a page kept from a wider band is brought back within the pages the width a
   }
   expect(await narrow.find({ key: 'band-back' })).toBeTruthy()
   await narrow.unmount()
-  // Wider, two pages (three names, then two: 61 + 17 + 18 + 19 and the "+2"
-  // arrow make 121): the last page shown is the last the width allows, and
+  // Wider, two pages (three names, then two: 63 + 19 + 18 + 19 and the "+2"
+  // arrow make 125, the frames counted): the last page shown is the last the width allows, and
   // one "‹" from it reaches the first — the turn counts from the page shown.
   const wider = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 125 }, surface: 'desktop' })
   expect(await wider.find({ key: 'band-back' })).toBeTruthy()
@@ -2528,12 +2536,12 @@ test("a page kept from a wider band is brought back within the pages the width a
 })
 
 test('a page turned to shows at least one secondary, cut if too long: "N▶" leads nowhere empty', async ($, on) => {
-  // At 77 the first page holds docs alone; the next, with "◀1" before it, has
+  // At 81 the first page holds docs alone; the next, with "◀1" before it, has
   // no room for a whole name — it shows one anyway, cut, then the last.
   wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'note', 'last'] } } })
   engineBand(on)
   await begin($)
-  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 77 }, surface: 'desktop' })
+  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 81 }, surface: 'desktop' })
   const rows = async () => nodesOf(await band.drawn()).filter(n => /^band-row-/.test(keyOf(n) ?? '')).map(n => keyOf(n))
   expect(await rows()).toEqual(['band-row-docs'])
   await band.press({ key: 'band-more' })
@@ -3811,7 +3819,8 @@ test('the band\'s page keys are black arrows with the count inside: "◀N" befor
   expect(backKey?.props?.label).toMatch(/^◀\d+$/)
   await term.unmount()
   // The terminal counts a key as its text and a gap, two cells less than the mark ("+N" in a
-  // pentagon): the first secondary shows two columns sooner there than on the desktop.
+  // pentagon), and frames nothing (the desktop's frames: two cells on the primary, two on
+  // the slot): the first secondary shows six columns sooner there than on the desktop.
   const firstAt = async (surface: 'terminal' | 'desktop') => {
     for (let columns = 40; columns < 160; columns += 1) {
       const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: columns }, surface })
@@ -3825,7 +3834,7 @@ test('the band\'s page keys are black arrows with the count inside: "◀N" befor
   }
   const [onDesktop, onTerminal] = [await firstAt('desktop'), await firstAt('terminal')]
   expect(onTerminal).toBeGreaterThan(40)
-  expect(onDesktop - onTerminal).toBe(2)
+  expect(onDesktop - onTerminal).toBe(6)
 })
 
 // The count's place in its arrow, from Roland's crops of v0.116.8: the digit
