@@ -109,7 +109,7 @@
   "legend.claude": "Remote: opens in the built-in browser",
   "error.noteLink": "No link to {note}: {error}",
   "error.noteLinkNone": "the router gave none",
-  "activity.title": "Last update",
+  "activity.title": "Last update:",
   "activity.none": "none through the router",
   "activity.recent": "Last files changed:",
   "mark.recent": "Last files",

@@ -35,6 +35,35 @@ workspace at a time.
   aside so it never runs twice, and the console says so (`setup-vault.mjs --uninstall-hooks`
   removes those entries).
 
+## [0.116.7] — 2026-10-25 — a secondary's tile after the mock-up: head, rule, three columns
+
+Drawn after Roland's mock-up of one tile ("Stacks techniques"):
+
+- **A thin frame, a head and a rule**: every tile's frame is `single`, not bold; its head
+  holds the dot, the name in bold and, at the far right, a bold ✕ (the remove key, same key
+  as before); a rule runs across the tile under the head. The primary's tile and the tiles
+  to add share the helper, so they get the frame, the head and the rule too; their marks
+  stay in the head.
+- **Three columns, two rules**: a secondary's front is three columns, each centred in its
+  room with a line of air above and below, parted by vertical rules as tall as the row —
+  stretched and clipped, so a mark's height on the desktop does not leave them short. At
+  the left, "▶ Actif" over "❚❚ Pause" (the one in force on its ground), then the vault's
+  marks one under the other (the planet, Claude's, Obsidian's); in the middle, "Droits de
+  lecture/écriture :" in bold over the three radios, left-aligned among themselves; at the
+  right, "Dernière mise à jour :" in bold over its value (the locale strings gained the
+  colon). Turned over, the last files take the rights' and the last update's room, under
+  one rule — a quarter of the tile would cut their paths — and the state stays.
+- **Widths**: the rights' column is at least as wide as their longest option, the sides a
+  quarter each and never under what they hold (the title, the date with its round key), so
+  a bound tile is 91 cells wide at the least (French): one per line up to 182 columns. In
+  a narrower pane the tile takes the pane's width and the columns stack, a rule between.
+- Adversarial review by Codex: four findings fixed — the sides' least width now follows
+  their words (the date did not fit at the old breakpoint), the turned files were confined
+  to a quarter, the rules' height counted elements rather than rows (now stretched and
+  clipped), and a test took any bold text for the name. Tests: `tests/vault-panel.test.tsx`
+  128; 23 mutations, 22 killed (the one survivor, the date's term in the sides' least width,
+  is equivalent in French, where the title is the widest).
+
 ## [0.116.6] — 2026-10-25 — tabs cut on a shelf; the band's page keys as black arrows
 
 Seen on the first screenshot of v0.116.3's tabs on the desktop: a bordered Box is drawn
@@ -68,6 +97,7 @@ seen.
   a cell under the desktop's); eight mutations seen red (the open tab cut like the others,
   its ground not opaque, the rule's corners round, a page key counted two cells, the arrows
   pointing the wrong way, a frame free to shrink, the terminal counting marks, no outline).
+
 ## [0.116.5] — 2026-10-25 — the accordion's headers: capitals, a line on each section's state
 
 Asked by Roland ("améliore le design des menus de l'accordéon"):
