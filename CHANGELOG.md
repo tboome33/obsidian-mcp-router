@@ -39,6 +39,40 @@ Drawn after Roland's mock-up of one tile ("Stacks techniques"):
   128; 23 mutations, 22 killed (the one survivor, the date's term in the sides' least width,
   is equivalent in French, where the title is the widest).
 
+## [0.116.6] — 2026-10-25 — tabs cut on a shelf; the band's page keys as black arrows
+
+Seen on the first screenshot of v0.116.3's tabs on the desktop: a bordered Box is drawn
+there as a real rounded rectangle (a 1 px line, some padding inside), and the covers laid
+absolute on the frame's bottom row landed under the frame instead, over the rule and the
+legend. And a request from a mockup of the band: its page keys, drawn dim, could hardly be
+seen.
+
+- **A tab is a round frame cut short of its bottom** by a Box that hides what overflows
+  its height: two rows for a closed tab (the frame's top and the key), three for the tab in
+  sight, which also shows a row of blanks under the key on an opaque ground, so its sides go
+  on past the rule and its ground hides the rule across its width: the tab and the page
+  below are one. The rule is a Box's top border on the third row (cut to one line, its
+  corners a cell past the pane's edges), so the desktop draws it against the closed tabs'
+  bottom, not mid-row as a glyph; the mark and the right-hand group stand two rows tall,
+  level with the closed tabs. No cover is laid anywhere any more.
+- **The band's page keys are black arrows with the count inside**: "◀N" before the page
+  (N the secondaries before it), "N▶" after it (those left out) — on the desktop a filled
+  pentagon with the count in white, a blank key as wide laid over it; the terminal draws the
+  texts, lit. The fit counts each key's room (three cells, one a digit, and a gap), so a
+  page holds what it did less a cell or two; the count with no page to turn to stays a dim
+  text.
+- Adversarial review by Codex: the cut's Box could have stretched or shrunk the frame to its
+  own height, leaving the bottom border inside the cut (the cut is a column, the frame
+  neither shrinks nor stands under five rows); the terminal counted a page key as the mark it
+  does not draw, a cell too many (it counts its text now); the pentagon has a thin light
+  outline for a dark ground. Not checkable here, said as such: how the desktop's Svg draws
+  `<text>` (looked at on screen after the release), and the rows the surfaces actually paint.
+- Tests: `tests/vault-panel.test.tsx` 126 (the shelf test rewritten for the cut frames and
+  the bordered rule; a new one for the page keys on both surfaces, the terminal's accounting
+  a cell under the desktop's); eight mutations seen red (the open tab cut like the others,
+  its ground not opaque, the rule's corners round, a page key counted two cells, the arrows
+  pointing the wrong way, a frame free to shrink, the terminal counting marks, no outline).
+
 ## [0.116.5] — 2026-10-25 — the accordion's headers: capitals, a line on each section's state
 
 Asked by Roland ("améliore le design des menus de l'accordéon"):
