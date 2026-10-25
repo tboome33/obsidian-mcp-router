@@ -10,6 +10,42 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.116.8] — 2026-10-25 — fixed columns, tiles that wrap, the files in sight; tabs with one frame colour
+
+Roland's review of v0.116.7 on screen (one tile per line, the primary's tile unlike the
+others, the open tab a black pill, the tab frames too pale):
+
+- **Three columns of fixed width**: a bound vault's tile no longer widens to the pane. Its
+  state column is two cells wider than its two keys (10, French); its rights column one
+  cell wider than its title — "Droits lecture/écriture :", shorter by a "de", body-sized,
+  at the left over the radios, title and options aligned (26); its files column the
+  widest, a cell over the rights' at least (27). The tile is 69 cells (French) whatever
+  the pane, so the pane's width alone says how many stand on a line — one in the side
+  panel, two on a full window (from 139 columns), three from 209 — and the grid wraps. Narrower
+  than one tile, the tile takes the pane and the columns stack, as before.
+- **The last files in sight**: the third column lists the vault's last files under its
+  last update, each a key that opens the note — a local vault's in Obsidian at that file,
+  a remote one's through the view agent in the **default** browser, never in Claude's own
+  browser pane, which would stand where this pane stands. Paths wider than the column are
+  cut with "…". The round key and the turn-over (the "back" that returned after eight
+  seconds, v0.116.0) are gone with their state (`flipped`) and locale strings: there is
+  nothing left to peek at.
+- **The primary's tile, the same**: its marks in the first column, its rights in the second
+  as text (◉ on "Écriture automatique", or on "Lecture seule" while the session is
+  locked — the former access line is gone), its last update and files in the third.
+- **"Écriture automatique"**: the writable tier's label loses "Lecture/" (English:
+  "Automatic write") — the one way two tiles fit a 140-column pane side by side.
+- **Tabs**: the frames of the menu's tabs and the rule under them take the tiles' frame
+  colour instead of a dim one; the open tab's key is a bold text in the text colour, two
+  blanks each side (as wide as the tab), on the page's own ground — no pill — so the tab
+  and the page below read as one, the rule hidden under it as before.
+- Adversarial review by Codex: six should-fix taken — the files column was narrower than
+  the rights' in French (now a cell wider at least, the title shortened), the stacked files
+  column overran its cell by one, a pane under 24 cells still got a 24-cell tile, paths
+  were cut between code points (now between graphemes), a tile to add handed long paths
+  whole to its keys, and the tests pinned no width relation or boundary. Tests:
+  `tests/vault-panel.test.tsx` 131 (eight rewritten, three added); 19 mutations killed.
+
 ## [0.116.7] — 2026-10-25 — a secondary's tile after the mock-up: head, rule, three columns
 
 Drawn after Roland's mock-up of one tile ("Stacks techniques"):
