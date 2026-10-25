@@ -1130,7 +1130,7 @@ test('every tier is three radio buttons under a title, the one in force marked',
   // docs is read-only (locked), notes write-on-request.
   for (const [name, mode] of [['docs', 'locked'], ['notes', 'soft']] as const) {
     const box = nodes.find(n => keyOf(n) === `mode-${name}`)
-    expect(nodesOf(box as never).some(n => n.type === 'Text' && textOf(n) === 'Droits de lecture/écriture :')).toBe(true)
+    expect(nodesOf(box as never).some(n => n.type === 'Text' && textOf(n) === 'Droits lecture/écriture :')).toBe(true)
     const radios = nodesOf(box as never).filter(n => n.type === 'Button')
     expect(radios.map(n => keyOf(n))).toEqual(['locked', 'soft', 'writable'].map(m => `tier-${m}-${name}`))
     expect(radios.filter(n => String(n.props?.label).startsWith('◉')).map(n => keyOf(n))).toEqual([`tier-${mode}-${name}`])
@@ -1342,11 +1342,11 @@ test('the primary, the secondaries and the vaults to add are the same tile, in g
       const name = keyOf(tile)!.replace(/^(primary-row|sec-|av-)/, '') || 'main'
       const nameText = nodesOf(nodes.find(n => keyOf(n) === `${keyOf(tile)}-head`) as never).find(n => n.type === 'Text' && textOf(n) === name)
       expect(nameText?.props?.weight).toBe('semibold')
-      // Its marks in its head, right of its name (a secondary's stand in its
-      // first column instead); a rule under the head; its lines (when it has
-      // any) wrap inside it.
+      // A tile to add has its marks in its head, right of its name (a bound
+      // vault's stand in its first column instead); a rule under the head; its
+      // lines (when it has any) wrap inside it.
       const head = nodes.find(n => keyOf(n) === `${keyOf(tile)}-head`)
-      expect(nodesOf(head as never).some(n => keyOf(n) === `marks-${keyOf(tile)}`)).toBe(!/^sec-/.test(keyOf(tile) ?? ''))
+      expect(nodesOf(head as never).some(n => keyOf(n) === `marks-${keyOf(tile)}`)).toBe(/^av-/.test(keyOf(tile) ?? ''))
       const headAt = nodesOf(tile as never).findIndex(n => keyOf(n) === `${keyOf(tile)}-head`)
       const ruleAt = nodesOf(tile as never).findIndex(n => keyOf(n) === `hrule-${keyOf(tile)}`)
       expect(ruleAt).toBeGreaterThan(headAt)
@@ -1359,9 +1359,9 @@ test('the primary, the secondaries and the vaults to add are the same tile, in g
     for (const key of ['sec-tiles', 'av-tiles']) {
       expect(nodes.find(n => keyOf(n) === key)?.props?.flexWrap).toBe('wrap')
     }
-    // Every surface: the tier as three radio buttons, under its title.
+    // Every surface: the tier as three radio buttons, under its title — the primary's told, the two secondaries' set.
     const modes = nodes.filter(n => /^mode-/.test(keyOf(n) ?? '') && n.type === 'Box')
-    expect(modes.length).toBe(2)
+    expect(modes.map(keyOf)).toEqual(['mode-main', 'mode-docs', 'mode-notes'])
     for (const m of modes) {
       // A column that may shrink with its tile.
       expect(m.props?.flexDirection).toBe('column')
@@ -1574,7 +1574,7 @@ test('the tier radios show each tier with the badge the band uses', async ($, on
   expect(nodesOf(box as never).filter(n => n.type === 'Button').map(n => n.props?.label)).toEqual([
     '◉ 🔒 Lecture seule',
     '○ ✋ Écriture sur accord',
-    '○ ✏️ Lecture/écriture automatique',
+    '○ ✏️ Écriture automatique',
   ])
   await ui.unmount()
 })
@@ -2662,25 +2662,28 @@ test('adding: all, local or remote ones, a search, and A → Z or Z → A regard
   await ui.unmount()
 })
 
-test('a wide pane lays the tiles in a grid: three bound ones, four to add per line', async ($, on) => {
+test('a wide pane lays the tiles in a grid: bound tiles of a fixed width, as many per line as fit, four to add per line', async ($, on) => {
   wire(on, { list: MANY })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 130 }, surface: 'desktop' })
   await ui.press({ key: 'toggle-add' })
   const nodes = nodesOf(await ui.drawn())
   const width = (key: string) => nodes.find(n => keyOf(n) === key)?.props?.width as number
-  // A bound vault's tile holds three columns (its rights, 37 cells, in the
-  // middle, a side of 22 each way), so none narrower than 91: at 130 one per
-  // line, on the whole width; the tiles to add (130 - 3) / 4, rounded down.
-  expect(width('primary-row')).toBe(130)
-  expect(width('sec-docs')).toBe(130)
+  // A bound vault's tile is its three fixed columns wide — 68 cells whatever
+  // the pane, so the pane's width alone says how many stand on a line (the
+  // grid wraps): one at 130, two from 139 (69 + 1 + 69) on, three from 209.
+  // The tiles to add: (130 - 3) / 4, rounded down.
+  expect(width('primary-row')).toBe(69)
+  expect(width('sec-docs')).toBe(69)
   expect(width('av-closed')).toBe(31)
+  expect(nodes.find(n => keyOf(n) === 'sec-tiles')?.props?.flexWrap).toBe('wrap')
   await ui.unmount()
-  // Two per line from 183 on.
-  const twoUp = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 183 }, surface: 'desktop' })
-  expect(nodesOf(await twoUp.drawn()).find(n => keyOf(n) === 'sec-docs')?.props?.width).toBe(91)
-  await twoUp.unmount()
-  // The narrow side panel: one per line.
+  for (const columns of [139, 209]) {
+    const wider = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: columns }, surface: 'desktop' })
+    expect(nodesOf(await wider.drawn()).find(n => keyOf(n) === 'sec-docs')?.props?.width).toBe(69)
+    await wider.unmount()
+  }
+  // The narrow side panel, narrower than one tile: the tile takes the pane, one per line.
   const narrow = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(nodesOf(await narrow.drawn()).find(n => keyOf(n) === 'sec-docs')?.props?.width).toBe(50)
   await narrow.unmount()
@@ -2929,9 +2932,14 @@ test('the menu stays at the top while the pane scrolls: a copy, no frame, over t
     const top = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface })
     const items = ['nav-vaults', 'nav-add', 'nav-admin']
     const at = nodesOf(await top.drawn())
-    expect(items.map(key => at.find(n => keyOf(n) === key)?.props?.label)).toEqual(['Vaults', '+ Ajouter un vault', '⚙ Administration'])
-    expect(at.find(n => keyOf(n) === 'nav-vaults')?.props?.variant).toBe('primary')
-    expect(at.find(n => keyOf(n) === 'nav-add')?.props?.plain).toBe(true)
+    // The key in view is a bold text in the text's colour, two blanks each side (no pill); the others plain labels, dim.
+    expect(items.map(key => at.find(n => keyOf(n) === key)?.props?.label)).toEqual(['  Vaults  ', '+ Ajouter un vault', '⚙ Administration'])
+    const inView = at.find(n => keyOf(n) === 'nav-vaults')
+    expect(inView?.props?.plain).toBe(true)
+    expect(inView?.props?.variant).toBeUndefined()
+    expect(nodesOf(inView as never).find(n => n.type === 'Text')?.props).toMatchObject({ weight: 'bold', color: 'text' })
+    expect(textOf(nodesOf(inView as never).find(n => n.type === 'Text')!)).toBe('  Vaults  ')
+    expect(at.find(n => keyOf(n) === 'nav-add')?.props).toMatchObject({ plain: true, dimColor: true })
     expect(await top.find({ key: 'sticky-bar' })).toBeFalsy()
     await top.unmount()
 
@@ -2954,19 +2962,25 @@ test('the menu switches the view: + Ajouter un vault opens the list, ⚙ Adminis
   wire(on, { list: LIST })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface: 'desktop' })
-  const variant = async (key: string) => nodesOf(await ui.drawn()).find(n => keyOf(n) === key)?.props?.variant
+  // The key in view: a bold text child, two blanks each side, no pill.
+  const inView = async (key: string) => {
+    const button = nodesOf(await ui.drawn()).find(n => keyOf(n) === key)
+
+    return button?.props?.variant === undefined && /^ {2}.* {2}$/.test(String(button?.props?.label)) && nodesOf(button as never).some(n => n.type === 'Text' && n.props?.weight === 'bold')
+  }
   await ui.press({ key: 'nav-add' })
   expect(await ui.find({ type: 'Button', key: 'tab-tous' })).toBeTruthy()
-  expect(await variant('nav-add')).toBe('primary')
+  expect(await inView('nav-add')).toBe(true)
+  expect(await inView('nav-vaults')).toBe(false)
   await ui.press({ key: 'nav-admin' })
   expect(await ui.find({ key: 'admin-general' })).toBeTruthy()
-  expect(await variant('nav-admin')).toBe('primary')
+  expect(await inView('nav-admin')).toBe(true)
   // The console holds the pane, the menu still on top of it.
   expect(await ui.find({ type: 'Button', key: 'nav-vaults' })).toBeTruthy()
   await ui.press({ key: 'nav-vaults' })
   expect(await ui.find({ key: 'admin-general' })).toBeFalsy()
   expect(await ui.find({ type: 'Button', key: 'tab-tous' })).toBeFalsy()
-  expect(await variant('nav-vaults')).toBe('primary')
+  expect(await inView('nav-vaults')).toBe(true)
   await ui.unmount()
 })
 
@@ -3146,14 +3160,14 @@ test("a tile to add keeps its marks in its head, right of its name; a secondary'
     expect(right?.type).toBe('Button')
     expect(nodesOf(right as never).some(n => n.type === 'Text' && textOf(n) === '✕' && n.props?.weight === 'bold')).toBe(true)
     // A rule across the tile under its head: one line high, what overflows clipped (never truncated into '…').
-    expect(textOf(parts[1]!)).toBe('─'.repeat(136))
+    expect(textOf(parts[1]!)).toBe('─'.repeat(65))
     expect(parts[1]?.props?.height).toBe(1)
     expect(parts[1]?.props?.overflow).toBe('hidden')
     await ui.unmount()
   }
 })
 
-test("a secondary's front: three columns parted by rules, its state over its marks, its rights under their title, its last update; both surfaces", async ($, on) => {
+test("a secondary's front: three fixed columns parted by rules — its state over its marks, its rights under their title at the left, its last update and files at the left; both surfaces", async ($, on) => {
   const list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'extra'] } }
   wire(on, { list })
   await begin($)
@@ -3164,19 +3178,27 @@ test("a secondary's front: three columns parted by rules, its state over its mar
     // Side by side, each column as tall as the row, its content at mid-height with a line of air at each end.
     expect(front?.props?.flexDirection).toBe('row')
     expect(front?.props?.alignItems).toBe('stretch')
+    expect(front?.props?.gap).toBeUndefined()
     const parts = childrenOf(front)
-    expect(parts.map(keyOf)).toEqual(['cell-state-extra', 'rule-1-extra', 'cell-rights-extra', 'rule-2-extra', 'cell-stamp-extra'])
-    const [state, rule1, rights, rule2, stamp] = parts
-    // Each column centred in its room: the sides a quarter, the rights the half, of 140 - 10.
-    for (const cell of [state, rights, stamp]) {
-      expect(cell?.props?.alignItems).toBe('center')
+    expect(parts.map(keyOf)).toEqual(['cell-state-extra', 'rule-1-extra', 'cell-rights-extra', 'rule-2-extra', 'cell-files-extra'])
+    const [state, rule1, rights, rule2, files] = parts
+    // Fixed widths, whatever the pane's: the state's two keys + 2 (10), the rights' title (25) + 1,
+    // the files' a cell over the rights' (27, the widest) — none shrinks, each clips what runs over.
+    for (const cell of [state, rights, files]) {
       expect(cell?.props?.justifyContent).toBe('center')
       expect(cell?.props?.paddingY).toBe(1)
       expect(cell?.props?.flexDirection).toBe('column')
+      expect(cell?.props?.flexShrink).toBe(0)
+      expect(cell?.props?.overflow).toBe('hidden')
     }
-    expect(state?.props?.width).toBe(32)
-    expect(rights?.props?.width).toBe(65)
-    expect(stamp?.props?.width).toBe(32)
+    expect(state?.props).toMatchObject({ width: 10, alignItems: 'center', paddingLeft: 0 })
+    expect(rights?.props).toMatchObject({ width: 26, alignItems: 'flex-start', paddingLeft: 1 })
+    expect(files?.props).toMatchObject({ width: 27, alignItems: 'flex-start', paddingLeft: 1 })
+    expect(files?.props?.width).toBeGreaterThan(rights?.props?.width as number)
+    expect(rights?.props?.width).toBeGreaterThan(state?.props?.width as number)
+    // The tile: its frame and padding (4), the two rules, the three columns — 69 cells; the grid a cell between two.
+    expect(nodes.find(n => keyOf(n) === 'sec-extra')?.props?.width).toBe(69)
+    expect(nodes.find(n => keyOf(n) === 'sec-tiles')?.props?.gap).toBe(1)
     // The rules: two cells taller than the tallest column (the state's: 2 + 1 + 2 marks), stretched to the row and clipped to it.
     for (const rule of [rule1, rule2]) {
       expect(nodesOf(rule as never).filter(n => n.type === 'Text' && textOf(n) === '│')).toHaveLength(7)
@@ -3191,21 +3213,27 @@ test("a secondary's front: three columns parted by rules, its state over its mar
     expect(stateParts[1]?.props?.flexDirection).toBe('column')
     const marks = nodesOf(stateParts[1] as never).filter(n => n.type === 'Button').map(keyOf)
     expect(marks).toEqual(['web-extra', 'ui-extra'])
-    // Second column: the bold title, then the three options, ◉ on the one in force, left-aligned among themselves.
+    // Second column: the title, body-sized and bold, then the three options, ◉ on the one in force, all at the left.
     const menu = childrenOf(rights)[0]
     expect(keyOf(menu!)).toBe('mode-extra')
+    expect(menu?.props?.alignItems).toBe('flex-start')
     const [title, tiers] = childrenOf(menu)
-    expect(textOf(title!)).toBe('Droits de lecture/écriture :')
-    expect(title?.props?.weight).toBe('semibold')
+    expect(textOf(title!)).toBe('Droits lecture/écriture :')
+    expect(title?.props).toMatchObject({ weight: 'semibold', size: 'body' })
     expect(tiers?.props?.alignItems).toBe('flex-start')
-    expect(childrenOf(tiers).map(n => n.props?.label)).toEqual(['○ 🔒 Lecture seule', '◉ ✋ Écriture sur accord', '○ ✏️ Lecture/écriture automatique'])
+    expect(childrenOf(tiers).map(n => n.type)).toEqual(['Button', 'Button', 'Button'])
+    expect(childrenOf(tiers).map(n => n.props?.label)).toEqual(['○ 🔒 Lecture seule', '◉ ✋ Écriture sur accord', '○ ✏️ Écriture automatique'])
     expect(childrenOf(tiers).map(n => n.props?.dimColor)).toEqual([true, false, true])
-    // Third column: the bold title over the value.
-    const stampNodes = nodesOf(stamp as never)
-    expect(stampNodes.some(n => keyOf(n) === 'stamp-extra')).toBe(true)
-    const titleAt = stampNodes.findIndex(n => n.type === 'Text' && textOf(n) === 'Dernière mise à jour :')
-    expect(stampNodes[titleAt]?.props?.weight).toBe('semibold')
-    expect(stampNodes.findIndex(n => n.type === 'Text' && textOf(n) === 'aucune via le router')).toBeGreaterThan(titleAt)
+    // Third column: the title, body-sized and bold, over the value; no file before the first write.
+    const filesNodes = nodesOf(files as never)
+    const column = filesNodes.find(n => keyOf(n) === 'stamp-extra')
+    expect(column?.props).toMatchObject({ alignItems: 'flex-start', width: 26, overflow: 'hidden' })
+    const titleAt = filesNodes.findIndex(n => n.type === 'Text' && textOf(n) === 'Dernière mise à jour :')
+    expect(filesNodes[titleAt]?.props).toMatchObject({ weight: 'semibold', size: 'body' })
+    expect(filesNodes.findIndex(n => n.type === 'Text' && textOf(n) === 'aucune via le router')).toBeGreaterThan(titleAt)
+    expect(filesNodes.some(n => /^note-/.test(keyOf(n) ?? ''))).toBe(false)
+    // No round key, no back: the files are in sight.
+    expect(nodes.some(n => /^(icon-)?flip-/.test(keyOf(n) ?? ''))).toBe(false)
     // docs, a remote one with no web UI: no marks, the rules as tall as the rights (1 + 3) + 2.
     const docs = childrenOf(nodes.find(n => keyOf(n) === 'front-docs'))
     expect(childrenOf(docs[0]).map(keyOf)).toEqual(['state-docs'])
@@ -3214,18 +3242,80 @@ test("a secondary's front: three columns parted by rules, its state over its mar
   }
 })
 
-test("a tile too narrow for three columns stacks them: state and marks, rights, last update, a rule between two", async ($, on) => {
+test("the primary's tile has the same front: its marks alone in the first column, its rights told (not set) in the second, its last update and files in the third", async ($, on) => {
+  // The primary with a web UI, so that it has marks to show.
+  const list = {
+    ...LIST,
+    vaults: LIST.vaults.map(v => (v.name === 'main' ? { ...v, baseUrl: 'http://10.8.0.1:27180', description: 'Conteneur (UI :3001), fichiers : y' } : v)),
+    vaultActivity: {
+      main: {
+        lastWriteAt: '2026-10-24T20:21:00.000Z',
+        recent: ['wiki/a.md', 'b.md', 'c.md', 'd.md'].map((path, i) => ({ path, at: `2026-10-24T${20 - i}:21:00.000Z` })),
+      },
+    },
+  }
+  wire(on, { list })
+  await begin($)
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  const nodes = nodesOf(await ui.drawn())
+  const tile = nodes.find(n => keyOf(n) === 'primary-row')
+  expect(tile?.props?.width).toBe(69)
+  // Its head: the dot, the name, "● Par défaut" — no mark there.
+  const head = nodes.find(n => keyOf(n) === 'primary-row-head')
+  expect(nodesOf(head as never).some(n => keyOf(n) === 'marks-primary-row')).toBe(false)
+  expect(nodesOf(head as never).some(n => n.type === 'Text' && textOf(n) === 'Par défaut')).toBe(true)
+  // No access line of its own any more: its rights are the second column's.
+  expect(nodes.some(n => keyOf(n) === 'primary-access')).toBe(false)
+  const parts = childrenOf(nodes.find(n => keyOf(n) === 'front-main'))
+  expect(parts.map(keyOf)).toEqual(['cell-state-main', 'rule-1-main', 'cell-rights-main', 'rule-2-main', 'cell-files-main'])
+  expect(parts[0]?.props?.width).toBe(10)
+  expect(parts[2]?.props?.width).toBe(26)
+  expect(parts[4]?.props?.width).toBe(27)
+  // First column: no state switch (a primary is never paused), its marks stacked.
+  expect(childrenOf(parts[0]).map(keyOf)).toEqual(['stack-main'])
+  expect(nodesOf(parts[0] as never).some(n => /^(resume|pause)-/.test(keyOf(n) ?? ''))).toBe(false)
+  expect(nodesOf(parts[0] as never).filter(n => n.type === 'Button').map(keyOf)).toEqual(['web-main', 'ui-main'])
+  // Second column: the same title and three tiers as text, ◉ on "Écriture automatique", none a key.
+  const menu = nodesOf(parts[2] as never).find(n => keyOf(n) === 'mode-main')
+  const [title, tiers] = childrenOf(menu)
+  expect(textOf(title!)).toBe('Droits lecture/écriture :')
+  expect(childrenOf(tiers).map(n => n.type)).toEqual(['Text', 'Text', 'Text'])
+  expect(childrenOf(tiers).map(textOf)).toEqual(['○ 🔒 Lecture seule', '○ ✋ Écriture sur accord', '◉ ✏️ Écriture automatique'])
+  expect(childrenOf(tiers).map(n => n.props?.dimColor)).toEqual([true, true, false])
+  // Third column: its last update and its one file, a key.
+  const files = nodesOf(parts[4] as never)
+  expect(files.some(n => n.type === 'Text' && textOf(n) === '24/10/2026  22:21' || /^\d{2}\/\d{2}\/2026 {2}\d{2}:\d{2}$/.test(textOf(n)))).toBe(true)
+  expect(files.find(n => keyOf(n) === 'note-0-main')?.props?.label).toBe('wiki/a.md')
+  // Its four files, keys in order; the rules follow the tallest column, the files' (2 + 4), + 2.
+  expect(files.filter(n => n.type === 'Button' && /^note-/.test(keyOf(n) ?? '')).map(n => n.props?.label)).toEqual(['wiki/a.md', 'b.md', 'c.md', 'd.md'])
+  expect(nodesOf(parts[1] as never).filter(n => n.type === 'Text' && textOf(n) === '│')).toHaveLength(8)
+  await ui.unmount()
+})
+
+test('a locked session marks the primary read-only in its rights', async ($, on) => {
+  wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, locked: true } } })
+  await begin($)
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  const menu = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'mode-main')
+  const tiers = childrenOf(menu)[1]
+  expect(childrenOf(tiers).map(textOf)).toEqual(['◉ 🔒 Lecture seule', '○ ✋ Écriture sur accord', '○ ✏️ Écriture automatique'])
+  await ui.unmount()
+})
+
+test('a pane too narrow for the three columns stacks them: state and marks, rights, last update and files, a rule between two', async ($, on) => {
   const list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'extra'] } }
   wire(on, { list })
   await begin($)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
     const nodes = nodesOf(await ui.drawn())
+    // The tile takes the pane: 50 < 69.
     expect(nodes.find(n => keyOf(n) === 'sec-extra')?.props?.width).toBe(50)
+    expect(nodes.find(n => keyOf(n) === 'primary-row')?.props?.width).toBe(50)
     const front = nodes.find(n => keyOf(n) === 'front-extra')
     expect(front?.props?.flexDirection).toBe('column')
     const parts = childrenOf(front)
-    expect(parts.map(keyOf)).toEqual(['cell-state-extra', 'rule-1-extra', 'cell-rights-extra', 'rule-2-extra', 'cell-stamp-extra'])
+    expect(parts.map(keyOf)).toEqual(['cell-state-extra', 'rule-1-extra', 'cell-rights-extra', 'rule-2-extra', 'cell-files-extra'])
     // The rules now run across: one line of ─ over the tile's inside, 50 - 4.
     for (const rule of [parts[1], parts[3]]) {
       expect(rule?.type).toBe('Box')
@@ -3233,53 +3323,33 @@ test("a tile too narrow for three columns stacks them: state and marks, rights, 
       expect(rule?.props?.overflow).toBe('hidden')
       expect(textOf(rule!)).toBe('─'.repeat(46))
     }
-    // Each stacked column keeps its air and its centre, and no fixed width.
+    // Each stacked column keeps its air and its alignment, and no fixed width.
     for (const cell of [parts[0], parts[2], parts[4]]) {
       expect(cell?.props?.paddingY).toBe(1)
-      expect(cell?.props?.alignItems).toBe('center')
       expect(cell?.props?.width).toBeUndefined()
     }
+    expect(parts[0]?.props?.alignItems).toBe('center')
+    expect(parts[2]?.props?.alignItems).toBe('flex-start')
+    expect(parts[4]?.props?.alignItems).toBe('flex-start')
     expect(childrenOf(parts[0]).map(keyOf)).toEqual(['state-extra', 'stack-extra'])
     expect(nodesOf(parts[2] as never).some(n => keyOf(n) === 'mode-extra')).toBe(true)
-    expect(nodesOf(parts[4] as never).some(n => keyOf(n) === 'stamp-extra')).toBe(true)
+    // The files' column as wide as the tile's inside less its own padding, its paths cut to it.
+    expect(nodesOf(parts[4] as never).find(n => keyOf(n) === 'stamp-extra')?.props?.width).toBe(45)
     await ui.unmount()
   }
 })
 
-test("turned over, a tile keeps its state; its last files take the rights' and the last update's room, under one rule", async ($, on) => {
-  const list = {
-    ...LIST,
-    vaultActivity: { docs: { lastWriteAt: '2026-10-24T20:21:00.000Z', recent: [{ path: 'a.md', at: '2026-10-24T20:21:00.000Z' }, { path: 'b.md', at: '2026-10-24T19:00:00.000Z' }, { path: 'c.md', at: '2026-10-24T18:00:00.000Z' }, { path: 'd.md', at: '2026-10-24T17:00:00.000Z' }] } },
-  }
-  wire(on, { list })
-  await begin($)
-  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
-  await ui.press({ key: 'flip-docs' })
-  const parts = childrenOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'front-docs'))
-  expect(parts.map(keyOf)).toEqual(['cell-state-docs', 'rule-1-docs', 'cell-recent-docs'])
-  expect(nodesOf(parts[2] as never).some(n => keyOf(n) === 'recent-docs')).toBe(true)
-  expect(nodesOf(parts[2] as never).some(n => keyOf(n) === 'stamp-docs')).toBe(false)
-  expect(await ui.find({ key: 'mode-docs' })).toBeFalsy()
-  // Its room: the rights' 65, their rule and gap, the last update's 32; the paths clipped inside it.
-  expect(parts[2]?.props?.width).toBe(99)
-  expect(parts[2]?.props?.overflow).toBe('hidden')
-  // The rules grow with the list: 1 + 4 files, + 2.
-  expect(nodesOf(parts[1] as never).filter(n => n.type === 'Text' && textOf(n) === '│')).toHaveLength(7)
-  await ui.unmount()
-})
-
-
-test('a tile says when its vault was last written through the router; its round key turns it over to its last files, each opening that note', async ($, on) => {
+test('a tile says when its vault was last written through the router and lists its last files, each opening that note: a remote one in the default browser (never in Claude\'s pane), a local one in Obsidian', async ($, on) => {
   const launched: (readonly string[])[] = []
   const list = {
     ...LIST,
-    vaults: [...LIST.vaults.filter(v => v.name !== 'notes'), { name: 'notes', type: 'local', online: true, path: 'C:\VAULTS\Notes' }],
+    vaults: [...LIST.vaults.filter(v => v.name !== 'notes'), { name: 'notes', type: 'local', online: true, path: 'C:\\VAULTS\\Notes' }],
     vaultActivity: {
       docs: { lastWriteAt: '2026-10-24T20:21:00.000Z', recent: [{ path: 'wiki/a.md', at: '2026-10-24T20:21:00.000Z' }, { path: 'b.md', at: '2026-10-24T19:00:00.000Z' }] },
       notes: { lastWriteAt: '2026-10-24T18:00:00.000Z', recent: [{ path: 'x y.md', at: '2026-10-24T18:00:00.000Z' }] },
     },
   }
-  const wired = { list, answers: { get_view_link: { url: 'http://10.8.0.1:27200/go?v=docs&n=wiki%2Fa.md&s=sig' } }, env: { APPDATA: 'C:\Users\me\AppData\Roaming' } } as Parameters<typeof wire>[1]
+  const wired = { list, answers: { get_view_link: { url: 'http://10.8.0.1:27200/go?v=docs&n=wiki%2Fa.md&s=sig' } }, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } } as Parameters<typeof wire>[1]
   const calls = wire(on, wired)
   on('process.run', (_, e) => {
     if (e.argv[0] !== 'powershell') {
@@ -3291,94 +3361,114 @@ test('a tile says when its vault was last written through the router; its round 
   await begin($)
   const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   await openClosed(ui)
-  const stamp = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'stamp-docs') as never)
-  expect(stamp.some(n => n.type === 'Text' && textOf(n) === 'Dernière mise à jour :')).toBe(true)
-  expect(stamp.some(n => n.type === 'Text' && /^\d{2}\/\d{2}\/2026 {2}\d{2}:\d{2}$/.test(textOf(n)))).toBe(true)
-  // Turned over: the last files, newest first; a remote one's note through the view agent, in Claude's browser.
-  await ui.press({ key: 'flip-docs' })
-  const back = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'recent-docs') as never)
-  expect(back.filter(n => n.type === 'Button' && /^note-/.test(keyOf(n) ?? '')).map(n => n.props?.label)).toEqual(['wiki/a.md', 'b.md'])
-  expect(await ui.find({ key: 'stamp-docs' })).toBeFalsy()
-  // At the back: the frame in another colour, the round key held down.
-  const turnedTile = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'sec-docs')
-  expect(turnedTile?.props?.borderColor).toBe('permission')
-  expect(back.find(n => keyOf(n) === 'icon-flip-docs')?.props?.backgroundColor).toBe('inactive')
+  const column = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'stamp-docs') as never)
+  expect(column.some(n => n.type === 'Text' && textOf(n) === 'Dernière mise à jour :')).toBe(true)
+  expect(column.some(n => n.type === 'Text' && /^\d{2}\/\d{2}\/2026 {2}\d{2}:\d{2}$/.test(textOf(n)))).toBe(true)
+  // The last files, newest first, under the date: keys, dim.
+  const notes = column.filter(n => n.type === 'Button' && /^note-/.test(keyOf(n) ?? ''))
+  expect(notes.map(n => n.props?.label)).toEqual(['wiki/a.md', 'b.md'])
+  expect(notes.every(n => n.props?.plain === true && n.props?.dimColor === true)).toBe(true)
+  // A remote one's note: through the view agent's link, handed to the default browser — not Claude's pane.
   await ui.press({ key: 'note-0-docs' })
   expect(calls.find(c => c.tool === 'get_view_link')?.args).toEqual({ vault: 'docs', note: 'wiki/a.md' })
-  expect(calls.find(c => c.tool === 'preview_start')?.args).toEqual({ url: 'http://10.8.0.1:27200/go?v=docs&n=wiki%2Fa.md&s=sig' })
-  // The same key turns it back; the frame and the key as before.
-  await ui.press({ key: 'flip-docs' })
-  expect(await ui.find({ key: 'stamp-docs' })).toBeTruthy()
-  const frontTile = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'sec-docs')
-  expect(frontTile?.props?.borderColor).toBe('inactive')
-  expect(nodesOf(frontTile as never).find(n => keyOf(n) === 'icon-flip-docs')?.props?.backgroundColor).toBeUndefined()
-  // Left turned and untouched, a tile comes back on its own after eight seconds.
-  await ui.press({ key: 'flip-docs' })
-  await wired.clock!.advance(7_900)
-  expect(await ui.find({ key: 'stamp-docs' })).toBeFalsy()
-  await wired.clock!.advance(100)
-  await eventually(async () => !!(await ui.find({ key: 'stamp-docs' })))
-  expect(await ui.find({ key: 'stamp-docs' })).toBeTruthy()
-  // A note opened meanwhile restarts the wait.
-  await ui.press({ key: 'flip-docs' })
-  await wired.clock!.advance(6_000)
-  await ui.press({ key: 'note-1-docs' })
-  await wired.clock!.advance(6_000)
-  expect(await ui.find({ key: 'stamp-docs' })).toBeFalsy()
-  await wired.clock!.advance(2_000)
-  await eventually(async () => !!(await ui.find({ key: 'stamp-docs' })))
-  expect(await ui.find({ key: 'stamp-docs' })).toBeTruthy()
-  // Turned back by hand, then over again: the first return, cancelled, does
-  // not fire at its deadline; the second runs its own eight seconds.
-  await ui.press({ key: 'flip-docs' })
-  await wired.clock!.advance(5_000)
-  await ui.press({ key: 'flip-docs' })
-  expect(await ui.find({ key: 'stamp-docs' })).toBeTruthy()
-  await ui.press({ key: 'flip-docs' })
-  await wired.clock!.advance(4_000)
-  expect(await ui.find({ key: 'stamp-docs' })).toBeFalsy()
-  await wired.clock!.advance(4_000)
-  await eventually(async () => !!(await ui.find({ key: 'stamp-docs' })))
-  expect(await ui.find({ key: 'stamp-docs' })).toBeTruthy()
+  expect(calls.some(c => c.tool === 'preview_start')).toBe(false)
+  expect(launched.at(-1)?.[0]).toBe('rundll32')
+  expect(launched.at(-1)?.[2]).toBe('http://10.8.0.1:27200/go?v=docs&n=wiki%2Fa.md&s=sig')
+  // The frame stays as it is: nothing turns over.
+  expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'sec-docs')?.props?.borderColor).toBe('inactive')
   // A local one's note: Obsidian at that file, the address handed over whole.
-  await ui.press({ key: 'flip-notes' })
   await ui.press({ key: 'note-0-notes' })
   expect(launched.at(-1)?.[0]).toBe('rundll32')
   expect(launched.at(-1)?.[2]).toMatch(/^obsidian:\/\/open\?vault=.+&file=x%20y\.md$/)
   await ui.unmount()
 })
 
-test('a tile left turned when a session ended is drawn on its front at the next', async ($, on) => {
-  wire(on, { list: { ...LIST, vaultActivity: { docs: { lastWriteAt: '2026-10-24T10:00:00.000Z', recent: [{ path: 'a.md', at: '2026-10-24T10:00:00.000Z' }] } } } })
-  // What the last session left: 'docs' turned, read once, then the host's own.
-  let left = true
-  on('state.get', { plugin: 'obsidian-router', key: 'flipped' } as never, (_, e, next) => {
-    if (left) {
-      left = false
-
-      return { value: { value: ['docs'], version: 1 } } as never
-    }
-
-    return next(e)
-  })
+test('a path wider than the files column is cut to it between graphemes, "…" closing it; one that just fits is whole; a tile to add cuts to its own inside and opens the whole path', async ($, on) => {
+  const long = 'wiki/un-dossier/une-note-au-titre-vraiment-long.md'
+  const exact = `${'a'.repeat(23)}.md`
+  const astral = `${'𝒜'.repeat(30)}.md`
+  // 23 cells, then a woman astronaut (two emoji joined by a ZWJ, four cells): the cut falls inside her.
+  const joined = `${'a'.repeat(23)}👩‍🚀.md`
+  const list = {
+    ...LIST,
+    vaultActivity: {
+      docs: {
+        lastWriteAt: '2026-10-24T20:21:00.000Z',
+        recent: [
+          { path: long, at: '2026-10-24T20:21:00.000Z' },
+          { path: exact, at: '2026-10-24T19:21:00.000Z' },
+          { path: astral, at: '2026-10-24T18:21:00.000Z' },
+          { path: joined, at: '2026-10-24T17:21:00.000Z' },
+        ],
+      },
+      extra: { lastWriteAt: '2026-10-24T20:21:00.000Z', recent: [{ path: long, at: '2026-10-24T20:21:00.000Z' }] },
+    },
+  }
+  const calls = wire(on, { list })
   await begin($)
   const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
-  expect(await ui.find({ key: 'stamp-docs' })).toBeTruthy()
-  expect(await ui.find({ key: 'recent-docs' })).toBeFalsy()
+  await openAdd(ui)
+  const nodes = nodesOf(await ui.drawn())
+  const label = (key: string) => nodes.find(n => keyOf(n) === key)?.props?.label as string
+  // The files column is 26 wide inside: a 50-cell path becomes 25 graphemes and "…".
+  const cut = label('note-0-docs')
+  expect(cut.endsWith('…')).toBe(true)
+  expect([...cut].length).toBe(26)
+  expect(long.startsWith(cut.slice(0, -1))).toBe(true)
+  // A path of exactly 26 cells is given whole.
+  expect(label('note-1-docs')).toBe(exact)
+  // Cut between graphemes: no half of a surrogate pair is left at the cut.
+  const cutAstral = label('note-2-docs')
+  expect(cutAstral.endsWith('…')).toBe(true)
+  expect(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(cutAstral)).toBe(false)
+  expect(astral.startsWith(cutAstral.slice(0, -1))).toBe(true)
+  // 25 whole 𝒜 (one cell each) and the "…": nothing else between.
+  expect(/^𝒜{25}…$/u.test(cutAstral)).toBe(true)
+  // A joined emoji is dropped whole, never cut to its first half and a dangling joiner.
+  expect(label('note-3-docs')).toBe(`${'a'.repeat(23)}…`)
+  // A tile to add: its column takes the tile's inside (34 - 6 = 28), the path is cut to it, and
+  // its key opens the WHOLE path, not the cut one.
+  const added = nodes.find(n => keyOf(n) === 'stamp-extra')
+  expect(added?.props?.width).toBe(28)
+  const addedCut = label('note-0-extra')
+  expect(addedCut.endsWith('…')).toBe(true)
+  expect([...addedCut].length).toBe(28)
+  await ui.press({ key: 'note-0-extra' })
+  expect(calls.find(c => c.tool === 'get_view_link')?.args).toEqual({ vault: 'extra', note: long })
   await ui.unmount()
 })
 
-test('before its first write through the router, a tile says so and has no round key', async ($, on) => {
+test('a pane narrower than the least tile width still gets a tile as wide as the pane, its files column inside it', async ($, on) => {
+  const list = {
+    ...LIST,
+    workspaceBinding: { ...LIST.workspaceBinding, also: ['docs'] },
+    vaultActivity: { docs: { lastWriteAt: '2026-10-24T20:21:00.000Z', recent: [{ path: 'wiki/un-dossier/une-note.md', at: '2026-10-24T20:21:00.000Z' }] } },
+  }
+  wire(on, { list })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 20 }, surface: 'desktop' })
+  const nodes = nodesOf(await ui.drawn())
+  expect(nodes.find(n => keyOf(n) === 'sec-docs')?.props?.width).toBe(20)
+  expect(nodes.find(n => keyOf(n) === 'front-docs')?.props?.flexDirection).toBe('column')
+  // The files column: 20 less the frame and padding (4) and its own padding (1); the path cut to 15.
+  expect(nodes.find(n => keyOf(n) === 'stamp-docs')?.props?.width).toBe(15)
+  const cut = nodes.find(n => keyOf(n) === 'note-0-docs')?.props?.label as string
+  expect([...cut].length).toBe(15)
+  expect(cut.endsWith('…')).toBe(true)
+  await ui.unmount()
+})
+
+test('before its first write through the router, a tile says so and lists no file', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
   const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
-  const stamp = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'stamp-docs') as never)
-  expect(stamp.some(n => n.type === 'Text' && textOf(n) === 'aucune via le router')).toBe(true)
-  expect(await ui.find({ type: 'Button', key: 'flip-docs' })).toBeFalsy()
+  const column = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'stamp-docs') as never)
+  expect(column.some(n => n.type === 'Text' && textOf(n) === 'aucune via le router')).toBe(true)
+  expect(column.some(n => /^note-/.test(keyOf(n) ?? ''))).toBe(false)
   await ui.unmount()
 })
 
-test("a recent file the router gives no link to says so, opens nothing; with no way allowed, it is named, not linked", async ($, on) => {
+test("a recent file the router gives no link to says so, opens nothing; with the browser off, it is named, not linked — Claude's pane alone opens no note", async ($, on) => {
   const list = {
     ...LIST,
     vaultActivity: { docs: { lastWriteAt: '2026-10-24T20:21:00.000Z', recent: [{ path: 'a.md', at: '2026-10-24T20:21:00.000Z' }] } },
@@ -3386,19 +3476,17 @@ test("a recent file the router gives no link to says so, opens nothing; with no 
   const calls = wire(on, { list, refuse: 'get_view_link', refuseText: 'no view agent' })
   await begin($)
   const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
-  await ui.press({ key: 'flip-docs' })
   await ui.press({ key: 'note-0-docs' })
   expect(calls.some(c => c.tool === 'preview_start')).toBe(false)
   expect(await ui.find({ type: 'Text', text: /^Pas de lien vers a\.md : no view agent$/ })).toBeTruthy()
-  // Both remote ways off: the file is named, with no key.
+  // The default browser off (Claude's pane still on): the file is named, with no key.
   await ui.press({ key: 'nav-admin' })
   await ui.press({ key: 'admin-sec-open' })
   await ui.press({ key: 'open-browser-off' })
-  await ui.press({ key: 'open-claude-off' })
   await ui.press({ key: 'nav-vaults' })
   expect(await ui.find({ type: 'Button', key: 'note-0-docs' })).toBeFalsy()
-  const back = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'recent-docs') as never)
-  expect(back.some(n => n.type === 'Text' && textOf(n) === 'a.md')).toBe(true)
+  const column = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'stamp-docs') as never)
+  expect(column.some(n => n.type === 'Text' && textOf(n) === 'a.md')).toBe(true)
   await ui.unmount()
 })
 
@@ -3415,15 +3503,27 @@ test('the wide menu draws its keys as tabs on a shelf: round frames cut short of
       const isOpen = id === inSight
       // A cut: two rows of the frame for a closed tab, three for the open one.
       expect(tab?.props).toMatchObject({ height: isOpen ? 3 : 2, overflow: 'hidden', flexShrink: 0, flexDirection: 'column' })
-      // A round frame, dim unless in sight, opaque when in sight, the key then a row of blanks
-      // as wide as the terminal draws the key, a padding row under them: its bottom edge well
-      // past the cut on every surface.
+      // A round frame in the tiles' colour (as plain to see as theirs, never dim), opaque on the
+      // page's ground when in sight, the key then a row of blanks as wide as the terminal draws
+      // the key, a padding row under them: its bottom edge well past the cut on every surface.
       const frame = (tab.children ?? [])[0] as Drawn & { children?: Drawn[] }
-      expect(frame?.props).toMatchObject({ borderStyle: 'round', borderDimColor: !isOpen, flexDirection: 'column', paddingBottom: 1, flexShrink: 0, minHeight: 5 })
+      expect(frame?.props).toMatchObject({ borderStyle: 'round', borderColor: 'inactive', flexDirection: 'column', paddingBottom: 1, flexShrink: 0, minHeight: 5 })
+      expect(frame?.props?.borderDimColor).toBeUndefined()
       expect(frame?.props?.backgroundColor).toBe(isOpen ? 'inverseText' : undefined)
       const parts = (frame.children ?? []).filter((c): c is Drawn => !!c && typeof c === 'object')
       expect(parts.map(c => c.type)).toEqual(['Button', 'Text'])
       expect(keyOf(parts[0] as Drawn)).toBe(`${prefix}nav-${id}`)
+      // The key in sight: no pill, a bold text in the text's colour as wide as the tab; the others dim labels.
+      const key = parts[0] as Drawn
+      if (isOpen) {
+        expect(key.props?.variant).toBeUndefined()
+        expect(key.props?.plain).toBe(true)
+        const text = nodesOf(key as never).find(n => n.type === 'Text')
+        expect(text?.props).toMatchObject({ weight: 'bold', color: 'text' })
+        expect(textOf(text!)).toBe(`  ${labels[id]}  `)
+      } else {
+        expect(key.props).toMatchObject({ label: labels[id], plain: true, dimColor: true })
+      }
       expect(textOf(parts[1] as Drawn)).toBe(' '.repeat([...labels[id]].length + 4))
       // The open tab alone is three rows tall; nothing of v0.116.1's covers is left.
       expect(nodesOf(tab as never).some(n => n.type === 'Text' && /[╯╰│]/.test(textOf(n)))).toBe(false)
@@ -3446,7 +3546,8 @@ test('the wide menu draws its keys as tabs on a shelf: round frames cut short of
     expect(keyOf(first)).toBe('nav-rule')
     expect(first.props).toMatchObject({ position: 'absolute', top: 2, left: 0, right: 0, height: 1, overflow: 'hidden' })
     const line = (first.children ?? [])[0] as Drawn
-    expect(line?.props).toMatchObject({ position: 'absolute', top: 0, left: -1, right: -1, height: 2, borderStyle: 'single', borderDimColor: true })
+    expect(line?.props).toMatchObject({ position: 'absolute', top: 0, left: -1, right: -1, height: 2, borderStyle: 'single', borderColor: 'inactive' })
+    expect(line?.props?.borderDimColor).toBeUndefined()
     expect(nodesOf(nav as never).some(n => n.type === 'Text' && /^─+$/.test(textOf(n)))).toBe(false)
     // The tabs hang from the row's top, so the open one reaches a row further down than the closed
     // ones; the mark and the right-hand group stand two rows tall, level with the closed tabs.

@@ -13,7 +13,7 @@
 
   "mode.locked": "Read-only",
   "mode.soft": "Write on request",
-  "mode.writable": "Read/write, automatic",
+  "mode.writable": "Automatic write",
 
   "band.primary": "Primary:",
   "band.secondaries": "Secondaries:",
@@ -79,7 +79,6 @@
   "status.toCheck.other": "{count} to check",
   "status.updated": "Updated at {time}",
   "primary.badge": "Default",
-  "primary.access": "Read and write, without confirmation",
   "link.remote": "Remote · browser ↗",
   "link.claude": "In Claude",
   "link.local": "Local · Obsidian ↗",
@@ -111,8 +110,6 @@
   "error.noteLinkNone": "the router gave none",
   "activity.title": "Last update:",
   "activity.none": "none through the router",
-  "activity.recent": "Last files changed:",
-  "mark.recent": "Last files",
   "legend.browser": "Remote: opens in the default browser",
   "admin.open": "Opening the vaults",
   "admin.openObsidian": "Open local vaults in Obsidian",
@@ -151,7 +148,6 @@
   "primary.title": "PRIMARY:",
   "primary.definition": "This project's default vault: Claude reads and writes it without asking.",
   "primary.none": "No primary vault: choose one below.",
-  "primary.locked": "locked",
   "primary.unreachable": "Unreachable: is WireGuard on? is the container running on the server?",
   "primary.imported": "Binding imported from a .env, never confirmed.",
   "primary.confirm": "Confirm",
