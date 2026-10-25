@@ -180,6 +180,9 @@ const MODES: { mode: SecondaryMode; icon: string }[] = [
   { mode: 'writable', icon: '✏️' },
 ]
 const iconOf = (mode: SecondaryMode) => MODES.find(m => m.mode === mode)?.icon ?? '🔒'
+// The ground a legend item and the tiles' marks or radios of its kind take
+// while the pointer rests on any of them: the desktop's hover groups.
+const HOVER_GROUND = 'inactive'
 // The same tiers as marks, in the grey of the band's other marks: a graphical
 // surface draws them in place of the badges, so the band's line has one style.
 const LOCK_MARK =
@@ -2448,7 +2451,9 @@ export const register: Register = on => {
     const Mark = e.surface !== 'terminal' ? Svg : null
     // `pressed`: the key drawn held down (a grey ground; on the terminal, its
     // glyph lit instead of dim), for a control whose effect is still on.
-    const iconKey = (source: string, glyph: string, key: string, onPress: () => void, pressed = false) =>
+    // `scope`: the hover group the key joins (the legend's item of its kind):
+    // on the desktop, the pointer on any member lights them all.
+    const iconKey = (source: string, glyph: string, key: string, onPress: () => void, pressed = false, scope?: string) =>
       Mark ? (
         <Box
           key={`icon-${key}`}
@@ -2456,6 +2461,7 @@ export const register: Register = on => {
           alignItems="center"
           flexShrink={0}
           backgroundColor={pressed ? 'inactive' : undefined}
+          hover={scope ? { scope, backgroundColor: HOVER_GROUND } : undefined}
         >
           <Mark source={source} alt={markAlt(source)} width={16} height={16} />
           <Box position="absolute" top={0} left={0}>
@@ -2570,36 +2576,60 @@ export const register: Register = on => {
           </Box>
         </Box>
       )
-    // What each mark does, under the menu: Obsidian's, Claude's, the planet —
-    // each while the console allows that way of opening a vault.
-    const legendItem = (key: string, source: string, glyph: string, text: string) => (
-      <Box key={key} flexDirection="row" gap={1} alignItems="center">
-        {Mark ? <Mark source={source} alt={markAlt(source)} width={14} height={14} /> : <Text>{glyph}</Text>}
+    // What each mark and each badge means, under the menu: one caption row in
+    // two groups, each a word and its items parted by "·" — "Ouvrir" and the
+    // marks that open a vault (Obsidian's, Claude's, the planet, each while
+    // the console allows that way), "Droits" and the three tiers' badges.
+    // Wide enough, the two stand on one line; in the side panel the second
+    // wraps under the first, a group kept whole — and a pane narrower than a
+    // group itself (70 and 74 cells in French, as the terminal counts them)
+    // wraps the group's items too, rather than cut them off at its edge
+    // (Codex, on the 50-column pane of the tests). Each item joins the hover
+    // group of its mark or tier, the tiles' with it: on the desktop the
+    // pointer on an item lights every tile's mark or radio of that kind, and
+    // the pointer on one of those lights the item.
+    const legendItem = (key: string, scope: string, mark: unknown, text: string) => (
+      <Box key={key} flexDirection="row" gap={1} alignItems="center" hover={{ scope, backgroundColor: HOVER_GROUND }}>
+        {mark as never}
         <Text size="caption" dimColor>
           {text}
         </Text>
       </Box>
     )
-    const legendItems = [
-      ...(open.obsidian ? [legendItem('legend-obsidian', OBSIDIAN_MARK, '💎', t('legend.obsidian'))] : []),
-      ...(open.claude ? [legendItem('legend-claude', CLAUDE_PANE_MARK, '✳', t('legend.claude'))] : []),
-      ...(open.browser ? [legendItem('legend-browser', GLOBE_MARK, '🌐', t('legend.browser'))] : []),
-    ]
-    const legend =
-      legendItems.length > 0 ? (
-        <Box key="legend" flexDirection="row" flexWrap="wrap" columnGap={2} alignItems="center">
-          {legendItems.flatMap((item, at) =>
+    const legendMark = (source: string, glyph: string) =>
+      Mark ? <Mark source={source} alt={markAlt(source)} width={14} height={14} /> : <Text>{glyph}</Text>
+    const legendGroup = (key: string, title: string, items: unknown[]) =>
+      items.length > 0 ? (
+        <Box key={key} flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+          <Text size="caption" weight="semibold">
+            {title}
+          </Text>
+          {items.flatMap((item, at) =>
             at === 0
               ? [item]
               : [
-                  <Text key={`legend-bar-${at}`} size="caption" dimColor>
-                    |
+                  <Text key={`${key}-dot-${at}`} size="caption" dimColor>
+                    ·
                   </Text>,
                   item,
                 ],
-          )}
+          ) as never}
         </Box>
       ) : null
+    const legend = (
+      <Box key="legend" flexDirection="row" flexWrap="wrap" columnGap={3} alignItems="center">
+        {legendGroup('legend-open', t('legend.open'), [
+          ...(open.obsidian ? [legendItem('legend-obsidian', 'open-obsidian', legendMark(OBSIDIAN_MARK, '💎'), t('legend.obsidian'))] : []),
+          ...(open.claude ? [legendItem('legend-claude', 'open-claude', legendMark(CLAUDE_PANE_MARK, '✳'), t('legend.claude'))] : []),
+          ...(open.browser ? [legendItem('legend-browser', 'open-browser', legendMark(GLOBE_MARK, '🌐'), t('legend.browser'))] : []),
+        ])}
+        {legendGroup(
+          'legend-rights',
+          t('legend.rights'),
+          MODES.map(m => legendItem(`legend-${m.mode}`, `tier-${m.mode}`, <Text>{m.icon}</Text>, t(`legend.${m.mode}`))),
+        )}
+      </Box>
+    )
     const sticky =
       scrolled > 0 ? (
         <Box key="sticky-bar" position="absolute" top={scrolled} left={0} right={0} flexDirection="column" backgroundColor="inverseText">
@@ -3308,12 +3338,12 @@ export const register: Register = on => {
       isRemote(row)
         ? row.uiUrl
           ? [
-              ...(open.browser ? [iconKey(GLOBE_MARK, '🌐', `web-${row.name}`, () => void openInBrowser($, row))] : []),
-              ...(open.claude ? [iconKey(CLAUDE_PANE_MARK, '✳', `ui-${row.name}`, () => void openUi($, row))] : []),
+              ...(open.browser ? [iconKey(GLOBE_MARK, '🌐', `web-${row.name}`, () => void openInBrowser($, row), false, 'open-browser')] : []),
+              ...(open.claude ? [iconKey(CLAUDE_PANE_MARK, '✳', `ui-${row.name}`, () => void openUi($, row), false, 'open-claude')] : []),
             ]
           : []
         : open.obsidian && row.path && row.isKnownToObsidian !== false
-          ? [iconKey(OBSIDIAN_MARK, '💎', `obsidian-${row.name}`, () => void openInObsidian($, row))]
+          ? [iconKey(OBSIDIAN_MARK, '💎', `obsidian-${row.name}`, () => void openInObsidian($, row), false, 'open-obsidian')]
           : []
     // What a vault's marks cannot say, on a line under its head: a remote one
     // that does not answer (its web UI may, so its marks stay), with a retry;
@@ -3400,10 +3430,10 @@ export const register: Register = on => {
       )
     }
     // The tiles' grid, from the pane's width. A bound vault's tile is as wide
-    // as its three fixed columns, and as many stand on a line as the pane
-    // holds — one in the narrow side panel, two on a full window, more on a
-    // wider screen; a pane narrower than one tile gets a tile as wide as the
-    // pane, its columns stacked. A tile to add fits up to four per line.
+    // as its head needs, and as many stand on a line as the pane holds — one
+    // in the narrow side panel, two on a full window, more on a wider screen;
+    // a pane narrower than one tile gets a tile as wide as the pane, the
+    // rights on a line of their own. A tile to add fits up to four per line.
     const columns = e.props.bodyColumns ?? 60
     const fit = (most: number, least: number) => {
       for (let n = most; n > 1; n -= 1) {
@@ -3415,20 +3445,21 @@ export const register: Register = on => {
 
       return Math.max(least, columns)
     }
-    // The columns' widths, cells, each a little over what it holds: the
-    // state's over its two keys; the rights' over their title and the longest
-    // option with its ring and badge; the files' over the update's title and
-    // date, and a path of some twenty cells — and the widest of the three,
-    // wider than the rights' by a cell at least, whatever the language. Each
-    // of the last two keeps a cell of air off the rule at its left.
-    const stateWidth = Math.max(cells(t('state.active')), cells(t('state.pause'))) + 2
-    const rightsWidth = Math.max(cells(t('mode.radioTitle')), ...MODES.map(m => cells(modeLabel(m.mode)) + 5)) + 1
-    const filesWidth = Math.max(cells(t('activity.title')) + 1, cells(stamp('2026-12-31T23:59:00.000Z')) + 1, 23, rightsWidth + 1)
-    // The frame and its padding (4), the two rules (2), the columns.
-    const threeColumnsWidth = 4 + stateWidth + 1 + rightsWidth + 1 + filesWidth
-    const isStacked = columns < threeColumnsWidth
-    // Stacked, the tile is as wide as the pane, however narrow.
-    const boundWidth = isStacked ? columns : threeColumnsWidth
+    // The rights in a tile's head, cells: their short title, then each radio
+    // after a gap — its ring, a gap, its badge counted as two cells (an
+    // emoji's, whatever `cells` makes of ✋).
+    const rightsWidth = cells(t('mode.headTitle')) + MODES.length * (1 + 4)
+    // A bound vault's tile, cells: its frame and padding (4); its head's left
+    // part — the dot (2), a gap, room for a name of twenty cells, then two
+    // marks of two cells each after a gap (a remote vault with a web UI has
+    // two); a gap; the rights; a gap and ✕. A longer name is cut; a wider
+    // pane holds more tiles, not wider ones.
+    const NAME_ROOM = 20
+    const tileWidth = 4 + 2 + 1 + NAME_ROOM + 2 * (1 + 2) + 1 + rightsWidth + 1 + 1
+    // Narrower than a tile, the pane gets one as wide as itself, the rights
+    // on their own line under the head.
+    const isStacked = columns < tileWidth
+    const boundWidth = isStacked ? columns : tileWidth
     // A tile to add holds less, but not so little that two squeeze in the side panel.
     const addWidth = fit(4, TILE_WIDTH + 4)
     // A horizontal rule across a tile's inside (its frame and padding taken
@@ -3441,15 +3472,18 @@ export const register: Register = on => {
         <Text dimColor>{'─'.repeat(Math.max(1, width - 4))}</Text>
       </Box>
     )
-    // A vault's tile: its state and name on top, with what acts on the tile
-    // as a whole on the right, a rule under them; then its lines, each
-    // wrapping inside it, and its body (a secondary's columns) on the full width.
+    // A vault's tile: its state, name and marks on top, with what acts on the
+    // tile as a whole on the right (a bound vault's rights among it), a rule
+    // under them; then its lines, each wrapping inside it, its body on the
+    // full width, and its foot at the bottom right. `headLine`: a second head
+    // row under the first, before the rule — the rights of a tile narrower
+    // than its head needs.
     const tile = (
       key: string,
       row: VaultRow,
       right: unknown,
       lines: unknown[],
-      opts: { width: number; isDim?: boolean; isHighlighted?: boolean; foot?: unknown; body?: unknown; marksInHead?: boolean },
+      opts: { width: number; isDim?: boolean; isHighlighted?: boolean; foot?: unknown; body?: unknown; marksInHead?: boolean; headLine?: unknown },
     ) => (
       <Box
         key={key}
@@ -3475,6 +3509,12 @@ export const register: Register = on => {
           </Box>
           {right as never}
         </Box>
+        {opts.headLine !== undefined && (
+          // Keyed before the tile's key, never after (see the foot).
+          <Box key={`rights-${key}`} flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+            {opts.headLine as never}
+          </Box>
+        )}
         {hrule(`hrule-${key}`, opts.width)}
         {lines.filter(line => !(Array.isArray(line) && line.length === 0)).map((line, i) => (
           <Box
@@ -3543,11 +3583,14 @@ export const register: Register = on => {
         })
       }
     }
-    // A secondary's state, as two keys one over the other: ▶ Actif and ❚❚
-    // Pause, the one in force on a tinted ground (green, soft red): a ground
-    // the desktop draws, where a native button keeps no colour of its own text.
+    // A secondary's state, as two keys side by side at the tile's foot: ▶
+    // Actif and ❚❚ Pause, the one in force on a tinted ground (green, soft
+    // red): a ground the desktop draws, where a native button keeps no colour
+    // of its own text. One under the other where the two do not fit on a
+    // line (Codex: "▶ Active" and "❚❚ Pause" take 17 cells, a 20-column
+    // pane's tile holds 16).
     const stateSwitch = (s: Secondary, isPaused: boolean) => (
-      <Box key={`state-${s.name}`} flexDirection="column" alignItems="center">
+      <Box key={`state-${s.name}`} flexDirection="row" flexWrap="wrap" gap={1} alignItems="center" justifyContent="flex-end">
         <Box key={`state-on-${s.name}`} backgroundColor={isPaused ? undefined : 'diffAddedDimmed'}>
           <Button
             key={`resume-${s.name}`}
@@ -3576,116 +3619,80 @@ export const register: Register = on => {
         </Box>
       </Box>
     )
-    // The parting between two of a tile's columns, dim: side by side, a
-    // vertical rule of `rows` cells (the desktop draws no border on one side
-    // only); stacked, a horizontal rule across the tile.
-    // Keys: one word before the name, no word a prefix of another's ("cell",
-    // "front", "rule-N", "rulecell-N", "stack"), so that no vault's name can
-    // forge a sibling's key.
-    const divider = (key: string, rows: number) =>
-      isStacked ? (
-        hrule(`rule-${key}`, boundWidth)
-      ) : (
-        <Box key={`rule-${key}`} flexDirection="column" flexShrink={0} overflow="hidden">
-          {Array.from({ length: rows }, (_, i) => (
-            <Text key={`rulecell-${i}-${key}`} dimColor>
-              │
-            </Text>
-          ))}
-        </Box>
-      )
-    // A vault's write tier as three radio buttons under a bold title, title
-    // and options together at the left, the one in force marked ◉ and lit, the
-    // others ○ and dim. Keys where a press sets the tier (a secondary's, and
-    // the primary's on a router that keeps one for it); else told, as text —
-    // the primary of an older router: read-only while the session is locked,
-    // else writing without asking.
-    const tierMenu = (row: VaultRow, mode: SecondaryMode, setter: ((mode: SecondaryMode) => void) | null) => (
-      <Box key={`mode-${row.name}`} flexDirection="column" flexShrink={1} alignItems="flex-start">
+    // A vault's write tier as three radios in its head, each its ring and its
+    // badge alone (the legend under the menu says what each badge means)
+    // after a short title; the one in force ◉ and lit, the others ○ and dim.
+    // Keys where a press sets the tier (a secondary's, and the primary's on a
+    // router that keeps one for it); else told, as text — the primary of an
+    // older router: read-only while the session is locked, else writing
+    // without asking. Each radio's box joins its tier's hover group, the
+    // legend's item with it: on the desktop the pointer on one lights the
+    // other (the terminal has no hover). In a tile's head the row never
+    // shrinks (the tile is as wide as it needs); on its own line, in a pane
+    // narrower than a tile, it wraps between its title and its radios, and
+    // between radios, rather than run past the tile's edge (Codex: a
+    // 20-column pane holds 16 cells, the rights take 33).
+    // Keys: one word before the name, no word a prefix of another's ("mode",
+    // "tiers", "radio-<tier>", "tier-<tier>", "side", "rights"), so that no
+    // vault's name can forge a sibling's key.
+    const tierRadios = (row: VaultRow, mode: SecondaryMode, setter: ((mode: SecondaryMode) => void) | null) => (
+      <Box
+        key={`mode-${row.name}`}
+        flexDirection="row"
+        flexWrap={isStacked ? 'wrap' : undefined}
+        gap={1}
+        alignItems="center"
+        flexShrink={isStacked ? 1 : 0}
+      >
         <Text size="body" weight="semibold" wrap="truncate-end">
-          {t('mode.radioTitle')}
+          {t('mode.headTitle')}
         </Text>
-        <Box key={`tiers-${row.name}`} flexDirection="column" alignItems="flex-start">
+        <Box key={`tiers-${row.name}`} flexDirection="row" flexWrap={isStacked ? 'wrap' : undefined} gap={1} alignItems="center">
           {MODES.map(m => {
-            const label = `${mode === m.mode ? '◉' : '○'} ${m.icon} ${modeLabel(m.mode)}`
+            const label = `${mode === m.mode ? '◉' : '○'} ${m.icon}`
 
-            return setter ? (
-              <Button key={`tier-${m.mode}-${row.name}`} label={label} plain dimColor={mode !== m.mode} onPress={() => setter(m.mode)} />
-            ) : (
-              <Text key={`tier-${m.mode}-${row.name}`} dimColor={mode !== m.mode} wrap="truncate-end">
-                {label}
-              </Text>
+            return (
+              <Box key={`radio-${m.mode}-${row.name}`} hover={{ scope: `tier-${m.mode}`, backgroundColor: HOVER_GROUND }}>
+                {setter ? (
+                  <Button key={`tier-${m.mode}-${row.name}`} label={label} plain dimColor={mode !== m.mode} onPress={() => setter(m.mode)} />
+                ) : (
+                  <Text key={`tier-${m.mode}-${row.name}`} dimColor={mode !== m.mode}>
+                    {label}
+                  </Text>
+                )}
+              </Box>
             )
           })}
         </Box>
       </Box>
     )
-    // A bound vault's front: three columns of fixed widths, a rule between
-    // two. The first, centred: a secondary's state keys, then the marks that
-    // open the vault, one under the other (the primary has the marks alone);
-    // the second, at its left: its rights under their title; the third, at
-    // its left and the widest: its last update and its last files. Side by
-    // side, the rules run two cells taller than the tallest column, a line of
-    // air above and below; in a pane too narrow for the three, they stack with
-    // a rule between. `state`: a secondary's, with its switch; null for the primary.
-    const front = (row: VaultRow, state: { s: Secondary; isPaused: boolean } | null) => {
-      const stacked = marks(row)
-      const recent = activityOf(row)?.recent ?? []
-      // The rules' cells: the tallest column as counted in lines, plus one of
-      // air at each end. Stretched to the row and clipped, a rule is as tall as
-      // the row turns out on the surface, whatever a mark's height there.
-      const rows =
-        Math.max((state ? 2 : 0) + (stacked.length > 0 ? (state ? 1 : 0) + stacked.length : 0), 1 + MODES.length, 2 + recent.length) + 2
-      const mode: SecondaryMode = state ? state.s.mode : (snap.primaryMode ?? (snap.isLocked ? 'locked' : 'writable'))
-      // Set from the tile where the router reports a tier for it (v0.117.0+).
-      const setter: ((mode: SecondaryMode) => void) | null = state
-        ? m => setMode(state.s, m)
-        : snap.primaryMode
-          ? m => setPrimaryMode(row, m)
-          : null
-      const cell = (key: string, width: number, body: unknown, atLeft = false) => (
-        <Box
-          key={`cell-${key}-${row.name}`}
-          flexDirection="column"
-          alignItems={atLeft ? 'flex-start' : 'center'}
-          justifyContent="center"
-          gap={1}
-          width={isStacked ? undefined : width}
-          paddingY={1}
-          paddingLeft={atLeft ? 1 : 0}
-          flexShrink={0}
-          overflow="hidden"
-        >
-          {body as never}
+    // A bound vault's rights: a secondary's own tier, set from its radios;
+    // the primary's as the router reports it (v0.117.0+), set the same way —
+    // or, on an older router, told alone: read-only while the session is
+    // locked, else writing without asking.
+    const rightsOf = (row: VaultRow, secondary: Secondary | null) =>
+      secondary
+        ? tierRadios(row, secondary.mode, m => setMode(secondary, m))
+        : tierRadios(row, snap.primaryMode ?? (snap.isLocked ? 'locked' : 'writable'), snap.primaryMode ? m => setPrimaryMode(row, m) : null)
+    // The head's right part: the rights, where the head holds them (a pane at
+    // least a tile wide), then what acts on the tile as a whole — a
+    // secondary's ✕; the primary has nothing there.
+    const headRight = (row: VaultRow, parts: unknown[]) =>
+      parts.length > 0 ? (
+        <Box key={`side-${row.name}`} flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
+          {parts as never}
         </Box>
-      )
-
-      return (
-        <Box key={`front-${row.name}`} flexDirection={isStacked ? 'column' : 'row'} alignItems="stretch" justifyContent="flex-start">
-          {cell('state', stateWidth, [
-            ...(state ? [stateSwitch(state.s, state.isPaused)] : []),
-            ...(stacked.length > 0
-              ? [
-                  <Box key={`stack-${row.name}`} flexDirection="column" alignItems="center" flexShrink={0}>
-                    {stacked as never}
-                  </Box>,
-                ]
-              : []),
-          ])}
-          {divider(`1-${row.name}`, rows)}
-          {cell('rights', rightsWidth, tierMenu(row, mode, setter), true)}
-          {divider(`2-${row.name}`, rows)}
-          {/* Stacked: the tile's inside (its frame and padding, 4) less the cell's own padding. */}
-          {cell('files', filesWidth, activityColumn(row, Math.max(1, isStacked ? boundWidth - 5 : filesWidth - 1)), true)}
-        </Box>
-      )
-    }
+      ) : null
+    // A bound vault's body, on the tile's full width: its last update and its
+    // last files, the paths cut to the tile's inside (its frame and padding, 4).
+    const body = (row: VaultRow) => activityColumn(row, Math.max(1, boundWidth - 4))
     // A secondary's tile, paused or not, in its place: ✕ removes it from the
-    // project, the links open it, the menu sets its tier, the switch pauses it.
-    const secondaryTile = (s: Secondary, isPaused: boolean) =>
-      tile(
-        `sec-${s.name}`,
-        s,
+    // project, the marks open it, the radios set its tier, the keys at its
+    // foot pause and resume it. Narrower than a tile, the pane puts the
+    // rights on their own line under the head.
+    const secondaryTile = (s: Secondary, isPaused: boolean) => {
+      const rights = rightsOf(s, s)
+      const remove = (
         <Button
           key={`remove-${s.name}`}
           plain
@@ -3706,10 +3713,17 @@ export const register: Register = on => {
           }
         >
           <Text weight="bold">✕</Text>
-        </Button>,
-        [notes(s)],
-        { width: boundWidth, isDim: isPaused, body: front(s, { s, isPaused }), marksInHead: false },
+        </Button>
       )
+
+      return tile(`sec-${s.name}`, s, headRight(s, isStacked ? [remove] : [rights, remove]), [notes(s)], {
+        width: boundWidth,
+        isDim: isPaused,
+        body: body(s),
+        foot: stateSwitch(s, isPaused),
+        headLine: isStacked ? rights : undefined,
+      })
+    }
 
     const primary = (
       <Box flexDirection="column" gap={1}>
@@ -3718,14 +3732,25 @@ export const register: Register = on => {
           tile(
             'primary-row',
             snap.primary,
-            <Box key="primary-badge" flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
-              <Text color="claude">●</Text>
-              <Text size="caption">{t('primary.badge')}</Text>
-            </Box>,
-            // The same front as a secondary's: its marks, its rights (told,
-            // not set), its last update and files.
+            headRight(snap.primary, isStacked ? [] : [rightsOf(snap.primary, null)]),
             [notes(snap.primary)],
-            { width: boundWidth, isHighlighted: true, body: front(snap.primary, null), marksInHead: false },
+            // The same shape as a secondary's: its marks in its head, its
+            // rights at the right, its last update and files on the full
+            // width; at its foot, where a secondary has its state keys, the
+            // badge that says it is the default — a primary is never paused
+            // and never removed.
+            {
+              width: boundWidth,
+              isHighlighted: true,
+              body: body(snap.primary),
+              headLine: isStacked ? rightsOf(snap.primary, null) : undefined,
+              foot: (
+                <Box key="primary-badge" flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
+                  <Text color="claude">●</Text>
+                  <Text size="caption">{t('primary.badge')}</Text>
+                </Box>
+              ),
+            },
           )
         ) : (
           <Box key="primary-none" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
@@ -4172,6 +4197,43 @@ export const register: Register = on => {
           <Button key={`band-${list}pause-${row.name}`} label="▶" plain onPress={() => void setPaused($, row, true)} />
         </Box>
       )
+    // The primary's control, where a secondary has its ▶: the same ▶ on a
+    // green ground while the vault answers; dimmed, on a grey ground, while
+    // it does not (a local one closed, a remote one unreachable) or while
+    // nothing is known of it yet. The router pauses no primary, so a press
+    // restores rather than toggles: a local vault known to be closed is
+    // opened in Obsidian — by Obsidian's own id for its folder, or by the
+    // folder's name when the registry could not be read, and not at all when
+    // the registry is known not to list it: the tile's 💎 rule — while the
+    // console allows that way, as every other key of the band; then the
+    // router is read again — read
+    // again whatever the launch did, a failed one included; any other press
+    // reads it again. Asked by Roland in place of the orange dot of
+    // v0.116.13; the same cell (one, and its gap) in `baseCells`.
+    const mainState = (row: VaultRow) => {
+      const isUp = row.online === true
+
+      return (
+        <Box key="band-main-state" backgroundColor={isUp ? 'diffAddedDimmed' : 'inactive'}>
+          <Button
+            key="band-main-play"
+            label="▶"
+            plain
+            dimColor={!isUp}
+            onPress={() => {
+              if (row.online === false && row.type !== 'remote' && row.path && row.isKnownToObsidian !== false && bandOpen.obsidian) {
+                void openInObsidian($, row).then(
+                  () => background($),
+                  () => background($),
+                )
+              } else {
+                background($)
+              }
+            }}
+          />
+        </Box>
+      )
+    }
     const caption = (text: string) => (
       <Text size="caption" dimColor wrap="truncate-end">
         {text}
@@ -4296,7 +4358,7 @@ export const register: Register = on => {
           <Box key="vault-band-names" flexDirection="row" flexWrap="nowrap" alignItems="center" columnGap={1} flexShrink={1} overflow="hidden">
             {!isCompact && heading(t('band.primary'))}
             {snap.primary ? (
-              slot('band-main-row', true, [<Text key="band-main-dot" color="claude">●</Text>, opener(snap.primary, snap.primary.name, false, 'main-')])
+              slot('band-main-row', true, [mainState(snap.primary), opener(snap.primary, snap.primary.name, false, 'main-')])
             ) : (
               <Text wrap="truncate-end">{t('band.none')}</Text>
             )}

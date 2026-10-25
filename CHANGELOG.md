@@ -10,6 +10,79 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.117.3] — 2026-10-25 — the tile in one head line, the six icons in one legend, a ▶ for the band's primary
+
+Asked by Roland from a mockup over v0.117.2's tile, which stood ten lines tall on three fixed
+columns parted by rules (the state keys over the opening marks; the rights as three worded
+radios under their title; the last update and files at the right):
+
+- **The tile's head says it all.** "● name", then the marks that open the vault (the planet and
+  Claude's for a remote one with a web UI, Obsidian's for a local one), and at the right
+  "lecture/écriture :" with the three radios as their ring and badge alone — ○ 🔒 ○ ✋ ◉ ✏️ —
+  then ✕. A rule; then "Dernière mise à jour :", the date and the last files on the tile's full
+  width (a path is cut at 65 cells where the old column cut it at 26); at the foot, right,
+  "▶ Actif" on its green ground beside "❚❚ Pause" (the keys `resume-`/`pause-` as before). The
+  primary's tile has the same shape: its rights at the right (set from the tile on a router that
+  reports them, v0.117.0+, told as text otherwise), "● Par défaut" at its foot where a secondary
+  has its state keys, no ✕. The tile keeps a fixed width — 69 cells in French, now from the
+  head's needs: the frame (4), the dot (2), room for a name of twenty cells, two marks, the
+  rights (18 + 3 × 5), ✕ and the gaps — and the grid wraps as before. A pane narrower than a
+  tile (the 50-column side panel) gets a tile as wide as itself, the rights on a line of their
+  own under the head (a line that wraps between the title and the radios where even that is
+  too narrow) and ✕ alone at the right. The three columns, their vertical rules and the
+  stacking of columns are gone.
+- **One legend for the six icons**, under the menu: one row in two groups that wraps between
+  them in the side panel, a group kept whole as long as the pane is at least as wide as it (70
+  and 74 cells in French, as the terminal counts them; narrower, the group's items wrap too
+  rather than run past the pane's edge) — "Ouvrir : 💎 Obsidian · ✳ navigateur interne · 🪐
+  navigateur par défaut" (each while the console allows that way) and "Droits : 🔒 lecture
+  seule · ✋ écriture sur accord · ✏️ écriture automatique". The words are shorter
+  than v0.115's ("Local : ouvre dans Obsidian" reads "Obsidian" under "Ouvrir"). On the desktop
+  each legend item and every tile's mark or radio of its kind share a hover group (the engine's
+  `hover.scope`, a grey ground): the pointer on ◉ 🔒 in a tile lights "🔒 lecture seule" in the
+  legend, and the pointer on that item lights every tile's 🔒. The terminal, with no hover,
+  keeps the row.
+- **A ▶ for the band's primary** where its orange dot stood (asked by Roland during this
+  change): on a green ground while the vault answers, dim on a grey ground while it does not
+  (a local one closed, a remote one unreachable) or while nothing is known of it yet. A press
+  on the grey one opens a local vault known to be closed in Obsidian (while the console allows
+  that way, as the band's other keys; by Obsidian's own id for the folder, by the folder's
+  name when Obsidian's registry could not be read, and not at all when the registry is known
+  not to list the vault — the rule the tile's 💎 follows) and reads the router again, a
+  failed launch included; any other press reads it again. The router pauses no
+  primary, so this key restores rather than toggles — a secondary's pause has no mirror image
+  for the primary yet. The band's cell count is unchanged: ▶ takes the dot's cell.
+- Locales: `mode.headTitle`, `legend.open`, `legend.rights`, `legend.locked`, `legend.soft`,
+  `legend.writable` added; `legend.obsidian`, `legend.claude`, `legend.browser` shortened;
+  `mode.radioTitle` removed (fr and en; `locale-fr.ts` rebuilt).
+- Adversarial review by Codex, three rounds of FIX FIRST, nine findings fixed and one
+  declined (a third round asked the band's ▶ to launch nothing while Obsidian's registry
+  cannot be read; it opens by the folder's name then, as the tile's 💎 has since v0.110 — the
+  same vault, the same rule — and a test now pins the launch by Obsidian's id when the
+  registry is readable) — a legend group
+  and the stacked rights row could not wrap inside and ran past a pane narrower than them
+  (both wrap now); the primary's ▶ launched Obsidian although the console said no, launched a
+  vault Obsidian does not know (its folder's name could open another), and read as green on
+  a vault nothing is known of yet; its launch promise had no rejection handler (the router is
+  read again either way); the band test accepted any obsidian:// address and no order (it
+  now pins the vault's address and the read after the launch); the state keys could not
+  stack in a 16-cell tile ("▶ Active ❚❚ Pause" is 17); the French paragraph omitted the
+  console's say. Tests: `tests/vault-panel.test.tsx` 142 as the runner counts them (the
+  head's order and contents on both surfaces, the badge-only radios, the foot keys, the
+  stacked form, the legend's groups, words and hover scopes, the band's ▶ in its four states
+  and its launch by id or by name; widths 69, 65, 50, 46, 20 and 16 measured); 28 mutations
+  each seen red — 18 on the design
+  (worded radios back, a name room of 21, no rights group, no hover scope, stacked state
+  keys, a body a cell narrower, the band's ▶ always green, the rights never on their own
+  line, "|" between legend items, the badge back in the primary's head, another hover ground,
+  a legend row that does not wrap, a scopeless iconKey, a secondary's marks out of its head,
+  ✕ before the rights, the old title, a legend item in the wrong group, a rights row that
+  shrinks) and 10 on the repairs (a legend group that never wraps inside, a rights row that
+  never wraps on its own line, Obsidian launched with the console saying no, the router read
+  before the launch, the launch at another vault, the launch of a vault Obsidian does not
+  know, green on a vault nothing is known of, the launch of such a vault, state keys that
+  never stack, Obsidian's id dropped from the launch) — the file restored by hash each time.
+
 ## [0.117.2] — 2026-10-25 — the band's second form frames nothing
 
 Asked by Roland from a mockup over v0.117.1's band on his small screen ("enlève l'apparence de
