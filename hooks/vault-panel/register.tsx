@@ -59,10 +59,11 @@ const removePick = atom({ plugin: 'obsidian-router', key: 'removePick' } as cons
 const updateState = atom({ plugin: 'obsidian-router', key: 'update' } as const, null)
 const EMPTY_CREATE: CreateForm = { name: '', path: '', mode: 'personal', conventions: [], languages: '', bind: true }
 const createForm = atom({ plugin: 'obsidian-router', key: 'createForm' } as const, EMPTY_CREATE)
-// The band's page: which run of secondaries its line shows, from the first
-// (0) on. A line too short for them all ends with "›+N" (a press turns the
-// page) and, past the first page, starts with "‹" (a press turns it back).
-const bandPage = atom({ plugin: 'obsidian-router', key: 'bandPage' } as const, 0)
+// The band's pick: the secondary whose controls stand on the line while the
+// line is too short for every secondary's slot (the menu then lists them
+// all, and a pick names one here); null, or a name no longer bound, is the
+// first in the binding's order.
+const bandPick = atom({ plugin: 'obsidian-router', key: 'bandPick' } as const, null)
 const pendingConventions = atom({ plugin: 'obsidian-router', key: 'pendingConventions' } as const, null)
 const wireguard = atom({ plugin: 'obsidian-router', key: 'wireguard' } as const, null)
 
@@ -190,18 +191,19 @@ const PEN_MARK =
 const markOf = (mode: SecondaryMode) => (mode === 'writable' ? PEN_MARK : mode === 'soft' ? HAND_MARK : LOCK_MARK)
 const modeLabel = (mode: SecondaryMode) => t(`mode.${mode}`)
 
-// What the band shows of the secondaries in `columns` cells: as many as fit
-// after the primary and the toggle, in binding order, the rest counted as
-// "›+N" (a page to turn). The line as the band draws it, cell by cell:
-// "Principal :", a gap, "●", a gap, the primary, a gap, a one-cell spacer, a
-// gap, "Secondaires :", "◀N" and a gap past the first page, then per secondary
-// a gap, its frame (a cell each side, on the desktop; on the terminal "│" and
-// a gap after the first instead), its ▶ and a gap, its name, a
-// gap and its badge (two cells), a gap, "│" and its marks when it has any;
-// "N▶" after a gap; the toggle after a gap of two, with room
-// for its chrome. In the current language's words. Measured in
-// cells: the band also cuts any text that still runs over, so a misjudged
-// width costs a cut, never a second line.
+// What the band's line holds in `columns` cells. Its first form, when every
+// secondary's slot fits: "Principal :", a gap, "●", a gap, the primary, a gap,
+// a one-cell spacer, a gap, "Secondaires :", then per secondary a gap, its
+// frame (a cell each side, on the desktop; on the terminal "│" and a gap
+// after the first instead), its ▶ and a gap, its name, a gap and its badge
+// (two cells), a gap, "│" and its marks when it has any; the toggle after a
+// gap of two, with room for its chrome. Its second form, when they do not
+// all fit (asked from a small screen, v0.116.13: the line showed none and
+// an inert count): a menu of every secondary where the slots were, then the
+// slot of the one picked without its name; and, when even that runs over,
+// no headings and the toggle as its glyph. In the current language's words.
+// Measured in cells: the band also cuts any text that still runs over, so a
+// misjudged width costs a cut, never a second line.
 // A character's cells on a terminal line: two for the East Asian wide ranges
 // (CJK, Hangul, full-width forms) and the emoji planes, none for a joiner, a
 // variation selector or a combining mark, one otherwise.
@@ -221,103 +223,72 @@ const charCells = (code: number) =>
       ? 2
       : 1
 const cells = (text: string) => [...text].reduce((sum, char) => sum + charCells(char.codePointAt(0) ?? 0), 0)
-// The band's page keys, each an arrow with a count in it: "N▶" the
-// secondaries the line could not show after the page, "◀N" those before it;
-// a press turns the page. On a graphical surface the arrow is a black
-// pentagon with the count in white inside (asked from a mockup: the dim "‹"
-// and "›+N" of v0.116.0 could hardly be seen); the terminal draws the texts.
-function moreText(hidden: number) {
-  return hidden > 0 ? `${hidden}▶` : ''
+// The glyph the pane's toggle keeps when the line is compact: the one its
+// labels start with ("◧ Masquer le panneau").
+const PANE_GLYPH = '◧'
+// The cells the pane's toggle takes at the right: the gap of two before it,
+// its longer label and its chrome. (Compact, it is the glyph alone; nothing
+// is measured past that form, the last one.)
+function toggleCells() {
+  return 2 + Math.max(cells(t('band.show')), cells(t('band.hide'))) + 4
 }
-function backText(before: number) {
-  return before > 0 ? `◀${before}` : ''
+// The cells a secondary's slot takes, with the gap before it: its frame (a
+// cell each side, on a graphical surface) or, on the terminal, "│ " after
+// the first; its control (▶, dimmed while paused); a gap and its name when
+// it is named (the picked one is not: the menu names it); a gap and its badge
+// (two cells); then, when it has marks, a gap and the "│" before them (each
+// mark counted with its gap, in `mark`).
+function slotCells(name: string | null, mark: number, isFramed: boolean, isFirst: boolean) {
+  return 1 + (isFramed ? 2 : isFirst ? 0 : 2) + 1 + (name === null ? 0 : 1 + cells(name)) + 1 + 2 + (mark > 0 ? 2 + mark : 0)
 }
-// What the mark of a page key says inside its arrow: the count before the
-// page ("3"), the count after it with a plus ("+3": more to come).
-function pageKeyLabel(direction: 'back' | 'more', count: number) {
-  return direction === 'more' ? `+${count}` : String(count)
-}
-// The cells a page key takes, with its gap. Drawn as a mark: the pentagon is
-// 18 + 7 px a character of its label, a cell being 7 px (a 14 px mark counts
-// 2 cells and a gap), so 3 cells and one a character, and the gap. Drawn as
-// its text ("◀N", "N▶"): the arrow, the digits and the gap.
-function pageKeyCells(direction: 'back' | 'more', count: number, asMark: boolean) {
-  return asMark ? 4 + pageKeyLabel(direction, count).length : 3 + String(count).length
-}
-function pageKeyWidth(direction: 'back' | 'more', count: number) {
-  return 18 + 7 * pageKeyLabel(direction, count).length
-}
-// The label's baseline: at 11.9 the bold 11 px digits of the system font
-// stand from 4.1 to 11.95, centred on the arrow's 8 (measured in Chromium,
-// which draws the mark; `dominant-baseline="central"` at 8.5 put them 1.2 px
-// too low, as v0.116.8 showed on screen).
-const PAGE_KEY_BASELINE = 11.9
-function pageKeyMark(direction: 'back' | 'more', count: number) {
-  const w = pageKeyWidth(direction, count)
-  const shape = direction === 'back' ? `M7 0H${w}V16H7L0 8Z` : `M0 0H${w - 7}L${w} 8L${w - 7} 16H0Z`
-  // The label centred on the straight part of the arrow, past its point.
-  const x = direction === 'back' ? (w + 7) / 2 : (w - 7) / 2
+// The line's fixed part with its words: "Principal :" and a gap, "● " and
+// the primary with its marks (`primaryMark`, their cells with their gaps) in
+// its frame on a graphical surface, a gap, the spacer and a gap,
+// "Secondaires :", the toggle. (Compact, the headings are left out and the
+// toggle is its glyph: the last form, measured against nothing.)
+function baseCells(primary: string | null, primaryMark: number, isFramed: boolean) {
+  const frame = isFramed ? 2 : 0
 
-  // A thin light outline, so the shape stands out on a dark ground too.
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} 16"><path d="${shape}" fill="#1f1f1f" stroke="#ffffff" stroke-width="0.75"/><text x="${x}" y="${PAGE_KEY_BASELINE}" font-family="system-ui, sans-serif" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">${pageKeyLabel(direction, count)}</text></svg>`
+  return cells(t('band.primary')) + 1 + frame + 2 + primaryMark + cells(primary ?? t('band.none')) + 1 + 1 + 1 + cells(t('band.secondaries')) + toggleCells()
 }
-// The secondaries the band's line shows from `start` on, in the binding's
-// order, each as its ▶, its name, its badge, then a "│" and its marks when it
-// has any; each in a round frame on the desktop (a "│" between two on the
-// terminal); `paused[i]` says which
-// are paused (the ▶ the same width either way). `marks[i]` (and
-// `primaryMark`): the cells that name's marks take beside it. Past the first
-// page the line starts with "◀N" (the key and its gap); what does not fit
-// ends it as "N▶" ("+N" in the arrow).
-function bandFit(primary: string | null, secondaries: string[], columns: number, paused: boolean[] = [], marks: number[] = [], primaryMark = 0, start = 0, keysAsMarks = false) {
-  void paused
-  const toggle = 2 + Math.max(cells(t('band.show')), cells(t('band.hide'))) + 4
-  // On a graphical surface (`keysAsMarks`: the one that draws the page keys
-  // as marks) each slot stands in a round frame, a cell each side, and
-  // nothing parts two; on the terminal a "│" and its gap part two slots.
-  const frame = keysAsMarks ? 2 : 0
-  // "Principal :", a gap, "● " and the name with its marks (in a frame on
-  // the desktop); two gaps and "Secondaires :"; the pane's toggle at the right.
-  const base =
-    cells(t('band.primary')) + 1 + frame + 2 + primaryMark + cells(primary ?? t('band.none')) + 1 + 1 + 1 + cells(t('band.secondaries')) + toggle + (start > 0 ? pageKeyCells('back', start, keysAsMarks) : 0)
-  const rest = secondaries.slice(start)
-  // A gap, its frame (or "│ " after the first on the terminal), its control
-  // (▶, dimmed while paused) and a gap, the name, a gap and its badge; then,
-  // when it has marks, a gap and the "│" (two cells) before the marks (each
-  // counted with its gap).
-  const widths = rest.map((name, i) => {
-    const mark = marks[start + i] ?? 0
-
-    return 1 + (keysAsMarks ? frame : i > 0 ? 2 : 0) + 1 + 1 + cells(name) + 1 + 2 + (mark > 0 ? 2 + mark : 0)
-  })
-  // The most secondaries that fit with the "N▶" their remainder needs. A
-  // page one turned to shows at least one, cut where it runs over: a page
-  // with nothing on it would be a page "N▶" leads nowhere from.
-  for (let shown = rest.length; shown > 0; shown -= 1) {
-    const hidden = rest.length - shown
-    const room = hidden > 0 ? pageKeyCells('more', hidden, keysAsMarks) : 0
-    const used = base + widths.slice(0, shown).reduce((a, b) => a + b, 0) + room
-    if (used <= columns) {
-      return { shown, hidden: rest.length - shown }
+// How many secondaries, in the binding's order, the line holds as full slots
+// after its fixed part — every one of them, or the line takes its second
+// form. `marks[i]` (and `primaryMark`): the cells that name's marks take
+// beside it. `isFramed`: a graphical surface, which frames each slot.
+function bandFit(primary: string | null, secondaries: string[], columns: number, marks: number[] = [], primaryMark = 0, isFramed = false) {
+  let used = baseCells(primary, primaryMark, isFramed)
+  let shown = 0
+  for (const [i, name] of secondaries.entries()) {
+    used += slotCells(name, marks[i] ?? 0, isFramed, i === 0)
+    if (used > columns) {
+      break
     }
+    shown += 1
   }
-  const shown = start > 0 && rest.length > 0 ? 1 : 0
 
-  return { shown, hidden: rest.length - shown }
+  return { shown, hidden: secondaries.length - shown }
 }
-// Where each page of the band's line starts: the first at 0, each next where
-// the one before stopped. A line too short for even one secondary has one
-// page, which shows none and counts them all.
-function bandPages(primary: string | null, secondaries: string[], columns: number, paused: boolean[], marks: number[], primaryMark: number, keysAsMarks = false) {
-  const starts = [0]
-  for (;;) {
-    const start = starts[starts.length - 1] ?? 0
-    const { shown } = bandFit(primary, secondaries, columns, paused, marks, primaryMark, start, keysAsMarks)
-    if (shown === 0 || start + shown >= secondaries.length) {
-      return starts
-    }
-    starts.push(start + shown)
-  }
+// The cells the menu takes in the line's second form: its longest row, the
+// chevron and its chrome.
+function menuCells(labels: string[]) {
+  return Math.max(0, ...labels.map(cells)) + 4
+}
+// Whether the line's second form runs over `columns` with its full labels:
+// the fixed part, a gap, then the menu (`menu`: its rows) and the picked slot
+// without its name — or, on a surface without the menu (`menu` null), the
+// dim count of the others ("+N") and the picked slot with its name. The line
+// is then compact (no headings, the toggle as its glyph).
+function bandPickIsCompact(
+  primary: string | null,
+  primaryMark: number,
+  menu: string[] | null,
+  picked: { name: string; mark: number; others: number },
+  columns: number,
+  isFramed: boolean,
+) {
+  const second = menu ? menuCells(menu) + slotCells(null, picked.mark, isFramed, true) : cells(`+${picked.others}`) + slotCells(picked.name, picked.mark, isFramed, true)
+
+  return baseCells(primary, primaryMark, isFramed) + 1 + second > columns
 }
 
 type Binding = {
@@ -4047,14 +4018,16 @@ export const register: Register = on => {
     // The cells a name's controls take beyond the name: Obsidian's mark (2 and
     // a gap) for a local vault; for a remote one the planet and Claude's mark
     // (a gap and 2 each), on the terminal 🌐 and ✳ (a gap and 2, a gap and 1).
-    const markCells = (row: VaultRow) => {
+    // On the terminal a named local vault has no mark (its name is the key
+    // that opens it); one the menu names instead (`isNamed` false) gets 💎.
+    const markCells = (row: VaultRow, isNamed = true) => {
       const target = openTarget(row)
 
       return !target
         ? 0
         : target === 'browser'
           ? (bandOpen.browser ? 3 : 0) + (bandOpen.claude ? (BandSvg ? 3 : 2) : 0)
-          : bandOpen.obsidian && BandSvg
+          : bandOpen.obsidian && (BandSvg || !isNamed)
             ? 3
             : 0
     }
@@ -4063,12 +4036,12 @@ export const register: Register = on => {
     await read($, paneVersion)
     await read($, language)
     const isShown = isPanePlaced
-    const page = await read($, bandPage)
+    const pick = await read($, bandPick)
     const names = snap.secondaries.map(s => s.name)
     const paused = snap.paused ?? []
     // Every secondary on the line, in the binding's order, paused or not: each
-    // with its own ▶ (pause) or ❚❚ (resume), right where it is named. A pause
-    // changes the control, never the place.
+    // with its own ▶ (pause) or dimmed ▶ (resume), right where it is named. A
+    // pause changes the control, never the place.
     const rank = (name: string) => {
       const at = (snap.order ?? []).indexOf(name)
 
@@ -4078,36 +4051,46 @@ export const register: Register = on => {
       ...snap.secondaries.map(row => ({ row, isPaused: false })),
       ...paused.map(row => ({ row, isPaused: true })),
     ].sort((x, y) => rank(x.row.name) - rank(y.row.name))
-    const pages = bandPages(
-      snap.primary?.name ?? null,
-      entries.map(entry => entry.row.name),
-      e.props.bodyColumns,
-      entries.map(entry => entry.isPaused),
-      entries.map(entry => markCells(entry.row)),
-      snap.primary ? markCells(snap.primary) : 0,
-      !!BandSvg,
-    )
-    // The page shown: the one kept, within the pages the width now allows.
-    const pageAt = Math.min(Math.max(0, page), pages.length - 1)
-    const start = pages[pageAt] ?? 0
+    const primaryName = snap.primary?.name ?? null
+    const primaryMark = snap.primary ? markCells(snap.primary) : 0
     const fit = bandFit(
-      snap.primary?.name ?? null,
+      primaryName,
       entries.map(entry => entry.row.name),
       e.props.bodyColumns,
-      entries.map(entry => entry.isPaused),
       entries.map(entry => markCells(entry.row)),
-      snap.primary ? markCells(snap.primary) : 0,
-      start,
+      primaryMark,
       !!BandSvg,
     )
-    const more = moreText(fit.hidden)
+    // The line's second form, when every slot does not fit: a menu of the
+    // secondaries, each row its state, its name and its tier as glyphs, and
+    // the picked one's controls beside it. The pick is the name kept, or the
+    // first bound when none is kept or the kept one is gone.
+    const isPick = fit.hidden > 0
+    const picked = entries.find(entry => entry.row.name === pick) ?? entries[0]
+    const menuLabel = (entry: { row: Secondary; isPaused: boolean }) => `${entry.isPaused ? '⏸' : '▶'} ${entry.row.name} ${iconOf(entry.row.mode)}`
+    // The menu's element; a surface without it shows the picked one's whole
+    // slot, named, and a dim count of the others. The mobile app's table has
+    // none (its type says so; the harness's does, drawn as a bare Box), so it
+    // is ruled out by name, as the pane rules it out for its own menus.
+    const BandSelect = e.surface !== 'mobile' && 'Select' in bandEls ? bandEls.Select : null
+    const isCompact =
+      isPick &&
+      !!picked &&
+      bandPickIsCompact(
+        primaryName,
+        primaryMark,
+        BandSelect ? entries.map(menuLabel) : null,
+        { name: picked.row.name, mark: markCells(picked.row, !BandSelect), others: entries.length - 1 },
+        e.props.bodyColumns,
+        !!BandSvg,
+      )
     // The band's width and what fitted, in the trace (see `traceScroll`): what
     // `bandFit` counts, beside what a surface draws, sets the count right.
     const bandLine = JSON.stringify([
       e.surface,
       e.props.bodyColumns,
-      start,
       fit.shown,
+      isCompact,
       snap.primary?.name ?? '',
       entries.map(entry => [entry.row.name, entry.isPaused]),
     ])
@@ -4117,7 +4100,7 @@ export const register: Register = on => {
         kind: 'band',
         surface: e.surface,
         bodyColumns: e.props.bodyColumns,
-        start,
+        form: isPick ? (isCompact ? 'pick-compact' : 'pick') : 'line',
         shown: fit.shown,
         hidden: fit.hidden,
         names: entries.map(entry => entry.row.name),
@@ -4181,8 +4164,6 @@ export const register: Register = on => {
         </Box>
       )
     }
-    // This page's run of secondaries.
-    const onLine = entries.slice(start, start + fit.shown)
     // A secondary's control: ▶ on a green ground while it runs (a press pauses
     // it); while it is paused, the same ▶ dimmed on no ground, a key that
     // reads as off (a press resumes it). Asked for in place of a red ❚❚.
@@ -4259,14 +4240,15 @@ export const register: Register = on => {
       )
     }
     // Where it opens, each mark its own control: Obsidian's for a local vault
-    // (a graphical surface only: the name is the terminal's control), the
-    // planet and Claude's mark for a remote one.
-    const secondaryMarks = (row: Secondary, list = '') => {
+    // (on the terminal, only when the slot is not named — the name is the
+    // terminal's control; the menu's pick has 💎 instead), the planet and
+    // Claude's mark for a remote one.
+    const secondaryMarks = (row: Secondary, list = '', isNamed = true) => {
       const target = openTarget(row)
 
       return target === 'obsidian'
-        ? bandOpen.obsidian && BandSvg
-          ? [iconKey(OBSIDIAN_MARK, '', `band-${list}obsidian-${row.name}`, () => void openVault($, row))]
+        ? bandOpen.obsidian && (BandSvg || !isNamed)
+          ? [iconKey(OBSIDIAN_MARK, '💎', `band-${list}obsidian-${row.name}`, () => void openVault($, row))]
           : []
         : target === 'browser'
           ? [
@@ -4276,61 +4258,60 @@ export const register: Register = on => {
           : []
     }
     // A secondary's slot, in this order (asked from a screenshot of v0.116.9):
-    // its ▶, its name, its tier, then — when it opens somewhere — a dim "│"
-    // and the marks that open it.
-    const entry = (row: Secondary, isPaused: boolean, list = '') => {
-      const marks = secondaryMarks(row, list)
+    // its ▶, its name (unless the menu names it: `isNamed` false), its tier,
+    // then — when it opens somewhere — a dim "│" and the marks that open it.
+    const entry = (row: Secondary, isPaused: boolean, list = '', isNamed = true) => {
+      const marks = secondaryMarks(row, list, isNamed)
       const bar = (
         <Box key={`band-${list}bar-${row.name}`} flexShrink={0}>
           <Text dimColor>│</Text>
         </Box>
       )
 
-      return [control(row, isPaused, list), secondaryName(row, isPaused, list), tier(row, isPaused, list), ...(marks.length > 0 ? [bar, ...marks] : [])]
+      return [
+        control(row, isPaused, list),
+        ...(isNamed ? [secondaryName(row, isPaused, list)] : []),
+        tier(row, isPaused, list),
+        ...(marks.length > 0 ? [bar, ...marks] : []),
+      ]
     }
-    // From the page shown (the kept one, brought within the pages), not the kept one itself.
-    const turnPage = (by: number) => void update($, bandPage, () => Math.min(Math.max(0, pageAt + by), pages.length - 1)).catch(() => undefined)
-    // A page key: the arrow with its count, drawn as a mark with a blank
-    // Button laid over it, as wide as the mark (see `iconKey`); its `alt` is
-    // the terminal's text, which the terminal draws as the key itself.
-    const pageKey = (key: string, direction: 'back' | 'more', count: number, onPress: () => void) => {
-      const text = direction === 'back' ? backText(count) : moreText(count)
-
-      return BandSvg ? (
-        <Box key={`icon-${key}`} flexDirection="row" alignItems="center" flexShrink={0}>
-          <BandSvg source={pageKeyMark(direction, count)} alt={text} width={pageKeyWidth(direction, count)} height={16} />
-          <Box position="absolute" top={0} left={0}>
-            <Button key={key} label={' '.repeat(3 + pageKeyLabel(direction, count).length)} plain onPress={onPress} />
-          </Box>
-        </Box>
+    // The menu of the line's second form: every secondary, in the binding's
+    // order, as "▶ name 🔒" (⏸ while paused); a pick puts that one's controls
+    // on the line. A surface without the element shows the picked one's whole
+    // slot and a dim count of the others: seen, if not reachable.
+    const menu = () =>
+      BandSelect ? (
+        <BandSelect
+          key="band-pick"
+          options={entries.map(entry => ({ value: entry.row.name, label: menuLabel(entry) }))}
+          value={picked?.row.name}
+          onSelect={(name: string) => void update($, bandPick, () => name).catch(() => undefined)}
+        />
       ) : (
-        <Button key={key} label={text} plain onPress={onPress} />
+        <Box key="band-count" flexShrink={0}>
+          <Text dimColor>{`+${entries.length - 1}`}</Text>
+        </Box>
       )
-    }
     return (
       <Box flexDirection="column">
         <Box key="vault-band" flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={2}>
           <Box key="vault-band-names" flexDirection="row" flexWrap="nowrap" alignItems="center" columnGap={1} flexShrink={1} overflow="hidden">
-            {heading(t('band.primary'))}
+            {!isCompact && heading(t('band.primary'))}
             {snap.primary ? (
               slot('band-main-row', true, [<Text key="band-main-dot" color="claude">●</Text>, opener(snap.primary, snap.primary.name, false, 'main-')])
             ) : (
               <Text wrap="truncate-end">{t('band.none')}</Text>
             )}
             <Box width={1} />
-            {heading(t('band.secondaries'))}
+            {!isCompact && heading(t('band.secondaries'))}
             {names.length === 0 && paused.length === 0 && caption(t('band.none'))}
-            {start > 0 && pageKey('band-back', 'back', start, () => turnPage(-1))}
-            {onLine.map(({ row, isPaused }, i) => slot(`band-row-${row.name}`, i === 0, entry(row, isPaused)))}
-            {more && pages.length > 1 ? (
-              pageKey('band-more', 'more', fit.hidden, () => turnPage(1))
-            ) : (
-              more && <Text key="band-count" dimColor>{more}</Text>
-            )}
+            {isPick && picked
+              ? [menu(), slot(`band-row-${picked.row.name}`, true, entry(picked.row, picked.isPaused, '', !BandSelect))]
+              : entries.map(({ row, isPaused }, i) => slot(`band-row-${row.name}`, i === 0, entry(row, isPaused)))}
           </Box>
           <Button
             key="toggle-pane"
-            label={isShown ? t('band.hide') : t('band.show')}
+            label={isCompact ? PANE_GLYPH : isShown ? t('band.hide') : t('band.show')}
             plain
             dimColor
             onPress={() => void togglePane($)}

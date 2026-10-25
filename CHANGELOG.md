@@ -10,6 +10,47 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.117.1] — 2026-10-25 — the band on a small screen: a menu of the secondaries, the picked one's controls beside it
+
+Asked by Roland from a screenshot of v0.116.13 on a small screen (the line 88–118 cells wide,
+measured): the band showed "Secondaires : 4▶" and nothing else — the fixed parts take 84
+cells, the first secondary's slot 33 and the "+N" arrow 6, so nothing fitted under 123, and
+the count drawn then was a dim text, no key. A list under the line (v0.112) was ruled out
+again: it grows the band and pushes the prompt down, and the engine clips an absolute Box to
+the band's region, so no list made of Boxes can float over the conversation. The one true
+drop-down the engine has is `Select`, whose rows are text.
+
+- **Two forms for the line.** When every secondary's slot fits, the line is as in v0.116.13
+  (each vault framed, "▶ name tier │ marks"). When it does not, a **menu** (`Select`, the
+  one the administration uses for the language and the removal) stands where the slots
+  were: every secondary in the binding's order, each row "▶ name 🔒" (⏸ while paused, the
+  tier as its badge). Beside it, the **picked one's controls** in their frame, without the
+  name the menu already shows: its ▶ (or dimmed ▶), its tier, the bar and the marks that
+  open it. A pick is kept (`bandPick`), ignored while everything fits, and falls back to the
+  first when its vault is unbound. On the terminal, where a local vault's name was the key
+  that opened it, the picked slot gets a 💎 key after the bar instead.
+- **Compact when even the menu's form runs over**: the headings "Principal :" and
+  "Secondaires :" are left out and the toggle at the right is its glyph "◧" alone. On
+  Roland's screen: at 88 cells the primary, the menu and the picked controls, with their
+  words from 90 or so.
+- **The paging is gone**: no "◀N" / "+N" arrows, no `bandPages`, no page state; the `cells`
+  arithmetic is now `slotCells`, `baseCells`, `bandFit` (every slot or none) and
+  `bandPickIsCompact`. A surface without `Select` (the mobile app's table) shows the picked
+  one named and a dim "+N" count, measured as such.
+- Adversarial review by Codex: FIX FIRST, three findings fixed — a picked local vault had no
+  opener left on the terminal (the 💎 key), the fallback's count key was on a Text (whose
+  key the trees drop) and its width was measured as the menu's. Tests:
+  `tests/vault-panel.test.tsx` 138 (the menu's rows and order, a pick that moves the
+  controls and acts through the router, a pick kept then dropped with its vault, the
+  thresholds 84/88 desktop, 92 and 102 for a remote and a local vault, 93 for CJK names, the
+  compact form at 40 and 60 cells on both surfaces, the terminal's 💎 and its 85/84
+  threshold, the mobile fallback and its 85/84; eighteen mutations each seen red — the pick
+  ignored, never or always compact, the second form from two hidden, each frame uncounted,
+  the picked slot counted or drawn with its name, the state glyph dropped, the headings or
+  the toggle kept when compact, a wide character at one cell, the tier before the name, the
+  bar without marks, the terminal's 💎 missing or uncounted, the fallback measured as the
+  menu, the menu drawn on the mobile app).
+
 ## [0.117.0] — 2026-10-25 — the primary vault's rights can be set, like a secondary's
 
 Asked from the vault panel ("je ne peux pas modifier les droits de lecture/écriture du vault
