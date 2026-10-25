@@ -24,6 +24,29 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 - Tests: `tests/vault-panel.test.tsx` 131 (the admin-tab and footer tests rewritten around
   the gear: its place, its pressed state, the toggle, the fold); 7 mutations killed.
 
+## [0.116.9] — 2026-10-25 — the administration as a settings page, after ChatGPT's and Perplexity's
+
+Asked by Roland from two screenshots ("c'est pas terrible l'administration"): the accordion
+read as a list, not as a settings page. Wide enough (96 columns, a desktop pane), the console
+is now laid out the way those two are:
+
+- **A side column** lists the six sections, each with a grey line icon (a glyph on the
+  terminal; WireGuard's is a dot in the colour of its state) and its name, the shown one on
+  a grey ground. A press shows that section; nothing folds.
+- **The page at the right**: the section's title, its state line under it (the one the
+  accordion's headers carry), and its settings in a rounded, dim card.
+- **Settings as rows**: in "Général" and "Ouverture des vaults", each setting is one row —
+  its label at the left, its control at the right (the language menu, the version and the
+  update keys, the Oui/Non of each way of opening) — with a thin rule between two rows. The
+  forms and the removal menu keep their layout inside the card.
+- **Narrower, the accordion stays** (a terminal pane, a phone), the same section shown: the
+  layout follows the width, the state does not change.
+- Adversarial review by Codex: one finding fixed — the test accepted an icon inside the
+  Button (it asserts the icon beside it now). Tests: `tests/vault-panel.test.tsx` 133 (the side list in order with its marks on both
+  surfaces, the shown section's ground, title, state line and card, the rows, a second press
+  that keeps the section, the fall-back to the accordion under 96 columns; the width switch,
+  the ground and the rows each seen red under their mutation).
+
 ## [0.116.8] — 2026-10-25 — fixed columns, tiles that wrap, the files in sight; tabs with one frame colour
 
 Roland's review of v0.116.7 on screen (one tile per line, the primary's tile unlike the

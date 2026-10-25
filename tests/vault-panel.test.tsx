@@ -2837,10 +2837,75 @@ test('a flow that leads to the console unfolds its section: no primary → Crée
   await ui.unmount()
 })
 
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`wide, the console is a settings page on the ${surface}: the sections listed at the left, the shown one's title, state and card at the right`, async ($, on) => {
+    wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+    windowsWireguard(on, { isInstalled: true, tunnels: ['wg0'], launched: [] })
+    await begin($)
+    const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 130 }, surface })
+    await ui.press({ key: 'nav-admin' })
+    const tree = await ui.drawn()
+    const nodes = nodesOf(tree)
+    // A row: the side list, then the page; no accordion header, no rule under a section.
+    expect(nodes.find(n => keyOf(n) === 'admin')?.props?.flexDirection).toBe('row')
+    expect(nodes.find(n => keyOf(n) === 'admin-nav')?.props).toMatchObject({ width: 26, flexShrink: 0 })
+    expect(nodes.some(n => String(keyOf(n)).endsWith('-head') && String(keyOf(n)).startsWith('admin-'))).toBe(false)
+    expect(nodes.some(n => /^admin-(general|open|create|wireguard|register|unregister)-rule$/.test(String(keyOf(n))))).toBe(false)
+    // The six sections in order in the side list, each a Button; Général shown, on a grey ground, the others dim.
+    expect(accordionOf(tree)).toEqual({ headers: [...ADMIN_SECTIONS], open: ['general'] })
+    for (const [i, name] of ADMIN_SECTIONS.entries()) {
+      const row = nodes.find(n => keyOf(n) === `admin-nav-${name}`)
+      expect(row?.props?.backgroundColor).toBe(name === 'general' ? 'inactive' : undefined)
+      const button = nodesOf(row as never).find(n => n.type === 'Button' && keyOf(n) === `admin-sec-${name}`)
+      expect(button?.props?.dimColor).toBe(name !== 'general')
+      expect(nodesOf(button as never).some(n => n.type === 'Text' && textOf(n) === ADMIN_TITLES[i])).toBe(true)
+      // Its mark: an Svg beside the Button on the desktop, a glyph inside it on the terminal.
+      if (surface === 'desktop') {
+        // A direct child of the row, before the Button; never inside the Button, which may not hold one.
+        const children = (row?.children as Drawn[] | undefined) ?? []
+        expect(children.findIndex(n => n.type === 'Svg' && n.props?.alt === ADMIN_TITLES[i])).toBe(0)
+        expect(nodesOf(button as never).some(n => n.type === 'Svg')).toBe(false)
+      } else {
+        expect(nodesOf(button as never).some(n => n.type === 'Text' && ['⚙', '↗', '+', '●', '⊕', '−'].includes(textOf(n).trim()))).toBe(true)
+      }
+    }
+    // The page: the title, the state line, the settings in a rounded card.
+    const page = nodes.find(n => keyOf(n) === 'admin-general')
+    expect(nodesOf(page as never).some(n => n.type === 'Text' && n.props?.size === 'heading' && textOf(n) === 'Général')).toBe(true)
+    expect(nodesOf(nodes.find(n => keyOf(n) === 'admin-page-note') as never).some(n => n.type === 'Text' && textOf(n) === 'Français')).toBe(true)
+    expect(nodes.find(n => keyOf(n) === 'admin-general-panel')?.props).toMatchObject({ borderStyle: 'round', borderDimColor: true })
+    // Its settings as rows: the label at the left, the control at the right, a rule between two.
+    const langRow = nodes.find(n => keyOf(n) === 'admin-language')
+    expect(langRow?.props?.justifyContent).toBe('space-between')
+    expect(nodesOf(nodes.find(n => keyOf(n) === 'admin-language-label') as never).some(n => n.type === 'Text' && textOf(n) === 'Langue')).toBe(true)
+    expect(nodesOf(nodes.find(n => keyOf(n) === 'admin-language-control') as never).some(n => keyOf(n) === 'admin-language-select' || keyOf(n) === 'admin-language-choice')).toBe(true)
+    expect(nodes.find(n => keyOf(n) === 'admin-general-body-1-rule')?.props).toMatchObject({ height: 1, overflow: 'hidden' })
+    // Another section: a press in the list shows it in place of the first; a second press keeps it shown.
+    await ui.press({ key: 'admin-sec-open' })
+    expect(accordionOf(await ui.drawn()).open).toEqual(['open'])
+    await ui.press({ key: 'admin-sec-open' })
+    const second = await ui.drawn()
+    expect(accordionOf(second).open).toEqual(['open'])
+    for (const way of ['obsidian', 'browser', 'claude']) {
+      const row = nodesOf(second).find(n => keyOf(n) === `admin-open-${way}`)
+      expect(row?.props?.justifyContent).toBe('space-between')
+      expect(nodesOf(row as never).some(n => keyOf(n) === `open-${way}-on`)).toBe(true)
+    }
+    // Narrowed under 96 columns, the same session falls back to the accordion, the shown section open.
+    await ui.unmount()
+    const narrow = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80 }, surface })
+    const narrowTree = await narrow.drawn()
+    expect(nodesOf(narrowTree).find(n => keyOf(n) === 'admin')?.props?.flexDirection).toBe('column')
+    expect(accordionOf(narrowTree).open).toEqual(['open'])
+    expect(nodesOf(narrowTree).some(n => keyOf(n) === 'admin-open-head')).toBe(true)
+    await narrow.unmount()
+  })
+}
+
 test('the console holds the pane while open: its sections one under the other, the full width, a rule between two; wiki types and conventions counter', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
-  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 130 }, surface: 'desktop' })
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80 }, surface: 'desktop' })
   // The gear, up while the vaults show; a press holds it down and opens the console.
   expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'icon-nav-admin')?.props?.backgroundColor).toBeUndefined()
   await ui.press({ key: 'nav-admin' })
@@ -2856,7 +2921,7 @@ test('the console holds the pane while open: its sections one under the other, t
     const ruleBox = nodes.find(n => keyOf(n) === `admin-${name}-rule`)
     expect(ruleBox?.props).toMatchObject({ height: 1, overflow: 'hidden' })
     const rule = nodesOf(ruleBox as never).find(n => n.type === 'Text')
-    expect(textOf(rule as Drawn)).toBe('─'.repeat(130))
+    expect(textOf(rule as Drawn)).toBe('─'.repeat(80))
     expect(rule?.props?.dimColor).toBe(true)
     expect(rule?.props?.wrap).toBeUndefined()
     // The open header on a subtle ground, the folded ones on none.
@@ -3118,8 +3183,8 @@ test('the console turns each way of opening a vault on or off: its mark, its leg
   // The default browser off: no planet in the tiles, the legend or the band.
   await ui.press({ key: 'open-browser-off' })
   expect(stored.openers).toEqual({ obsidian: true, browser: false, claude: true })
-  // The header's line follows.
-  expect(nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'admin-sec-open-note') as never).some(n => n.type === 'Text' && textOf(n) === '2 sur 3')).toBe(true)
+  // The section's state line follows (under the page's title, in a wide pane).
+  expect(nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'admin-page-note') as never).some(n => n.type === 'Text' && textOf(n) === '2 sur 3')).toBe(true)
   await ui.press({ key: 'nav-vaults' })
   expect(await ui.find({ type: 'Button', key: 'web-extra' })).toBeFalsy()
   expect(await ui.find({ type: 'Button', key: 'ui-extra' })).toBeTruthy()
