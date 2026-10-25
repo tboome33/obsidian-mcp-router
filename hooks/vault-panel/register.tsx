@@ -243,9 +243,10 @@ function slotCells(name: string | null, mark: number, isFramed: boolean, isFirst
 }
 // The line's fixed part with its words: "Principal :" and a gap, "● " and
 // the primary with its marks (`primaryMark`, their cells with their gaps) in
-// its frame on a graphical surface, a gap, the spacer and a gap,
-// "Secondaires :", the toggle. (Compact, the headings are left out and the
-// toggle is its glyph: the last form, measured against nothing.)
+// its frame when `isFramed` (the first form on a graphical surface; the
+// second form frames nothing), a gap, the spacer and a gap, "Secondaires :",
+// the toggle. (Compact, the headings are left out and the toggle is its
+// glyph: the last form, measured against nothing.)
 function baseCells(primary: string | null, primaryMark: number, isFramed: boolean) {
   const frame = isFramed ? 2 : 0
 
@@ -276,19 +277,13 @@ function menuCells(labels: string[]) {
 // Whether the line's second form runs over `columns` with its full labels:
 // the fixed part, a gap, then the menu (`menu`: its rows) and the picked slot
 // without its name — or, on a surface without the menu (`menu` null), the
-// dim count of the others ("+N") and the picked slot with its name. The line
-// is then compact (no headings, the toggle as its glyph).
-function bandPickIsCompact(
-  primary: string | null,
-  primaryMark: number,
-  menu: string[] | null,
-  picked: { name: string; mark: number; others: number },
-  columns: number,
-  isFramed: boolean,
-) {
-  const second = menu ? menuCells(menu) + slotCells(null, picked.mark, isFramed, true) : cells(`+${picked.others}`) + slotCells(picked.name, picked.mark, isFramed, true)
+// dim count of the others ("+N") and the picked slot with its name. Nothing
+// is framed in that form, on any surface. The line is then compact (no
+// headings, the toggle as its glyph).
+function bandPickIsCompact(primary: string | null, primaryMark: number, menu: string[] | null, picked: { name: string; mark: number; others: number }, columns: number) {
+  const second = menu ? menuCells(menu) + slotCells(null, picked.mark, false, true) : cells(`+${picked.others}`) + slotCells(picked.name, picked.mark, false, true)
 
-  return baseCells(primary, primaryMark, isFramed) + 1 + second > columns
+  return baseCells(primary, primaryMark, false) + 1 + second > columns
 }
 
 type Binding = {
@@ -4012,7 +4007,8 @@ export const register: Register = on => {
     // The terminal draws no SVG (its element draws nothing there): no mark is
     // drawn, and none is counted.
     const BandSvg = e.surface !== 'terminal' && 'Svg' in bandEls ? bandEls.Svg : null
-    // A graphical surface frames each vault; the terminal parts two with a "│".
+    // In the line's first form a graphical surface frames each vault and the
+    // terminal parts two with a "│"; the second form frames nothing.
     const isChip = !!BandSvg
     const bandOpen = await read($, openers)
     // The cells a name's controls take beyond the name: Obsidian's mark (2 and
@@ -4082,7 +4078,6 @@ export const register: Register = on => {
         BandSelect ? entries.map(menuLabel) : null,
         { name: picked.row.name, mark: markCells(picked.row, !BandSelect), others: entries.length - 1 },
         e.props.bodyColumns,
-        !!BandSvg,
       )
     // The band's width and what fitted, in the trace (see `traceScroll`): what
     // `bandFit` counts, beside what a surface draws, sets the count right.
@@ -4192,14 +4187,17 @@ export const register: Register = on => {
     // own thin round frame, the primary too, and nothing parts two: the frame
     // is the separator. The terminal, where a frame would take three lines,
     // keeps the "│" between two slots and no frame.
+    // In the line's second form nothing is framed (asked from a mockup of
+    // v0.117.1): the menu's own pill is the line's shape, the picked controls
+    // and the primary stand bare beside it.
     const slot = (key: string, isFirst: boolean, children: unknown) =>
-      isChip ? (
+      isChip && !isPick ? (
         <Box key={key} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0} borderStyle="round" borderColor="inactive">
           {children as never}
         </Box>
       ) : (
         <Box key={key} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
-          {!isFirst && caption('│')}
+          {!isChip && !isFirst && caption('│')}
           {children as never}
         </Box>
       )

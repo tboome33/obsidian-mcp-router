@@ -10,6 +10,26 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.117.2] — 2026-10-25 — the band's second form frames nothing
+
+Asked by Roland from a mockup over v0.117.1's band on his small screen ("enlève l'apparence de
+bouton autour des icônes à droite de la liste déroulante"), where he had also taken the frame
+off the primary:
+
+- **No frame in the menu's form.** When the line shows the menu of the secondaries, the
+  picked one's controls beside it (▶, tier, │, marks) stand bare, and so does the primary's
+  slot ("● name, marks"): the menu's own pill is the line's shape. The first form — every
+  slot on the line — keeps its frames on the desktop; the terminal is as it was.
+- `bandPickIsCompact` measures the second form unframed on every surface; the desktop's
+  "words" threshold for two vaults that open nowhere moves from 84 to 80 (the line's form stays
+  at 88), the mobile fallback's from 85 to 81.
+- Adversarial review by Codex: SHIP, two nits taken — the frame assertions now check the node
+  is there before its border, and three comments said "framed". Tests:
+  `tests/vault-panel.test.tsx` 138 (no border on the picked slot nor on the primary in the
+  second form, on both surfaces and in both its states; the first form's three frames still
+  pinned; twenty mutations each seen red, among them the second form framed and the second
+  form measured with frames).
+
 ## [0.117.1] — 2026-10-25 — the band on a small screen: a menu of the secondaries, the picked one's controls beside it
 
 Asked by Roland from a screenshot of v0.116.13 on a small screen (the line 88–118 cells wide,

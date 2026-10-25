@@ -1568,15 +1568,20 @@ test("a band too narrow for every secondary shows a menu of them all, and the pi
   const menu = nodes.find(n => n.type === 'Select' && keyOf(n) === 'band-pick')
   expect((menu?.props?.options as { value: string; label: string }[]).map(o => [o.value, o.label])).toEqual(names.map(n => [n, `▶ ${n} ✋`]))
   expect(menu?.props?.value).toBe('alpha-vault')
-  // The picked one's controls in a frame of their own: its ▶, its tier; no
-  // name, and no bar (it opens nowhere).
+  // The picked one's controls, unframed: its ▶, its tier; no name, and no
+  // bar (it opens nowhere).
   const rows = nodes.filter(n => /^band-row-/.test(keyOf(n) ?? ''))
   expect(rows.map(n => keyOf(n))).toEqual(['band-row-alpha-vault'])
   const slot = nodesOf(rows[0] as never)
   expect(slot.some(n => keyOf(n) === 'band-pause-alpha-vault')).toBe(true)
   expect(slot.some(n => keyOf(n) === 'band-tier-alpha-vault')).toBe(true)
   expect(slot.some(n => /^band-(name|open|plain|bar)-/.test(keyOf(n) ?? ''))).toBe(false)
-  expect(rows[0]?.props?.borderStyle).toBe('round')
+  // Nothing framed in this form (the mockup over v0.117.1): neither the picked
+  // controls nor the primary — the menu's pill is the line's shape.
+  expect(rows[0]?.props?.borderStyle).toBeUndefined()
+  const main = nodes.find(n => keyOf(n) === 'band-main-row')
+  expect(main?.type).toBe('Box')
+  expect(main?.props?.borderStyle).toBeUndefined()
   // The menu stands where the slots were, before the picked one.
   const keys = nodes.map(n => keyOf(n)).filter((k): k is string => !!k)
   expect(keys.indexOf('band-main-row')).toBeLessThan(keys.indexOf('band-pick'))
@@ -1728,9 +1733,10 @@ test('a band too narrow for the menu with its words is compact: no headings, the
 // The band's line, cell by cell, for main + docs + notes on the desktop:
 // "Principal : [● main]" (a frame, a cell each side), spacer, "Secondaires :"
 // and the toggle take 63; " [▶ docs 🔒]" 12 more; " [▶ notes ✋]" 13: both on
-// the line from 88, never one alone. Under 88, the menu ("▶ docs 🔒" and
+// the line from 88, never one alone. Under 88, the menu's form — nothing
+// framed there: the fixed part 61, a gap, the menu ("▶ docs 🔒" and
 // "▶ notes ✋" are 9 cells; the chevron and its chrome 4) and the picked one's
-// controls ([▶ 🔒] 7) take 84 with the words; under 84 the line is compact.
+// controls (▶ 🔒, 5) — takes 80 with the words; under 80 the line is compact.
 test('the line holds every secondary or turns into the menu, which keeps its words down to a width', async ($, on) => {
   wire(on, { list: LIST })
   engineBand(on)
@@ -1758,14 +1764,15 @@ test('the line holds every secondary or turns into the menu, which keeps its wor
   }
   const wordsAt = await firstWhere(s => s.hasWords)
   const lineAt = await firstWhere(s => s.names.length === 2)
-  expect([wordsAt, lineAt]).toEqual([84, 88])
+  expect([wordsAt, lineAt]).toEqual([80, 88])
   expect(await shape(wordsAt - 1)).toEqual({ names: [], hasMenu: true, hasWords: false })
   expect(await shape(wordsAt)).toEqual({ names: [], hasMenu: true, hasWords: true })
   expect(await shape(lineAt - 1)).toEqual({ names: [], hasMenu: true, hasWords: true })
   expect(await shape(lineAt)).toEqual({ names: ['docs', 'notes'], hasMenu: false, hasWords: true })
-  // The menu's form costs the fixed part, a gap, the menu and the picked
-  // controls; the line's, the fixed part and the two slots: four cells apart.
-  expect(lineAt - wordsAt).toBe(12 + 13 - (1 + 9 + 4 + 7))
+  // The line's form costs the fixed part with the primary's frame and the two
+  // framed slots; the menu's, the fixed part bare, a gap, the menu and the
+  // picked controls bare: eight cells apart.
+  expect(lineAt - wordsAt).toBe(2 + 12 + 13 - (1 + 9 + 4 + 5))
 })
 
 test('the band counts a name\'s mark where it is drawn: on the desktop, for a vault that opens', async ($, on) => {
@@ -2602,10 +2609,10 @@ test('a pick is kept across redraws, changes nothing once every secondary fits, 
   await again.unmount()
 })
 
-// The second form on both surfaces, for main + docs + notes + extra. With the
-// words, the menu's form takes 84 cells on the desktop (the fixed part 63, a
-// gap, the menu 13, the picked controls 7) and 80 on the terminal (61, a gap,
-// 13, 5): at 85 both have their words; at 60 both are compact.
+// The second form on both surfaces, for main + docs + notes + extra. Nothing
+// framed in it: with the words it takes 80 cells on either surface (the fixed
+// part 61, a gap, the menu 13, the picked controls 5): at 85 both have their
+// words; at 60 both are compact.
 test("compact or not, the menu's form keeps the primary, the menu and the picked controls; the terminal has it unframed", async ($, on) => {
   wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'notes', 'extra'] } } })
   engineBand(on)
@@ -2632,12 +2639,22 @@ test("compact or not, the menu's form keeps the primary, the menu and the picked
     expect(compact.nodes.some(n => n.type === 'Select' && keyOf(n) === 'band-pick')).toBe(true)
     const rows = compact.nodes.filter(n => /^band-row-/.test(keyOf(n) ?? ''))
     expect(rows.map(n => keyOf(n))).toEqual(['band-row-docs'])
-    // The picked controls: ▶ then the tier, no name; framed on the desktop only.
+    // The picked controls: ▶ then the tier, no name, no frame.
     const slot = nodesOf(rows[0] as never).map(n => keyOf(n)).filter((k): k is string => !!k)
     expect(slot.indexOf('band-pause-docs')).toBeGreaterThan(-1)
     expect(slot.indexOf('band-pause-docs')).toBeLessThan(slot.indexOf('band-tier-docs'))
     expect(slot.some(k => /^band-(name|open|plain)-/.test(k))).toBe(false)
-    expect(rows[0]?.props?.borderStyle).toBe(surface === 'desktop' ? 'round' : undefined)
+    // Unframed on both surfaces in this form, the primary too (framed on the
+    // desktop's line only when every slot fits).
+    expect(rows[0]?.props?.borderStyle).toBeUndefined()
+    for (const drawn of [compact, words]) {
+      const main = drawn.nodes.find(n => keyOf(n) === 'band-main-row')
+      expect(main?.type).toBe('Box')
+      expect(main?.props?.borderStyle).toBeUndefined()
+      const row = drawn.nodes.find(n => keyOf(n) === 'band-row-docs')
+      expect(row?.type).toBe('Box')
+      expect(row?.props?.borderStyle).toBeUndefined()
+    }
     // No "│" on the line between the menu and the picked one; the primary's slot stands first.
     expect(compact.texts.filter(t => t === '│')).toEqual([])
     expect(compact.nodes.map(n => keyOf(n)).indexOf('band-main-row')).toBeLessThan(compact.nodes.map(n => keyOf(n)).indexOf('band-pick'))
@@ -3906,8 +3923,9 @@ test("the menu's pick keeps a way to open a local vault on the terminal: 💎 af
 
 // The mobile app's table has no Select. The band there shows the picked one
 // named, its controls, and a dim count of the others; its compact threshold
-// is that form's own measure — 63 (the fixed part), a gap, "+4" (2) and the
-// named slot " [▶ alpha-vault ✋]" (19) = 85 — not the menu's (92).
+// is that form's own measure — 61 (the fixed part, bare), a gap, "+4" (2) and
+// the named slot " ▶ alpha-vault ✋" (17, nothing framed in this form) = 81 —
+// not the menu's (61 + 1 + 21 + 5 = 88).
 test('a surface without the menu shows the picked one named, with a dim count of the others, and is compact by that measure', async ($, on) => {
   const names = ['alpha-vault', 'beta-vault', 'gamma-vault', 'delta-vault', 'epsilon-vault']
   wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: names } } })
@@ -3931,6 +3949,6 @@ test('a surface without the menu shows the picked one named, with a dim count of
   expect(words.texts).toContain('Secondaires :')
   const keys = words.nodes.map(n => keyOf(n))
   expect(keys.indexOf('band-count')).toBeLessThan(keys.indexOf('band-row-alpha-vault'))
-  expect((await at(85)).texts).toContain('Secondaires :')
-  expect((await at(84)).texts).not.toContain('Secondaires :')
+  expect((await at(81)).texts).toContain('Secondaires :')
+  expect((await at(80)).texts).not.toContain('Secondaires :')
 })
