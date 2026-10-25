@@ -194,9 +194,10 @@ const modeLabel = (mode: SecondaryMode) => t(`mode.${mode}`)
 // after the primary and the toggle, in binding order, the rest counted as
 // "›+N" (a page to turn). The line as the band draws it, cell by cell:
 // "Principal :", a gap, "●", a gap, the primary, a gap, a one-cell spacer, a
-// gap, "Secondaires :", "‹" and a gap past the first page, then per secondary
-// a gap, "·" (or "│") and a gap after the first, its name, a gap and its badge
-// (two cells); "›+N" after a gap; the toggle after a gap of two, with room
+// gap, "Secondaires :", "◀N" and a gap past the first page, then per secondary
+// a gap, "·" (or "│") and a gap after the first, its ▶ and a gap, its name, a
+// gap and its badge (two cells), a gap, "│" and its marks when it has any;
+// "N▶" after a gap; the toggle after a gap of two, with room
 // for its chrome. In the current language's words. Measured in
 // cells: the band also cuts any text that still runs over, so a misjudged
 // width costs a cut, never a second line.
@@ -230,47 +231,64 @@ function moreText(hidden: number) {
 function backText(before: number) {
   return before > 0 ? `◀${before}` : ''
 }
+// What the mark of a page key says inside its arrow: the count before the
+// page ("3"), the count after it with a plus ("+3": more to come).
+function pageKeyLabel(direction: 'back' | 'more', count: number) {
+  return direction === 'more' ? `+${count}` : String(count)
+}
 // The cells a page key takes, with its gap. Drawn as a mark: the pentagon is
-// 18 + 7 px a digit, a cell being 7 px (a 14 px mark counts 2 cells and a
-// gap), so 3 cells and one a digit, and the gap. Drawn as its text ("◀N",
-// "N▶"): the arrow, the digits and the gap.
-function pageKeyCells(count: number, asMark: boolean) {
-  return (asMark ? 4 : 3) + String(count).length
+// 18 + 7 px a character of its label, a cell being 7 px (a 14 px mark counts
+// 2 cells and a gap), so 3 cells and one a character, and the gap. Drawn as
+// its text ("◀N", "N▶"): the arrow, the digits and the gap.
+function pageKeyCells(direction: 'back' | 'more', count: number, asMark: boolean) {
+  return asMark ? 4 + pageKeyLabel(direction, count).length : 3 + String(count).length
 }
-function pageKeyWidth(count: number) {
-  return 18 + 7 * String(count).length
+function pageKeyWidth(direction: 'back' | 'more', count: number) {
+  return 18 + 7 * pageKeyLabel(direction, count).length
 }
+// The label's baseline: at 11.9 the bold 11 px digits of the system font
+// stand from 4.1 to 11.95, centred on the arrow's 8 (measured in Chromium,
+// which draws the mark; `dominant-baseline="central"` at 8.5 put them 1.2 px
+// too low, as v0.116.8 showed on screen).
+const PAGE_KEY_BASELINE = 11.9
 function pageKeyMark(direction: 'back' | 'more', count: number) {
-  const w = pageKeyWidth(count)
+  const w = pageKeyWidth(direction, count)
   const shape = direction === 'back' ? `M7 0H${w}V16H7L0 8Z` : `M0 0H${w - 7}L${w} 8L${w - 7} 16H0Z`
+  // The label centred on the straight part of the arrow, past its point.
   const x = direction === 'back' ? (w + 7) / 2 : (w - 7) / 2
 
   // A thin light outline, so the shape stands out on a dark ground too.
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} 16"><path d="${shape}" fill="#1f1f1f" stroke="#ffffff" stroke-width="0.75"/><text x="${x}" y="8.5" font-family="system-ui, sans-serif" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle" dominant-baseline="central">${count}</text></svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} 16"><path d="${shape}" fill="#1f1f1f" stroke="#ffffff" stroke-width="0.75"/><text x="${x}" y="${PAGE_KEY_BASELINE}" font-family="system-ui, sans-serif" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">${pageKeyLabel(direction, count)}</text></svg>`
 }
 // The secondaries the band's line shows from `start` on, in the binding's
-// order, each as its name, its marks, its badge and its ▶, a "·" between two
-// (a "│" on the terminal); `paused[i]` says which are paused (the ▶ the same
-// width either way). `marks[i]` (and `primaryMark`): the cells that name's
-// marks take beside it. Past the first page the line starts with "◀N" (the
-// key and its gap); what does not fit ends it as "N▶".
+// order, each as its ▶, its name, its badge, then a "│" and its marks when it
+// has any; a "·" between two (a "│" on the terminal); `paused[i]` says which
+// are paused (the ▶ the same width either way). `marks[i]` (and
+// `primaryMark`): the cells that name's marks take beside it. Past the first
+// page the line starts with "◀N" (the key and its gap); what does not fit
+// ends it as "N▶" ("+N" in the arrow).
 function bandFit(primary: string | null, secondaries: string[], columns: number, paused: boolean[] = [], marks: number[] = [], primaryMark = 0, start = 0, keysAsMarks = false) {
   void paused
   const toggle = 2 + Math.max(cells(t('band.show')), cells(t('band.hide'))) + 4
   // "Principal :", a gap, "● " and the name with its marks; two gaps and
   // "Secondaires :"; the pane's toggle at the right.
   const base =
-    cells(t('band.primary')) + 1 + 2 + primaryMark + cells(primary ?? t('band.none')) + 1 + 1 + 1 + cells(t('band.secondaries')) + toggle + (start > 0 ? pageKeyCells(start, keysAsMarks) : 0)
+    cells(t('band.primary')) + 1 + 2 + primaryMark + cells(primary ?? t('band.none')) + 1 + 1 + 1 + cells(t('band.secondaries')) + toggle + (start > 0 ? pageKeyCells('back', start, keysAsMarks) : 0)
   const rest = secondaries.slice(start)
-  // A gap, "· " after the first, the marks and the name, a gap and its badge,
-  // a gap and its control (▶, dimmed while paused).
-  const widths = rest.map((name, i) => 1 + (i > 0 ? 2 : 0) + (marks[start + i] ?? 0) + cells(name) + 1 + 2 + 1 + 1)
+  // A gap, "· " after the first, its control (▶, dimmed while paused) and a
+  // gap, the name, a gap and its badge; then, when it has marks, a gap and
+  // the "│" (two cells) before the marks (each counted with its gap).
+  const widths = rest.map((name, i) => {
+    const mark = marks[start + i] ?? 0
+
+    return 1 + (i > 0 ? 2 : 0) + 1 + 1 + cells(name) + 1 + 2 + (mark > 0 ? 2 + mark : 0)
+  })
   // The most secondaries that fit with the "N▶" their remainder needs. A
   // page one turned to shows at least one, cut where it runs over: a page
   // with nothing on it would be a page "N▶" leads nowhere from.
   for (let shown = rest.length; shown > 0; shown -= 1) {
     const hidden = rest.length - shown
-    const room = hidden > 0 ? pageKeyCells(hidden, keysAsMarks) : 0
+    const room = hidden > 0 ? pageKeyCells('more', hidden, keysAsMarks) : 0
     const used = base + widths.slice(0, shown).reduce((a, b) => a + b, 0) + room
     if (used <= columns) {
       return { shown, hidden: rest.length - shown }
@@ -4166,11 +4184,64 @@ export const register: Register = on => {
           <BandSvg source={markOf(row.mode)} alt={markAlt(markOf(row.mode))} width={14} height={14} />
         </Box>
       ) : (
-        <Text key={`band-${list}tier-${row.name}`} dimColor={isPaused} wrap="truncate-end">
-          {iconOf(row.mode)}
-        </Text>
+        <Box key={`band-${list}tier-${row.name}`} flexShrink={0}>
+          <Text dimColor={isPaused} wrap="truncate-end">
+            {iconOf(row.mode)}
+          </Text>
+        </Box>
       )
-    const entry = (row: Secondary, isPaused: boolean, list = '') => [opener(row, row.name, isPaused, list), tier(row, isPaused, list), control(row, isPaused, list)]
+    // A secondary's name on the line: the control that opens a local vault in
+    // Obsidian (as its mark after the bar does), a plain text for a remote one
+    // (its marks open it) or one that opens nowhere.
+    const secondaryName = (row: Secondary, isPaused: boolean, list = '') => {
+      const target = openTarget(row)
+
+      // A Box carries the key: the surfaces keep a Box's and a Button's, not a
+      // Text's (seen in the drawn trees).
+      return target === 'obsidian' && bandOpen.obsidian ? (
+        <Button key={`band-${list}open-${row.name}`} plain onPress={() => void openVault($, row)}>
+          <Text dimColor={isPaused} wrap="truncate-end">
+            {row.name}
+          </Text>
+        </Button>
+      ) : (
+        <Box key={`band-${list}${target ? 'name' : 'plain'}-${row.name}`} flexShrink={0}>
+          <Text dimColor={!target || isPaused} wrap="truncate-end">
+            {row.name}
+          </Text>
+        </Box>
+      )
+    }
+    // Where it opens, each mark its own control: Obsidian's for a local vault
+    // (a graphical surface only: the name is the terminal's control), the
+    // planet and Claude's mark for a remote one.
+    const secondaryMarks = (row: Secondary, list = '') => {
+      const target = openTarget(row)
+
+      return target === 'obsidian'
+        ? bandOpen.obsidian && BandSvg
+          ? [iconKey(OBSIDIAN_MARK, '', `band-${list}obsidian-${row.name}`, () => void openVault($, row))]
+          : []
+        : target === 'browser'
+          ? [
+              ...(bandOpen.browser ? [iconKey(GLOBE_MARK, '🌐', `band-${list}web-${row.name}`, () => void openInBrowser($, row))] : []),
+              ...(bandOpen.claude ? [iconKey(CLAUDE_PANE_MARK, '✳', `band-${list}ui-${row.name}`, () => void openUi($, row))] : []),
+            ]
+          : []
+    }
+    // A secondary's slot, in this order (asked from a screenshot of v0.116.9):
+    // its ▶, its name, its tier, then — when it opens somewhere — a dim "│"
+    // and the marks that open it.
+    const entry = (row: Secondary, isPaused: boolean, list = '') => {
+      const marks = secondaryMarks(row, list)
+      const bar = (
+        <Box key={`band-${list}bar-${row.name}`} flexShrink={0}>
+          <Text dimColor>│</Text>
+        </Box>
+      )
+
+      return [control(row, isPaused, list), secondaryName(row, isPaused, list), tier(row, isPaused, list), ...(marks.length > 0 ? [bar, ...marks] : [])]
+    }
     // From the page shown (the kept one, brought within the pages), not the kept one itself.
     const turnPage = (by: number) => void update($, bandPage, () => Math.min(Math.max(0, pageAt + by), pages.length - 1)).catch(() => undefined)
     // A page key: the arrow with its count, drawn as a mark with a blank
@@ -4181,9 +4252,9 @@ export const register: Register = on => {
 
       return BandSvg ? (
         <Box key={`icon-${key}`} flexDirection="row" alignItems="center" flexShrink={0}>
-          <BandSvg source={pageKeyMark(direction, count)} alt={text} width={pageKeyWidth(count)} height={16} />
+          <BandSvg source={pageKeyMark(direction, count)} alt={text} width={pageKeyWidth(direction, count)} height={16} />
           <Box position="absolute" top={0} left={0}>
-            <Button key={key} label={' '.repeat(3 + String(count).length)} plain onPress={onPress} />
+            <Button key={key} label={' '.repeat(3 + pageKeyLabel(direction, count).length)} plain onPress={onPress} />
           </Box>
         </Box>
       ) : (

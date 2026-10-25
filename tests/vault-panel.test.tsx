@@ -1641,10 +1641,10 @@ test('a band too narrow for even one secondary counts them all', async ($, on) =
 })
 
 // The band's line, cell by cell, for main + docs + notes: "Principal : ● main",
-// spacer, "Secondaires :" and the toggle take 61; " docs 🔒 ▶" 10 more;
-// " · notes ✋ ▶" 13. At 75, docs would fit alone but not with "1▶" after it:
-// the counter's room is kept, so nothing is shown and both are counted. At
-// 84, both fit.
+// spacer, "Secondaires :" and the toggle take 61; " ▶ docs 🔒" 10 more;
+// " · ▶ notes ✋" 13. At 76, docs would fit alone but not with the "+1" arrow
+// (six cells with its gap) after it: the counter's room is kept, so nothing
+// is shown and both are counted. At 84, both fit.
 test('the band keeps room for "N▶" before it shows a secondary', async ($, on) => {
   wire(on, { list: LIST })
   engineBand(on)
@@ -1672,10 +1672,10 @@ test('the band keeps room for "N▶" before it shows a secondary', async ($, on)
   expect(await at(docsAt)).toContain('1▶')
   // notes, once it fits, takes the counter's room: no "›" any more.
   expect((await at(notesAt)).some(t => /^\d+▶$/.test(t))).toBe(false)
-  // Neither opens anywhere (no folder, no web UI): no mark. notes' own width
-  // (gap, "· ", 5 cells, badge, control) less the counter it frees ("1▶", five cells with its gap).
-  expect(notesAt - docsAt).toBe(1 + 2 + 5 + 1 + 2 + 1 + 1 - 5)
-  expect([docsAt, notesAt]).toEqual([76, 84])
+  // Neither opens anywhere (no folder, no web UI): no mark, no bar. notes' own width
+  // (gap, "· ", control, 5 cells, badge) less the counter it frees ("+1" in its arrow, six cells with its gap).
+  expect(notesAt - docsAt).toBe(1 + 2 + 1 + 1 + 5 + 1 + 2 - 6)
+  expect([docsAt, notesAt]).toEqual([77, 84])
 })
 
 test('the band counts a name\'s mark where it is drawn: on the desktop, for a vault that opens', async ($, on) => {
@@ -1699,11 +1699,13 @@ test('the band counts a name\'s mark where it is drawn: on the desktop, for a va
 
     return -1
   }
-  // The terminal draws no mark: a remote vault's 🌐 and ✳ keys (5 cells), a
-  // local one nothing. The desktop: notes (local) its Obsidian mark, 3 cells;
-  // extra (remote) the planet and Claude's mark, 6.
-  expect([await firstShowing('extra', 'terminal'), await firstShowing('notes', 'terminal')]).toEqual([81, 90])
-  expect([await firstShowing('extra', 'desktop'), await firstShowing('notes', 'desktop')]).toEqual([83, 94])
+  // The terminal draws no mark: a remote vault's 🌐 and ✳ keys (5 cells) and
+  // the "│" before them (2), a local one nothing. The desktop: notes (local)
+  // its bar and Obsidian mark, 5 cells; extra (remote) its bar, the planet and
+  // Claude's mark, 8.
+  expect([await firstShowing('extra', 'terminal'), await firstShowing('notes', 'terminal')]).toEqual([83, 92])
+  // (extra's threshold also pays the "+1" arrow's cell: 83 + 2 + 1.)
+  expect([await firstShowing('extra', 'desktop'), await firstShowing('notes', 'desktop')]).toEqual([86, 98])
 })
 
 // Two cells per CJK character: "資料庫一" is 8 cells, not 4. With main + two
@@ -2505,9 +2507,10 @@ test("a page kept from a wider band is brought back within the pages the width a
   }
   expect(await narrow.find({ key: 'band-back' })).toBeTruthy()
   await narrow.unmount()
-  // Wider, two pages: the last page shown is the last the width allows, and
+  // Wider, two pages (three names, then two: 61 + 17 + 18 + 19 and the "+2"
+  // arrow make 121): the last page shown is the last the width allows, and
   // one "‹" from it reaches the first — the turn counts from the page shown.
-  const wider = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 120 }, surface: 'desktop' })
+  const wider = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 125 }, surface: 'desktop' })
   expect(await wider.find({ key: 'band-back' })).toBeTruthy()
   expect(await wider.find({ key: 'band-more' })).toBeFalsy()
   await wider.press({ key: 'band-back' })
@@ -2525,12 +2528,12 @@ test("a page kept from a wider band is brought back within the pages the width a
 })
 
 test('a page turned to shows at least one secondary, cut if too long: "N▶" leads nowhere empty', async ($, on) => {
-  // At 76 the first page holds docs alone; the next, with "◀1" before it, has
+  // At 77 the first page holds docs alone; the next, with "◀1" before it, has
   // no room for a whole name — it shows one anyway, cut, then the last.
   wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'note', 'last'] } } })
   engineBand(on)
   await begin($)
-  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 76 }, surface: 'desktop' })
+  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 77 }, surface: 'desktop' })
   const rows = async () => nodesOf(await band.drawn()).filter(n => /^band-row-/.test(keyOf(n) ?? '')).map(n => keyOf(n))
   expect(await rows()).toEqual(['band-row-docs'])
   await band.press({ key: 'band-more' })
@@ -2568,13 +2571,18 @@ test('a paused secondary keeps its place on the band: ▶ on green while it runs
   expect(prop('band-state-notes', 'backgroundColor')).toBe('diffAddedDimmed')
   expect(at('band-pause-docs')).toBe(-1)
   expect(at('band-resume-notes')).toBe(-1)
-  // A remote vault: its name, then the planet (the default browser) and Claude's
-  // mark (Claude's browser), each a control: a blank Button laid over the mark.
-  // Every mark says what it shows; the name opens nothing; no "↗" any more.
-  const box = nodesOf(nodes.find(n => keyOf(n) === 'band-box-extra') as never)
-  expect(box.filter(n => n.type === 'Svg').map(n => n.props?.alt)).toEqual(['Navigateur', 'Claude'])
-  expect(box.findIndex(n => keyOf(n) === 'band-name-extra')).toBeLessThan(box.findIndex(n => keyOf(n) === 'band-web-extra'))
-  expect(box.findIndex(n => keyOf(n) === 'band-web-extra')).toBeLessThan(box.findIndex(n => keyOf(n) === 'band-ui-extra'))
+  // A remote vault: its ▶, its name, its tier, a bar, then the planet (the
+  // default browser) and Claude's mark (Claude's browser), each a control: a
+  // blank Button laid over the mark. Every mark says what it shows; the name
+  // opens nothing; no "↗" any more.
+  const box = nodesOf(nodes.find(n => keyOf(n) === 'band-row-extra') as never)
+  expect(box.filter(n => n.type === 'Svg').map(n => n.props?.alt)).toEqual(['Écriture sur accord', 'Navigateur', 'Claude'])
+  const order = ['band-pause-extra', 'band-name-extra', 'band-tier-extra', 'band-bar-extra', 'band-web-extra', 'band-ui-extra'].map(key => box.findIndex(n => keyOf(n) === key))
+  expect(order.every(i => i > -1)).toBe(true)
+  expect(order).toEqual([...order].sort((a, b) => a - b))
+  const bar = nodesOf(box.find(n => keyOf(n) === 'band-bar-extra') as never).find(n => n.type === 'Text')
+  expect(textOf(bar as never)).toBe('│')
+  expect(bar?.props?.dimColor).toBe(true)
   for (const key of ['band-web-extra', 'band-ui-extra']) {
     expect(prop(`icon-${key}`, 'flexDirection')).toBe('row')
     const over = nodesOf(nodes.find(n => keyOf(n) === `icon-${key}`) as never).find(n => n.props?.position === 'absolute')
@@ -2964,9 +2972,13 @@ test("on the band, a local vault's name has Obsidian's mark, and a remote one's 
   await begin($)
   const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 160 }, surface: 'desktop' })
   const nodes = nodesOf(await band.drawn())
-  const local = nodesOf(nodes.find(n => keyOf(n) === 'band-box-notes') as never).filter(n => n.type === 'Svg')
-  expect(local.map(n => n.props?.alt)).toEqual(['Obsidian'])
+  const row = nodesOf(nodes.find(n => keyOf(n) === 'band-row-notes') as never)
+  const local = row.filter(n => n.type === 'Svg' && n.props?.alt === 'Obsidian')
+  expect(local.length).toBe(1)
   expect(String(local[0]?.props?.source)).toContain('#A88BFA')
+  // After the bar, last in its slot: the name, the tier, "│", the mark.
+  expect(row.findIndex(n => keyOf(n) === 'band-bar-notes')).toBeLessThan(row.findIndex(n => keyOf(n) === 'band-obsidian-notes'))
+  expect(row.findIndex(n => keyOf(n) === 'band-tier-notes')).toBeLessThan(row.findIndex(n => keyOf(n) === 'band-bar-notes'))
   // The mark opens it in Obsidian, as its name does.
   expect(await band.find({ type: 'Button', key: 'band-obsidian-notes' })).toBeTruthy()
   expect(await band.find({ type: 'Button', key: 'band-open-notes' })).toBeTruthy()
@@ -3096,11 +3108,11 @@ test('a secondary named "primary" collides with nothing on the band: the primary
   await band.unmount()
 })
 
-test("on the band's line, a local vault has Obsidian's mark before its name, a remote one the planet and Claude's mark after; a paused one its dimmed ▶", async ($, on) => {
+test("on the band's line, a secondary reads ▶, name, tier, a bar, then the marks that open it: Obsidian's for a local one, the planet and Claude's for a remote one; a paused one its dimmed ▶", async ($, on) => {
   const list = {
     ...LIST,
     routerBuild: { version: '0.108.0' },
-    workspaceBinding: { ...LIST.workspaceBinding, also: ['notes', 'extra'], alsoPaused: ['extra'] },
+    workspaceBinding: { ...LIST.workspaceBinding, also: ['notes', 'extra', 'docs'], alsoPaused: ['extra'] },
     vaults: [...LIST.vaults.filter(v => v.name !== 'notes'), { name: 'notes', type: 'local', online: true, path: 'C:\\VAULTS\\Notes' }],
   }
   wire(on, { list })
@@ -3109,12 +3121,42 @@ test("on the band's line, a local vault has Obsidian's mark before its name, a r
   const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 160 }, surface: 'desktop' })
   const nodes = nodesOf(await band.drawn())
   const keys = nodes.map(n => keyOf(n)).filter((k): k is string => !!k)
-  expect(keys.indexOf('band-obsidian-notes')).toBeLessThan(keys.indexOf('band-open-notes'))
-  expect(keys.indexOf('band-name-extra')).toBeLessThan(keys.indexOf('band-web-extra'))
-  expect(keys.indexOf('band-web-extra')).toBeLessThan(keys.indexOf('band-ui-extra'))
+  const inOrder = (...wanted: string[]) => {
+    const at = wanted.map(key => keys.indexOf(key))
+    expect(at.every(i => i > -1)).toBe(true)
+    expect(at).toEqual([...at].sort((a, b) => a - b))
+  }
+  // The local one: its ▶ first, its name (a control that opens it), its tier,
+  // the bar, Obsidian's mark last (the other control that opens it).
+  inOrder('band-pause-notes', 'band-open-notes', 'band-tier-notes', 'band-bar-notes', 'band-obsidian-notes')
+  // The remote one, paused: its dimmed ▶, its name (a text), its tier, the bar, the planet, Claude's mark.
+  inOrder('band-resume-extra', 'band-name-extra', 'band-tier-extra', 'band-bar-extra', 'band-web-extra', 'band-ui-extra')
   expect(nodes.find(n => keyOf(n) === 'band-resume-extra')?.props).toMatchObject({ label: '▶', dimColor: true })
   expect(keys.length).toBe(new Set(keys).size)
+  // Every bar is dim and reads "│"; a vault that opens nowhere has none.
+  for (const name of ['notes', 'extra']) {
+    const bar = nodesOf(nodes.find(n => keyOf(n) === `band-bar-${name}`) as never).find(n => n.type === 'Text')
+    expect(bar?.props?.dimColor).toBe(true)
+    expect(textOf(bar as never)).toBe('│')
+  }
+  // docs opens nowhere (no folder, no web UI): on the line, ▶ then its name then its tier, no bar, no mark.
+  inOrder('band-pause-docs', 'band-plain-docs', 'band-tier-docs')
+  expect(keys).toContain('band-row-docs')
+  expect(keys).not.toContain('band-bar-docs')
+  expect(keys.some(key => /^band-(obsidian|web|ui)-docs$/.test(key))).toBe(false)
   await band.unmount()
+  // The terminal: the same order; a local vault has no mark there (its name
+  // is the control), so no bar either; a remote one keeps its bar before 🌐 and ✳.
+  const term = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 160 }, surface: 'terminal' })
+  const termKeys = nodesOf(await term.drawn()).map(n => keyOf(n)).filter((k): k is string => !!k)
+  expect(termKeys).not.toContain('band-bar-notes')
+  expect(termKeys).not.toContain('band-obsidian-notes')
+  const termAt = ['band-resume-extra', 'band-name-extra', 'band-tier-extra', 'band-bar-extra', 'band-web-extra', 'band-ui-extra'].map(key => termKeys.indexOf(key))
+  expect(termAt.every(i => i > -1)).toBe(true)
+  expect(termAt).toEqual([...termAt].sort((a, b) => a - b))
+  expect(termKeys.indexOf('band-pause-notes')).toBeLessThan(termKeys.indexOf('band-open-notes'))
+  expect(termKeys.indexOf('band-open-notes')).toBeLessThan(termKeys.indexOf('band-tier-notes'))
+  await term.unmount()
 })
 
 test('a pane too narrow for the menu folds it into "☰" and the view in sight; a press unfolds it', async ($, on) => {
@@ -3735,14 +3777,15 @@ test('the band\'s page keys are black arrows with the count inside: "◀N" befor
   expect(hidden).toBeGreaterThan(0)
   expect(nodesOf(first).some(n => keyOf(n) === 'band-back')).toBe(false)
   const more = mark(first, 'band-more')
-  expect(more.svg?.props).toMatchObject({ alt: `${hidden}▶`, width: 18 + 7 * String(hidden).length, height: 16 })
+  // "+N" inside: a cell (7 px) wider than the back arrow's "N".
+  expect(more.svg?.props).toMatchObject({ alt: `${hidden}▶`, width: 18 + 7 * (1 + String(hidden).length), height: 16 })
   const source = String(more.svg?.props?.source)
   expect(source).toContain('fill="#1f1f1f" stroke="#ffffff"')
-  expect(source).toMatch(new RegExp(`>${hidden}</text>`))
+  expect(source).toMatch(new RegExp(`>\\+${hidden}</text>`))
   expect(source).toContain('fill="#ffffff"')
   // Pointing right: the shape ends on a point at the right edge, the left edge straight.
   expect(source).toMatch(/d="M0 0H\d+L\d+ 8L\d+ 16H0Z"/)
-  expect(more.button?.props).toMatchObject({ plain: true, label: '\u00a0'.repeat(3 + String(hidden).length) })
+  expect(more.button?.props).toMatchObject({ plain: true, label: '\u00a0'.repeat(4 + String(hidden).length) })
   expect(more.button?.props?.dimColor).toBeUndefined()
   expect(nodesOf(first).some(n => n.type === 'Text' && /[‹›]/.test(textOf(n)))).toBe(false)
   // Turned: "◀N" before the names, N the secondaries before the page, pointing left.
@@ -3767,8 +3810,8 @@ test('the band\'s page keys are black arrows with the count inside: "◀N" befor
   const backKey = nodesOf(await term.drawn()).find(n => keyOf(n) === 'band-back')
   expect(backKey?.props?.label).toMatch(/^◀\d+$/)
   await term.unmount()
-  // The terminal counts a key as its text and a gap, a cell less than the mark: the first
-  // secondary shows one column sooner there than on the desktop (whose mark takes a cell more).
+  // The terminal counts a key as its text and a gap, two cells less than the mark ("+N" in a
+  // pentagon): the first secondary shows two columns sooner there than on the desktop.
   const firstAt = async (surface: 'terminal' | 'desktop') => {
     for (let columns = 40; columns < 160; columns += 1) {
       const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: columns }, surface })
@@ -3782,5 +3825,52 @@ test('the band\'s page keys are black arrows with the count inside: "◀N" befor
   }
   const [onDesktop, onTerminal] = [await firstAt('desktop'), await firstAt('terminal')]
   expect(onTerminal).toBeGreaterThan(40)
-  expect(onDesktop - onTerminal).toBe(1)
+  expect(onDesktop - onTerminal).toBe(2)
+})
+
+// The count's place in its arrow, from Roland's crops of v0.116.8: the digit
+// sat too low ("central" at 8.5 drew it 1.2 px under the middle in Chromium)
+// and the more arrow had no "+". Now: a plain baseline at 11.9, where the
+// bold 11 px digits stand centred on 8; "+N" in the more arrow, "N" in the
+// back one, each centred on the straight part of its shape.
+test('the count stands centred in its arrow: "+N" in the more arrow, "N" in the back one, on a baseline that centres the digits', async ($, on) => {
+  const names = Array.from({ length: 12 }, (_, i) => `vault-${String(i + 1).padStart(2, '0')}`)
+  wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: names } } })
+  engineBand(on)
+  await begin($)
+  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 100 }, surface: 'desktop' })
+  const svgOf = async (key: string) => {
+    const box = nodesOf(await band.drawn()).find(n => keyOf(n) === `icon-${key}`)
+    return nodesOf(box as never).find(n => n.type === 'Svg')
+  }
+  const textOfMark = (source: string) => {
+    const m = /<text x="([\d.]+)" y="([\d.]+)"([^>]*)>([^<]*)<\/text>/.exec(source)
+    expect(m).toBeTruthy()
+    return { x: Number(m?.[1]), y: Number(m?.[2]), attrs: String(m?.[3]), label: String(m?.[4]) }
+  }
+  const more = await svgOf('band-more')
+  const hidden = Number(String(more?.props?.alt).replace('▶', ''))
+  expect(hidden).toBeGreaterThan(9)
+  const moreText = textOfMark(String(more?.props?.source))
+  // Two digits and the plus: 18 + 7 × 3 wide; the label centred on the body before the point.
+  expect(more?.props?.width).toBe(39)
+  expect(moreText.label).toBe(`+${hidden}`)
+  expect(moreText.x).toBe((39 - 7) / 2)
+  expect(moreText.y).toBe(11.9)
+  expect(moreText.attrs).toContain('text-anchor="middle"')
+  expect(moreText.attrs).not.toContain('dominant-baseline')
+  expect(moreText.attrs).not.toContain('alignment-baseline')
+  // Turned once: the back arrow's "N", no plus, centred on the body after the point.
+  await band.press({ key: 'band-more' })
+  const back = await svgOf('band-back')
+  const before = Number(String(back?.props?.alt).replace('◀', ''))
+  expect(before).toBeGreaterThan(0)
+  const backText = textOfMark(String(back?.props?.source))
+  const backWidth = 18 + 7 * String(before).length
+  expect(back?.props?.width).toBe(backWidth)
+  expect(backText.label).toBe(String(before))
+  expect(backText.x).toBe((backWidth + 7) / 2)
+  expect(backText.y).toBe(11.9)
+  expect(backText.attrs).not.toContain('dominant-baseline')
+  await band.unmount()
 })
