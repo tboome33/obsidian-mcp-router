@@ -120,6 +120,7 @@
   "admin.openClaude": "Open remote vaults in Claude's built-in browser",
   "admin.yes": "Yes",
   "admin.no": "No",
+  "admin.noteOpen": "{on} of {total}",
   "nav.vaults": "Vaults",
   "nav.admin": "⚙ Administration",
   "admin.general": "General",
@@ -205,6 +206,7 @@
   "wg.prompt": "Server setup prompt",
 
   "register.title": "Register a vault",
+  "register.note": "local or remote",
   "register.kindLocal": "Local (Obsidian on this PC)",
   "register.kindRemote": "Remote (over WireGuard)",
   "register.name": "Name",
@@ -232,6 +234,9 @@
   "unregister.title": "Take a vault out of the router",
   "unregister.hint": "Only vaults no workspace is bound to can be taken out. A local vault is disabled; its files stay untouched.",
   "unregister.none": "No vault to take out.",
+  "unregister.noteNone": "none",
+  "unregister.noteOne": "1 removable",
+  "unregister.noteMany": "{count} removable",
   "unregister.ask": "Take {name} out of the router?",
   "unregister.button": "Take out",
   "unregister.confirm": "Confirm",
@@ -262,6 +267,7 @@
   "primary.setup": "Set up a vault",
 
   "create.title": "Create an Obsidian vault",
+  "create.note": "a new vault, with its conventions",
   "create.name": "Name",
   "create.path": "Folder",
   "create.mode": "Wiki type",

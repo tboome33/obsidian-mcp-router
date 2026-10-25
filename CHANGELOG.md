@@ -10,7 +10,7 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
-## [0.116.5] — 2026-10-25 — tabs cut on a shelf; the band's page keys as black arrows
+## [0.116.6] — 2026-10-25 — tabs cut on a shelf; the band's page keys as black arrows
 
 Seen on the first screenshot of v0.116.3's tabs on the desktop: a bordered Box is drawn
 there as a real rounded rectangle (a 1 px line, some padding inside), and the covers laid
@@ -43,6 +43,22 @@ seen.
   a cell under the desktop's); eight mutations seen red (the open tab cut like the others,
   its ground not opaque, the rule's corners round, a page key counted two cells, the arrows
   pointing the wrong way, a frame free to shrink, the terminal counting marks, no outline).
+## [0.116.5] — 2026-10-25 — the accordion's headers: capitals, a line on each section's state
+
+Asked by Roland ("améliore le design des menus de l'accordéon"):
+
+- **The title in capitals** after its chevron, as the pane's own "PRINCIPAL :" and
+  "SECONDAIRES :" labels; the header row padded one cell, the open one on its green ground.
+- **One dim line at the right of each header on the section's state**, open or folded, so
+  that a folded console still reads: the language and the installed version (the update
+  badge in colour when one is available); the ways of opening on ("3 sur 3"); a hint for
+  the two forms; WireGuard's state with its coloured dot; how many vaults can be removed.
+  Six locale strings, French and English.
+- Adversarial review by Codex: two findings fixed — the line could wrap under a long title
+  (it is cut with "…", and left out under 40 columns); the WireGuard assertion accepted any
+  text (it names the state and its colour now). Tests: `tests/vault-panel.test.tsx` 125
+  (the capitals, each header's line on both surfaces, the line following a setting, the
+  narrow pane; the line, the capitals and the shortening each seen red under their mutation).
 
 ## [0.116.4] — 2026-10-25 — the accordion's rule without "…", its open header on a ground
 

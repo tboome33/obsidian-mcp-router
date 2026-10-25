@@ -120,6 +120,7 @@
   "admin.openClaude": "Ouvrir les vaults distants dans le navigateur interne de Claude",
   "admin.yes": "Oui",
   "admin.no": "Non",
+  "admin.noteOpen": "{on} sur {total}",
   "nav.vaults": "Vaults",
   "nav.admin": "⚙ Administration",
   "admin.general": "Général",
@@ -205,6 +206,7 @@
   "wg.prompt": "Prompt d'installation du serveur",
 
   "register.title": "Enregistrer un vault",
+  "register.note": "local ou distant",
   "register.kindLocal": "Local (Obsidian sur ce PC)",
   "register.kindRemote": "Distant (par WireGuard)",
   "register.name": "Nom",
@@ -232,6 +234,9 @@
   "unregister.title": "Retirer un vault du router",
   "unregister.hint": "Seuls les vaults qui ne sont liés à aucun workspace peuvent être retirés. Un vault local est désactivé, ses fichiers restent intacts.",
   "unregister.none": "Aucun vault à retirer.",
+  "unregister.noteNone": "aucun",
+  "unregister.noteOne": "1 retirable",
+  "unregister.noteMany": "{count} retirables",
   "unregister.ask": "Retirer {name} du router ?",
   "unregister.button": "Retirer",
   "unregister.confirm": "Confirmer le retrait",
@@ -262,6 +267,7 @@
   "primary.setup": "Configurer un vault",
 
   "create.title": "Créer un vault Obsidian",
+  "create.note": "un vault neuf, ses conventions",
   "create.name": "Nom",
   "create.path": "Dossier",
   "create.mode": "Type de wiki",
