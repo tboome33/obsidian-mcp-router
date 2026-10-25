@@ -107,10 +107,11 @@ import { identifierForCall } from './sanitize.mjs';
 export const CONFIRM_SECONDARY_WRITE_PROP = {
   type: 'boolean',
   description:
-    'Set to true ONLY after telling the user which SECONDARY vault (an `also` of this workspace\'s '
-    + 'binding, never its primary) you want to write to, and getting their explicit go-ahead in THIS '
-    + 'conversation. Ignored unless the resolved target is a soft-tier secondary vault (in `also`, not '
-    + 'in `alsoWritable` or `alsoLocked`) of the current workspace binding — never set it speculatively.',
+    'Set to true ONLY after telling the user which vault you want to write to and getting their explicit '
+    + 'go-ahead in THIS conversation. Ignored unless the resolved target is a soft-tier SECONDARY vault (in '
+    + '`also`, not in `alsoWritable` or `alsoLocked`) of the current workspace binding, or the PRIMARY the user '
+    + 'set to "soft" (set_primary_vault_mode) — a primary nobody narrowed needs nothing, and a LOCKED vault '
+    + 'ignores it. Never set it speculatively.',
 };
 
 /**
@@ -308,6 +309,42 @@ export function alsoWriteTierFor(vaultName, registry) {
 }
 
 /**
+ * The write tier of the binding's PRIMARY, when the user narrowed it
+ * (`set_primary_vault_mode`): `'locked'` or `'soft'` — or `null` for a primary
+ * nobody qualified, which is read-write, the decision's default, and for any
+ * vault that is not the binding's primary. The stored tier names its vault, so
+ * one left over from an earlier primary does not apply to this one.
+ *
+ * @param {string} vaultName
+ * @param {{ workspaceBinding?: { vault?: string, primaryTier?: { vault?: string, mode?: string } }|null }} registry
+ * @returns {'locked'|'soft'|null}
+ */
+export function primaryWriteTierFor(vaultName, registry) {
+  const binding = registry && registry.workspaceBinding;
+  if (!binding || binding.vault !== vaultName) return null;
+  const tier = binding.primaryTier;
+  if (!tier || tier.vault !== vaultName) return null;
+
+  return tier.mode === 'locked' || tier.mode === 'soft' ? tier.mode : null;
+}
+
+/**
+ * The write tier a write to `vaultName` meets from this workspace, whichever
+ * role the vault has: a secondary's (`alsoWriteTierFor`) or the primary's
+ * (`primaryWriteTierFor`). `null` and `'writable'` mean no friction. THE GATES
+ * ask this; the promotion guards below keep asking `alsoWriteTierFor`, because
+ * a narrowed primary is not a locked SECONDARY and re-binding onto it lifts
+ * nothing.
+ *
+ * @param {string} vaultName
+ * @param {object} registry
+ * @returns {'writable'|'locked'|'soft'|null}
+ */
+export function writeTierFor(vaultName, registry) {
+  return alsoWriteTierFor(vaultName, registry) ?? primaryWriteTierFor(vaultName, registry);
+}
+
+/**
  * Would binding this workspace to `vaultName` as its PRIMARY promote a vault
  * that the LIVE binding currently declares as an `alsoLocked` SECONDARY?
  *
@@ -442,9 +479,28 @@ export function lockedSecondaryPromotionError(message) {
  * @param {{ confirmed?: boolean, toolName?: string }} [opts]
  */
 export function assertVaultWritable(vault, registry, { confirmed = false, toolName } = {}) {
-  const tier = alsoWriteTierFor(vault.name, registry);
+  const tier = writeTierFor(vault.name, registry);
   if (tier === null || tier === 'writable') return;
   const tool = toolName ? `\`${toolName}\`` : 'this tool';
+  if (primaryWriteTierFor(vault.name, registry) !== null) {
+    // THE PRIMARY, NARROWED BY THE USER — its own sentences: the secondary's
+    // would name `alsoLocked`, a role this vault does not have here.
+    if (tier === 'locked') {
+      throw new Error(
+        `Vault "${vault.name}" is this workspace's PRIMARY vault, and the user locked it read-only `
+        + '(set_primary_vault_mode, mode "locked"). Every write is refused and confirmSecondaryWrite is ignored. '
+        + 'Only the user can lift it — tell them which vault and what you wanted to write; never loosen the tier yourself.',
+      );
+    }
+    if (confirmed) return;
+    throw new Error(
+      `Vault "${vault.name}" is this workspace's PRIMARY vault, and the user set it to read-only unless asked `
+      + `(set_primary_vault_mode, mode "soft"). Tell the user which vault and what you want to write, get their `
+      + `explicit go-ahead in the conversation, then retry ${tool} with confirmSecondaryWrite: true. Do not set that `
+      + 'flag without having actually asked. If they would rather stop being asked, set_primary_vault_mode with '
+      + 'mode "writable" is their call, never yours to make on their behalf.',
+    );
+  }
   if (tier === 'locked') {
     // THE LIMIT, STATED IN THE MESSAGE ITSELF (review round 3): this tier is
     // about the SECONDARY role. The decision keeps the same base read-write

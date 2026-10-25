@@ -10,6 +10,48 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.117.0] — 2026-10-25 — the primary vault's rights can be set, like a secondary's
+
+Asked from the vault panel ("je ne peux pas modifier les droits de lecture/écriture du vault
+principal"): the primary was read-write by decision, with no way to narrow it.
+
+- **`set_primary_vault_mode({ vault, mode })`** — a new tool, the primary's twin of
+  `set_secondary_vault_mode`: `locked` (read-only strict), `soft` (read-only unless the user
+  said yes in the conversation, then `confirmSecondaryWrite: true`), `writable` (the default —
+  recording it removes the restriction). Recorded per workspace on the binding as
+  `primaryTier: { vault, mode }`; the tier names its vault, so a re-binding to another primary
+  retires it by itself. **Nothing changes for a primary nobody qualified.** A restriction only,
+  never an opening: an unreadable tier (hand edit) reads as `locked`; the tool refuses on a gated
+  deployment, on a stranger or a secondary, on a binding the router had to repair, and in a
+  session whose own binding does not hold that vault as primary (a restriction it would not
+  enforce is not recorded).
+- **The gate**: `assertVaultWritable`, `automaticWriteAllowed` and the queued-maintenance check
+  ask `writeTierFor` (a secondary's tier, else the primary's), with sentences of their own for a
+  narrowed primary; the promotion guards keep asking the secondary tier only. The session
+  journal hook (`hooks/session-auto-journal.mjs`) stops writing into a narrowed primary — locked
+  or soft, no one to ask — and takes a tier set mid-session at its next event.
+  `list_vaults` reports `workspaceBinding.primaryMode`.
+- **The panel**: the primary's tile shows the three radio buttons as keys, drawn at once and
+  drawn back if the router refuses; a router that reports no primary tier keeps the old text.
+  The tile now shows the tier the router holds (a session lock is single-vault isolation, not
+  read-only).
+- **The wizard**: `/bind-workspace` no longer answers "a primary is always read-write" — it asks
+  the three-mode question of a primary the user names, and `set_primary_vault_mode` joins its
+  declared tools.
+- Limits, said: sessions already open pick the tier up when they reload the router's config; it
+  governs the router's own write tools and the session journal hook — **not** the setup,
+  provisioning and maintenance commands, nor the helpers a skill runs by itself (notably
+  `provision_vault` aimed at an existing vault, `wiki-ingest`'s state file, `wiki-autocommit`):
+  the same gap the secondaries' tiers have, left for a follow-up. Decision recorded in the vault
+  (`primaire-restreignable-par-workspace`, proposed).
+- Adversarial review by Codex, two passes. First: four P1 and three P2 — the session journal
+  writing past the tier, a tier recorded in a session that would not enforce it, a malformed
+  tier failing open, the shared `confirmSecondaryWrite` wording — all fixed. Second: an unreadable
+  config re-enabling an open workspace-bound journal, blank vault names failing open, the wizard
+  still refusing the feature, the result's wording too broad — fixed; the rest is the limits
+  above. Tests: `tests/set-primary-vault-mode.test.mjs` (11), the journal hook's (5 more, mutation
+  checked), `tests/vault-panel.test.tsx` 138; the router suite 8264 green.
+
 ## [0.116.13] — 2026-10-25 — each vault of the band in its own round frame
 
 Asked by Roland from a mockup over v0.116.12's band, "pour mieux voir les différents vaults

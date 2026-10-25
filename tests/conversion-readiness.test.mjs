@@ -1118,6 +1118,8 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
       alsoLocked: [], alsoWritable: [],
       // v0.107.0 — the paused secondaries, always present (empty here).
       alsoPaused: [],
+      // v0.117.0 — the primary's own tier, "writable" unless the user narrowed it.
+      primaryMode: 'writable',
     }, 'the binding is REBUILT: the values cross, the extra field does not');
     assert.deepEqual(out.bindingHint, {
       status: 'unconfirmed', hint: 'beta', boundTo: 'alpha', origin: 'workspace-dotenv',
