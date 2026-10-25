@@ -1446,10 +1446,12 @@ function engineBand(on: On) {
   })
 }
 
+// The band's texts: its Text nodes, and the alt of each mark (a page key is a
+// mark on the desktop, its alt the terminal's text for it).
 const bandTexts = async (ui: { drawn(): Promise<unknown> }) =>
   nodesOf(await ui.drawn())
-    .filter(n => n.type === 'Text')
-    .map(textOf)
+    .filter(n => n.type === 'Text' || (n.type === 'Svg' && /^(◀\d+|\d+▶)$/.test(String(n.props?.alt ?? ''))))
+    .map(n => (n.type === 'Svg' ? String(n.props?.alt ?? '') : textOf(n)))
 
 test('the band shows the primary, each secondary with its write badge, and keeps the band under it', async ($, on) => {
   wire(on, { list: LIST })
@@ -1482,7 +1484,7 @@ test('the band shows the primary, each secondary with its write badge, and keeps
   }
 })
 
-test('a band too narrow for every secondary ends with "›+N": how many it left out', async ($, on) => {
+test('a band too narrow for every secondary ends with "N▶": how many it left out', async ($, on) => {
   const names = ['alpha-vault', 'beta-vault', 'gamma-vault', 'delta-vault', 'epsilon-vault']
   const many = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: names } }
   wire(on, { list: many })
@@ -1495,7 +1497,7 @@ test('a band too narrow for every secondary ends with "›+N": how many it left 
   expect(shown.length).toBeLessThan(5)
   // Binding order: the first ones are kept, the tail is counted.
   expect(shown).toEqual(names.slice(0, shown.length))
-  expect(texts).toContain(`›+${5 - shown.length}`)
+  expect(texts).toContain(`${5 - shown.length}▶`)
   await ui.unmount()
 
   // Wide enough, all of them and no "›".
@@ -1625,7 +1627,7 @@ test('a band too narrow for even one secondary counts them all', async ($, on) =
   const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 40 }, surface: 'desktop' })
   const texts = await bandTexts(ui)
   expect(texts.includes('docs') || texts.includes('notes')).toBe(false)
-  expect(texts).toContain('›+2')
+  expect(texts).toContain('2▶')
   // One page, none on it: the count is no key — there is no page to turn to.
   expect(await ui.find({ key: 'band-more' })).toBeFalsy()
   await ui.unmount()
@@ -1633,10 +1635,10 @@ test('a band too narrow for even one secondary counts them all', async ($, on) =
 
 // The band's line, cell by cell, for main + docs + notes: "Principal : ● main",
 // spacer, "Secondaires :" and the toggle take 61; " docs 🔒 ▶" 10 more;
-// " · notes ✋ ▶" 13. At 74, docs would fit alone but not with "›+1" after it:
+// " · notes ✋ ▶" 13. At 75, docs would fit alone but not with "1▶" after it:
 // the counter's room is kept, so nothing is shown and both are counted. At
 // 84, both fit.
-test('the band keeps room for "›+N" before it shows a secondary', async ($, on) => {
+test('the band keeps room for "N▶" before it shows a secondary', async ($, on) => {
   wire(on, { list: LIST })
   engineBand(on)
   await begin($)
@@ -1658,15 +1660,15 @@ test('the band keeps room for "›+N" before it shows a secondary', async ($, on
   }
   const docsAt = await firstShowing('docs')
   const notesAt = await firstShowing('notes')
-  // Below docs' width, both are counted; at it, docs and "›+1".
-  expect(await at(docsAt - 1)).toContain('›+2')
-  expect(await at(docsAt)).toContain('›+1')
+  // Below docs' width, both are counted; at it, docs and "1▶".
+  expect(await at(docsAt - 1)).toContain('2▶')
+  expect(await at(docsAt)).toContain('1▶')
   // notes, once it fits, takes the counter's room: no "›" any more.
-  expect((await at(notesAt)).some(t => t.startsWith('›'))).toBe(false)
+  expect((await at(notesAt)).some(t => /^\d+▶$/.test(t))).toBe(false)
   // Neither opens anywhere (no folder, no web UI): no mark. notes' own width
-  // (gap, "· ", 5 cells, badge, control) less the counter it frees ("›+1").
-  expect(notesAt - docsAt).toBe(1 + 2 + 5 + 1 + 2 + 1 + 1 - (1 + 3))
-  expect([docsAt, notesAt]).toEqual([75, 84])
+  // (gap, "· ", 5 cells, badge, control) less the counter it frees ("1▶", five cells with its gap).
+  expect(notesAt - docsAt).toBe(1 + 2 + 5 + 1 + 2 + 1 + 1 - 5)
+  expect([docsAt, notesAt]).toEqual([76, 84])
 })
 
 test('the band counts a name\'s mark where it is drawn: on the desktop, for a vault that opens', async ($, on) => {
@@ -1694,7 +1696,7 @@ test('the band counts a name\'s mark where it is drawn: on the desktop, for a va
   // local one nothing. The desktop: notes (local) its Obsidian mark, 3 cells;
   // extra (remote) the planet and Claude's mark, 6.
   expect([await firstShowing('extra', 'terminal'), await firstShowing('notes', 'terminal')]).toEqual([81, 90])
-  expect([await firstShowing('extra', 'desktop'), await firstShowing('notes', 'desktop')]).toEqual([82, 94])
+  expect([await firstShowing('extra', 'desktop'), await firstShowing('notes', 'desktop')]).toEqual([83, 94])
 })
 
 // Two cells per CJK character: "資料庫一" is 8 cells, not 4. With main + two
@@ -1723,8 +1725,8 @@ test('the band counts a wide character as two cells', async ($, on) => {
     }
   }
   expect(first).toBeGreaterThan(-1)
-  // "文書庫二三" is 10 cells, not 5: its entry less the counter it frees ("›+1").
-  expect(second - first).toBe(1 + 2 + 10 + 1 + 2 + 1 + 1 - (1 + 3))
+  // "文書庫二三" is 10 cells, not 5: its entry less the counter it frees ("1▶" as the terminal draws it, four cells with its gap).
+  expect(second - first).toBe(1 + 2 + 10 + 1 + 2 + 1 + 1 - 4)
 })
 
 test('a pane the app draws on its own is told to the band', async ($, on) => {
@@ -2449,14 +2451,14 @@ test('"›+N" turns the band\'s page: the next secondaries in place of the first
     return names.filter(name => drawn.some(n => keyOf(n) === `band-row-${name}`))
   }
   const texts = async () => await bandTexts(band)
-  // The first page: the first names, no "‹", then "›+N" for the rest; one line, no wrapping.
+  // The first page: the first names, no "◀N", then "N▶" for the rest; one line, no wrapping.
   expect((await line())?.props?.flexWrap).toBe('nowrap')
   const first = await shown()
   expect(first.length).toBeGreaterThan(0)
   expect(first.length).toBeLessThan(names.length)
   expect(first).toEqual(names.slice(0, first.length))
   expect(await band.find({ key: 'band-back' })).toBeFalsy()
-  expect(await texts()).toContain(`›+${names.length - first.length}`)
+  expect(await texts()).toContain(`${names.length - first.length}▶`)
   await band.press({ key: 'band-more' })
   // The next page: the following names where the first were, "‹" before them.
   const second = await shown()
@@ -2477,7 +2479,7 @@ test('"›+N" turns the band\'s page: the next secondaries in place of the first
     await band.press({ key: 'band-more' })
   }
   expect((await shown()).at(-1)).toBe(names[names.length - 1])
-  expect((await texts()).some(text => text.startsWith('›'))).toBe(false)
+  expect((await texts()).some(text => /^\d+▶$/.test(text))).toBe(false)
   for (let i = 0; i < names.length && (await band.find({ key: 'band-back' })); i += 1) {
     await band.press({ key: 'band-back' })
   }
@@ -2515,13 +2517,13 @@ test("a page kept from a wider band is brought back within the pages the width a
   await wide.unmount()
 })
 
-test('a page turned to shows at least one secondary, cut if too long: "›+N" leads nowhere empty', async ($, on) => {
-  // At 75 the first page holds docs alone; the next, with "‹" before it, has
+test('a page turned to shows at least one secondary, cut if too long: "N▶" leads nowhere empty', async ($, on) => {
+  // At 76 the first page holds docs alone; the next, with "◀1" before it, has
   // no room for a whole name — it shows one anyway, cut, then the last.
   wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'note', 'last'] } } })
   engineBand(on)
   await begin($)
-  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 75 }, surface: 'desktop' })
+  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 76 }, surface: 'desktop' })
   const rows = async () => nodesOf(await band.drawn()).filter(n => /^band-row-/.test(keyOf(n) ?? '')).map(n => keyOf(n))
   expect(await rows()).toEqual(['band-row-docs'])
   await band.press({ key: 'band-more' })
@@ -2927,7 +2929,7 @@ test('the menu stays at the top while the pane scrolls: a copy, no frame, over t
     expect(bar?.props).toMatchObject({ position: 'absolute', top: 7, left: 0, right: 0, backgroundColor: 'inverseText' })
     expect(bar?.props?.borderStyle).toBeUndefined()
     expect(items.every(key => nodesOf(bar as never).some(n => keyOf(n) === `sticky-${key}`))).toBe(true)
-    expect(nodesOf(bar as never).some(n => n.type === 'Text' && /^─+$/.test(textOf(n)))).toBe(true)
+    expect(nodesOf(bar as never).some(n => keyOf(n) === 'sticky-nav-rule' && n.props?.position === 'absolute')).toBe(true)
     // Drawn last, so it paints over the tiles.
     const root = (await down.drawn()) as { children?: unknown[] }
     expect(keyOf((root.children ?? []).at(-1) as never)).toBe('sticky-bar')
@@ -3266,41 +3268,34 @@ test("a recent file the router gives no link to says so, opens nothing; with no 
   await ui.unmount()
 })
 
-test('the wide menu draws its keys as tabs on a shelf: round frames open at the bottom, the rule hidden under the tab in sight alone', async ($, on) => {
+test('the wide menu draws its keys as tabs on a shelf: round frames cut short of their bottom, the one in sight open over the rule', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
   const tabKeys = ['vaults', 'add', 'admin'] as const
   const labels = { vaults: 'Vaults', add: '+ Ajouter un vault', admin: '⚙ Administration' }
   const tabOf = (tree: unknown, key: string) => nodesOf(tree).find(n => keyOf(n) === key)
-  const covers = (tab: Drawn | undefined) => nodesOf(tab as never).filter(n => n.type === 'Box' && n.props?.position === 'absolute')
-  const glyphsOf = (cover: Drawn | undefined) => nodesOf(cover as never).filter(n => n.type === 'Text').map(n => textOf(n))
-  // A cover: one row over the frame's columns, the ground's colour, an end glyph at each side and blanks
-  // as wide as the terminal draws the key ("[ label ]") between them.
-  const cover = (tab: Drawn | undefined, bottom: number, left: string, right: string, label: string) => {
-    const one = covers(tab).filter(c => c.props?.bottom === bottom)
-    expect(one.length).toBe(1)
-    expect(one[0]?.props).toMatchObject({ left: -1, right: -1, height: 1, flexDirection: 'row', justifyContent: 'space-between', backgroundColor: 'inverseText' })
-    expect(glyphsOf(one[0])).toEqual([left, ' '.repeat([...label].length + 4), right])
-  }
-  const opening = (tab: Drawn | undefined) => covers(tab).some(c => glyphsOf(c).includes('╯'))
   // The tabs, with the one in sight open and the others closed, in a menu copy under `prefix`.
   const shelf = (tree: unknown, prefix: string, inSight: (typeof tabKeys)[number]) => {
-    const openings = nodesOf(tree).filter(n => n.type === 'Text' && textOf(n) === '╯')
-    expect(openings.length).toBe(1)
     for (const id of tabKeys) {
-      const tab = tabOf(tree, `${prefix}navtab-${id}`)
-      // A round frame round the key, dim unless in sight, the key inside it.
-      expect(tab?.props).toMatchObject({ borderStyle: 'round', borderDimColor: id !== inSight })
-      expect(nodesOf(tab as never).some(n => n.type === 'Button' && keyOf(n) === `${prefix}nav-${id}`)).toBe(true)
-      // Its bottom row covered by the sides going on down.
-      cover(tab, -1, '│', '│', labels[id])
-      // The rule turned up under the tab in sight alone.
-      expect(opening(tab)).toBe(id === inSight)
-      expect(covers(tab).length).toBe(id === inSight ? 2 : 1)
-      if (id === inSight) {
-        cover(tab, -2, '╯', '╰', labels[id])
-      }
+      const tab = tabOf(tree, `${prefix}navtab-${id}`) as Drawn & { children?: Drawn[] }
+      const isOpen = id === inSight
+      // A cut: two rows of the frame for a closed tab, three for the open one.
+      expect(tab?.props).toMatchObject({ height: isOpen ? 3 : 2, overflow: 'hidden', flexShrink: 0, flexDirection: 'column' })
+      // A round frame, dim unless in sight, opaque when in sight, the key then a row of blanks
+      // as wide as the terminal draws the key, a padding row under them: its bottom edge well
+      // past the cut on every surface.
+      const frame = (tab.children ?? [])[0] as Drawn & { children?: Drawn[] }
+      expect(frame?.props).toMatchObject({ borderStyle: 'round', borderDimColor: !isOpen, flexDirection: 'column', paddingBottom: 1, flexShrink: 0, minHeight: 5 })
+      expect(frame?.props?.backgroundColor).toBe(isOpen ? 'inverseText' : undefined)
+      const parts = (frame.children ?? []).filter((c): c is Drawn => !!c && typeof c === 'object')
+      expect(parts.map(c => c.type)).toEqual(['Button', 'Text'])
+      expect(keyOf(parts[0] as Drawn)).toBe(`${prefix}nav-${id}`)
+      expect(textOf(parts[1] as Drawn)).toBe(' '.repeat([...labels[id]].length + 4))
+      // The open tab alone is three rows tall; nothing of v0.116.1's covers is left.
+      expect(nodesOf(tab as never).some(n => n.type === 'Text' && /[╯╰│]/.test(textOf(n)))).toBe(false)
     }
+    const open = tabKeys.filter(id => tabOf(tree, `${prefix}navtab-${id}`)?.props?.height === 3)
+    expect(open).toEqual([inSight])
   }
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface })
@@ -3309,13 +3304,25 @@ test('the wide menu draws its keys as tabs on a shelf: round frames open at the 
     // Every key of the tree is its own: no two nodes share one.
     const keys = nodesOf(tree).map(n => keyOf(n)).filter((k): k is string => !!k)
     expect(keys.length).toBe(new Set(keys).size)
-    // The rule is drawn before the tabs, on the menu's last row, so the opening paints over it.
+    // The rule: a Box's top border on the third row, its sides and corners a cell past the pane's
+    // edges and its lower row cut, drawn first in the menu so the open tab's ground paints over it.
     const nav = tabOf(tree, 'nav') as Drawn & { children?: Drawn[] }
-    expect(nav.props?.paddingBottom).toBe(1)
-    const first = (nav.children ?? [])[0]
-    expect(keyOf(first as Drawn)).toBe('nav-rule')
-    expect((first as Drawn).props).toMatchObject({ position: 'absolute', bottom: 0, left: 0, right: 0, height: 1 })
-    expect(nodesOf(first as never).some(n => n.type === 'Text' && /^─+$/.test(textOf(n)))).toBe(true)
+    expect(nav.props?.paddingBottom).toBeUndefined()
+    const first = (nav.children ?? [])[0] as Drawn & { children?: Drawn[] }
+    expect(keyOf(first)).toBe('nav-rule')
+    expect(first.props).toMatchObject({ position: 'absolute', top: 2, left: 0, right: 0, height: 1, overflow: 'hidden' })
+    const line = (first.children ?? [])[0] as Drawn
+    expect(line?.props).toMatchObject({ position: 'absolute', top: 0, left: -1, right: -1, height: 2, borderStyle: 'single', borderDimColor: true })
+    expect(nodesOf(nav as never).some(n => n.type === 'Text' && /^─+$/.test(textOf(n)))).toBe(false)
+    // The tabs hang from the row's top, so the open one reaches a row further down than the closed
+    // ones; the mark and the right-hand group stand two rows tall, level with the closed tabs.
+    const row = (nav.children ?? [])[1] as Drawn & { children?: Drawn[] }
+    expect(row.props?.alignItems).toBe('flex-start')
+    expect(tabOf(tree, 'nav-end')?.props?.height).toBe(2)
+    if (surface === 'desktop') {
+      const brandBox = nodesOf(row as never).find(n => n.type === 'Box' && n.props?.height === 2 && nodesOf(n as never).some(m => m.type === 'Svg' && m.props?.alt === 'obsidian-mcp-router'))
+      expect(brandBox?.props?.alignItems).toBe('center')
+    }
     // The opening follows the view through the three keys.
     await ui.press({ key: 'nav-add' })
     shelf(await ui.drawn(), '', 'add')
@@ -3330,17 +3337,19 @@ test('the wide menu draws its keys as tabs on a shelf: round frames open at the 
   const down = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120, scroll: { offset: 7, bodyRows: 20 } }, surface: 'desktop' })
   const bar = tabOf(await down.drawn(), 'sticky-bar')
   shelf(bar, 'sticky-', 'vaults')
+  expect(tabOf(bar, 'sticky-nav-rule')).toBeTruthy()
   await down.press({ key: 'sticky-nav-admin' })
   shelf(tabOf(await down.drawn(), 'sticky-bar'), 'sticky-', 'admin')
   await down.press({ key: 'sticky-nav-vaults' })
   shelf(tabOf(await down.drawn(), 'sticky-bar'), 'sticky-', 'vaults')
   await down.unmount()
-  // Folded into "☰", no tab: the keys as before, the rule in the flow.
+  // Folded into "☰", no tab: the keys as before, the rule a row of "─" in the flow.
   const narrow = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 40 }, surface: 'desktop' })
   const folded = await narrow.drawn()
   expect(nodesOf(folded).some(n => (keyOf(n) ?? '').startsWith('navtab-'))).toBe(false)
   expect(tabOf(folded, 'nav-rule')).toBeFalsy()
   expect(tabOf(folded, 'nav-burger')).toBeTruthy()
+  expect(nodesOf(tabOf(folded, 'nav') as never).some(n => n.type === 'Text' && /^─+$/.test(textOf(n)))).toBe(true)
   await narrow.unmount()
 })
 
@@ -3369,4 +3378,73 @@ test('the menu keeps its shape when the router, the version and the update check
   expect(await narrow.find({ type: 'Button', key: 'nav-add' })).toBeTruthy()
   await narrow.unmount()
   await wide.unmount()
+})
+
+test('the band\'s page keys are black arrows with the count inside: "◀N" before the page, "N▶" after it; the terminal draws the texts', async ($, on) => {
+  const names = ['alpha-vault', 'beta-vault', 'gamma-vault', 'delta-vault', 'epsilon-vault']
+  wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: names } } })
+  engineBand(on)
+  await begin($)
+  // On the desktop: a mark (a filled pentagon pointing the way, the count in white in it),
+  // its alt the text, a blank Button as wide laid over it; drawn lit, not dim.
+  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 110 }, surface: 'desktop' })
+  const mark = (tree: unknown, key: string) => {
+    const box = nodesOf(tree).find(n => keyOf(n) === `icon-${key}`)
+    const svg = nodesOf(box as never).find(n => n.type === 'Svg')
+    const button = nodesOf(box as never).find(n => n.type === 'Button' && keyOf(n) === key)
+    return { box, svg, button }
+  }
+  const first = await band.drawn()
+  const hidden = names.length - nodesOf(first).filter(n => /^band-row-/.test(keyOf(n) ?? '')).length
+  expect(hidden).toBeGreaterThan(0)
+  expect(nodesOf(first).some(n => keyOf(n) === 'band-back')).toBe(false)
+  const more = mark(first, 'band-more')
+  expect(more.svg?.props).toMatchObject({ alt: `${hidden}▶`, width: 18 + 7 * String(hidden).length, height: 16 })
+  const source = String(more.svg?.props?.source)
+  expect(source).toContain('fill="#1f1f1f" stroke="#ffffff"')
+  expect(source).toMatch(new RegExp(`>${hidden}</text>`))
+  expect(source).toContain('fill="#ffffff"')
+  // Pointing right: the shape ends on a point at the right edge, the left edge straight.
+  expect(source).toMatch(/d="M0 0H\d+L\d+ 8L\d+ 16H0Z"/)
+  expect(more.button?.props).toMatchObject({ plain: true, label: '\u00a0'.repeat(3 + String(hidden).length) })
+  expect(more.button?.props?.dimColor).toBeUndefined()
+  expect(nodesOf(first).some(n => n.type === 'Text' && /[‹›]/.test(textOf(n)))).toBe(false)
+  // Turned: "◀N" before the names, N the secondaries before the page, pointing left.
+  await band.press({ key: 'band-more' })
+  const second = await band.drawn()
+  const back = mark(second, 'band-back')
+  const before = names.indexOf((keyOf(nodesOf(second).find(n => /^band-row-/.test(keyOf(n) ?? '')) as Drawn) ?? '').replace('band-row-', ''))
+  expect(before).toBeGreaterThan(0)
+  expect(back.svg?.props).toMatchObject({ alt: `◀${before}`, width: 18 + 7 * String(before).length, height: 16 })
+  expect(String(back.svg?.props?.source)).toMatch(/d="M7 0H\d+V16H7L0 8Z"/)
+  expect(back.button?.props?.label).toBe('\u00a0'.repeat(3 + String(before).length))
+  await band.press({ key: 'band-back' })
+  expect(nodesOf(await band.drawn()).some(n => keyOf(n) === 'band-back')).toBe(false)
+  await band.unmount()
+  // On the terminal: the texts as keys, lit.
+  const term = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 110 }, surface: 'terminal' })
+  const moreKey = nodesOf(await term.drawn()).find(n => keyOf(n) === 'band-more')
+  expect(moreKey?.type).toBe('Button')
+  expect(moreKey?.props?.label).toMatch(/^\d+▶$/)
+  expect(moreKey?.props?.dimColor).toBeUndefined()
+  await term.press({ key: 'band-more' })
+  const backKey = nodesOf(await term.drawn()).find(n => keyOf(n) === 'band-back')
+  expect(backKey?.props?.label).toMatch(/^◀\d+$/)
+  await term.unmount()
+  // The terminal counts a key as its text and a gap, a cell less than the mark: the first
+  // secondary shows one column sooner there than on the desktop (whose mark takes a cell more).
+  const firstAt = async (surface: 'terminal' | 'desktop') => {
+    for (let columns = 40; columns < 160; columns += 1) {
+      const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: columns }, surface })
+      const rows = nodesOf(await ui.drawn()).filter(n => /^band-row-/.test(keyOf(n) ?? '')).length
+      await ui.unmount()
+      if (rows > 0) {
+        return columns
+      }
+    }
+    return -1
+  }
+  const [onDesktop, onTerminal] = [await firstAt('desktop'), await firstAt('terminal')]
+  expect(onTerminal).toBeGreaterThan(40)
+  expect(onDesktop - onTerminal).toBe(1)
 })
