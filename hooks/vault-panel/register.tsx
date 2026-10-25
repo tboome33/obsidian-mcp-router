@@ -2744,6 +2744,34 @@ export const register: Register = on => {
         <Text dimColor>{'─'.repeat(Math.max(1, cardColumns))}</Text>
       </Box>
     )
+    // Each header: the chevron and the title in capitals at the left (as the
+    // pane's own "PRINCIPAL :" labels), one dim line on the section's state
+    // at the right — the language and the version, the ways on, WireGuard,
+    // how many vaults can go — so that a folded console still reads.
+    const languageName = languages.find(l => l.code === languageCode)?.name ?? languageCode
+    const wgShort = wgLine.split('. ')[0] ?? wgLine
+    // One line, cut with "…" where the header is short of room; no line at
+    // all on a narrow pane (a phone), where the title alone fills the row.
+    const hasHeadNotes = cardColumns >= 40
+    const headNote = (key: string, text: string, color?: string) => (
+      <Text key={key} size="caption" dimColor={!color} color={color} wrap="truncate-end">
+        {text}
+      </Text>
+    )
+    const headNotes: Record<string, unknown[]> = {
+      // Général holds WireGuard: its state closes the line, with its dot.
+      general: [
+        headNote('note-general', [languageName, upd?.installed ? `v${upd.installed}` : ''].filter(Boolean).join(' · ')),
+        ...(upd?.isAvailable ? [headNote('note-update', t('update.badge'), 'claude')] : []),
+        headNote('note-wg-dot', '●', wg?.state === 'active' ? 'success' : wg?.state === 'inactive' || wg?.state === 'absent' ? 'warning' : undefined),
+        headNote('note-wg', wgShort),
+      ],
+      create: [headNote('note-create', t('create.note'))],
+      register: [headNote('note-register', t('register.note'))],
+      hooks: hooks
+        ? [headNote('note-hooks', t('hooks.note', { on: hooks.optIn.filter(h => h.enabled || h.global).length, total: hooks.optIn.length }))]
+        : [],
+    }
     const card = (key: string, title: string, body: unknown) => {
       const name = key.replace(/^admin-/, '')
       const isOpen = openSection === name
@@ -2754,16 +2782,29 @@ export const register: Register = on => {
           {/* The open header on a subtle ground: the desktop draws a Button's
               text in its own colour, so the title's colour alone (kept for the
               terminal) does not light it there. */}
-          <Box key={`${key}-head`} flexDirection="row" alignItems="center" backgroundColor={isOpen ? 'diffAddedDimmed' : undefined}>
+          <Box
+            key={`${key}-head`}
+            flexDirection="row"
+            justifyContent="space-between"
+            alignItems="center"
+            gap={2}
+            paddingX={1}
+            backgroundColor={isOpen ? 'diffAddedDimmed' : undefined}
+          >
             {/* The chevron is part of the Button (a Text child, which a Button
                 may hold; an Svg it may not): a press on it folds or unfolds
                 too. Dim, so that the title carries the eye. */}
             <Button key={`admin-sec-${name}`} plain dimColor={!isOpen} onPress={() => void update($, adminSection, now => (now === name ? null : name))}>
               <Text dimColor>{chevron} </Text>
               <Text weight="semibold" color={isOpen ? 'claude' : undefined} dimColor={!isOpen}>
-                {title}
+                {title.toLocaleUpperCase()}
               </Text>
             </Button>
+            {hasHeadNotes && (
+              <Box key={`admin-sec-${name}-note`} flexDirection="row" gap={1} flexShrink={1} alignItems="center">
+                {(headNotes[name] ?? []) as never}
+              </Box>
+            )}
           </Box>
           {isOpen && (
             <Box key={`${key}-panel`} flexDirection="column" gap={1} paddingLeft={2} paddingY={1}>

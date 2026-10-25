@@ -112,6 +112,7 @@ export const FR: Record<string, string> = {
   "admin.openClaude": "Ouvrir les vaults distants dans le navigateur interne de Claude",
   "admin.yes": "Oui",
   "admin.no": "Non",
+  "admin.noteOpen": "{on} sur {total}",
   "nav.vaults": "Vaults",
   "nav.admin": "⚙ Administration",
   "admin.general": "Général",
@@ -185,6 +186,7 @@ export const FR: Record<string, string> = {
   "wg.guide": "Guide : vault distant + Selkies",
   "wg.prompt": "Prompt d'installation du serveur",
   "register.title": "Enregistrer un vault existant",
+  "register.note": "local ou distant",
   "register.kindLocal": "Local (Obsidian sur ce PC)",
   "register.kindRemote": "Distant (par WireGuard)",
   "register.name": "Nom",
@@ -211,6 +213,9 @@ export const FR: Record<string, string> = {
   "unregister.title": "Retirer un vault du router",
   "unregister.hint": "Seuls les vaults qui ne sont liés à aucun workspace peuvent être retirés. Un vault local est désactivé, ses fichiers restent intacts.",
   "unregister.none": "Aucun vault à retirer.",
+  "unregister.noteNone": "aucun",
+  "unregister.noteOne": "1 retirable",
+  "unregister.noteMany": "{count} retirables",
   "unregister.ask": "Retirer {name} du router ?",
   "unregister.button": "Retirer",
   "unregister.confirm": "Confirmer le retrait",
@@ -235,6 +240,7 @@ export const FR: Record<string, string> = {
   "setup.toast": "Aucun vault pour ce projet : tape /vault-setup pour en créer ou en enregistrer un.",
   "primary.setup": "Configurer un vault",
   "create.title": "Créer un vault Obsidian",
+  "create.note": "un vault neuf, ses conventions",
   "create.name": "Nom",
   "create.path": "Dossier",
   "create.mode": "Type de wiki",
@@ -290,5 +296,6 @@ export const FR: Record<string, string> = {
   "hook.hot-cache-update-prompt": "Bloque la fin du tour tant que hot.md n’est pas rafraîchi après une écriture.",
   "hook.doc-propagation-checker": "Après un git commit, signale la doc (CHANGELOG, wiki) en retard sur le code.",
   "hook.vault-doc-startup-check": "Au démarrage, signale la doc du vault en retard sur le code.",
-  "hook.check-router-update": "Une fois par jour, vérifie sur GitHub si une version plus récente du router existe."
+  "hook.check-router-update": "Une fois par jour, vérifie sur GitHub si une version plus récente du router existe.",
+  "hooks.note": "{on} sur {total} activés"
 }

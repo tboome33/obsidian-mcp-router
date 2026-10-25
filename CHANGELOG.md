@@ -28,10 +28,29 @@ workspace at a time.
   WireGuard and the ways to open a vault), Create an Obsidian vault, Register an existing vault
   (removing one from the router at its bottom), and the workspace's hooks. A section kept from
   the six-section console opens where its content now lives.
+  Each header's line follows: General's ends with WireGuard's state and its dot; Hooks says how
+  many are on ("2 sur 8 activés").
 - With the plugin installed, a vault's bootstrap no longer wires hooks into
   `~/.claude/settings.json`. A hook still wired there keeps running everywhere: the gate steps
   aside so it never runs twice, and the console says so (`setup-vault.mjs --uninstall-hooks`
   removes those entries).
+
+## [0.116.5] — 2026-10-25 — the accordion's headers: capitals, a line on each section's state
+
+Asked by Roland ("améliore le design des menus de l'accordéon"):
+
+- **The title in capitals** after its chevron, as the pane's own "PRINCIPAL :" and
+  "SECONDAIRES :" labels; the header row padded one cell, the open one on its green ground.
+- **One dim line at the right of each header on the section's state**, open or folded, so
+  that a folded console still reads: the language and the installed version (the update
+  badge in colour when one is available); the ways of opening on ("3 sur 3"); a hint for
+  the two forms; WireGuard's state with its coloured dot; how many vaults can be removed.
+  Six locale strings, French and English.
+- Adversarial review by Codex: two findings fixed — the line could wrap under a long title
+  (it is cut with "…", and left out under 40 columns); the WireGuard assertion accepted any
+  text (it names the state and its colour now). Tests: `tests/vault-panel.test.tsx` 125
+  (the capitals, each header's line on both surfaces, the line following a setting, the
+  narrow pane; the line, the capitals and the shortening each seen red under their mutation).
 
 ## [0.116.4] — 2026-10-25 — the accordion's rule without "…", its open header on a ground
 
