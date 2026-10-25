@@ -10,6 +10,36 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.116.12] — 2026-10-25 — the band's slots in order: ▶, name, tier, a bar, the marks; "+N" centred in its arrow
+
+Asked by Roland from two crops of v0.116.9's band (the count in the black arrow too low, no
+"+" before it) and a sketch of the slot he wanted:
+
+- **The count centred in its arrow.** `dominant-baseline="central"` at 8.5 drew the bold
+  11 px digits centred at 9.2 of 16 in Chromium (which draws the mark) — 1.2 px too low, as
+  the crop showed. The label now sits on a plain baseline at 11.9, where the digits stand
+  from 4.1 to 11.95, centred on the arrow's 8; no baseline attribute, so another renderer
+  draws it the same. The **more arrow reads "+N"** (a cell wider: 18 + 7 px a character,
+  the blank key over it a space longer), the back arrow keeps "N"; each label is centred on
+  the straight part of its shape. The terminal's texts ("◀N", "N▶") are unchanged.
+- **A secondary's slot in a new order**: its ▶ (pause) or dimmed ▶ (resume) **first**, then
+  its name, then its tier mark (lock, hand, pen; the badge on the terminal), then — only
+  when the vault opens somewhere — a dim "│" and the marks that open it: Obsidian's for a
+  local vault (after the bar now; the name still opens it too), the planet and Claude's mark
+  for a remote one. A vault that opens nowhere ends at its tier, no bar. The primary's slot
+  ("● name, marks") is unchanged.
+- `bandFit` counts the bar as two cells (its gap and itself) where a slot has marks; the
+  pinned thresholds move with it (77/84 for two vaults that open nowhere; 83/92 on the
+  terminal and 86/98 on the desktop for a remote and a local one). The Text keys the tests
+  look for are carried by a Box, since the drawn trees keep a Box's and a Button's key, not
+  a Text's.
+- Adversarial review by Codex: one finding fixed — the "no bar" assertion named a vault the
+  fixture did not bind (it binds it now and asserts its slot ends at the tier). Tests:
+  `tests/vault-panel.test.tsx` 134 (the slot's order on both surfaces, the bar dim and
+  absent where nothing opens, the arrow's "+N", its width, its baseline and its x on both
+  arrows; six mutations each seen red — the baseline back at 8.5, no "+", the tier before
+  the name, the bar uncounted, the control after the marks, the bar drawn without marks).
+
 ## [0.116.11] — 2026-10-25 — the console behind a gear at the menu's right; no tab, no footer
 
 - **The gear**: the administration console is no tab any more. A gear (the octicon, in
