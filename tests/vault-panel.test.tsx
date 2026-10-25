@@ -3258,8 +3258,9 @@ test('the menu stays at the top while the pane scrolls: a copy, no frame, over t
     const top = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface })
     const items = ['nav-vaults', 'nav-add']
     const at = nodesOf(await top.drawn())
-    // The key in view is a bold text in the text's colour, two blanks each side (no pill); the other a plain label, dim.
-    expect(items.map(key => at.find(n => keyOf(n) === key)?.props?.label)).toEqual(['  Vaults  ', '+ Ajouter un vault'])
+    // The key in view is a bold text in the router's purple, two blanks each side (no pill); the other a plain
+    // label, dim. On the desktop the key is a blank Button over that text (three times its cells of blanks).
+    expect(items.map(key => at.find(n => keyOf(n) === key)?.props?.label)).toEqual([surface === 'terminal' ? '  Vaults  ' : ' '.repeat(30), '+ Ajouter un vault'])
     // The gear: a blank key over its mark on the desktop, the glyph on the terminal; in the end group, before GitHub.
     const gear = at.find(n => keyOf(n) === 'nav-admin')
     expect(gear?.props?.label).toBe(surface === 'terminal' ? '⚙' : '  ')
@@ -3268,8 +3269,10 @@ test('the menu stays at the top while the pane scrolls: a copy, no frame, over t
     const inView = at.find(n => keyOf(n) === 'nav-vaults')
     expect(inView?.props?.plain).toBe(true)
     expect(inView?.props?.variant).toBeUndefined()
-    expect(nodesOf(inView as never).find(n => n.type === 'Text')?.props).toMatchObject({ weight: 'bold', color: 'text' })
-    expect(textOf(nodesOf(inView as never).find(n => n.type === 'Text')!)).toBe('  Vaults  ')
+    // The purple bold text: inside the key on the terminal, beside it (under the blank key) on the desktop.
+    const inViewText = nodesOf(at.find(n => keyOf(n) === 'navtab-vaults') as never).find(n => n.type === 'Text' && textOf(n) === '  Vaults  ')
+    expect(inViewText?.props).toMatchObject({ weight: 'bold', color: '#6040b0' })
+    expect(nodesOf(inView as never).some(n => n.type === 'Text')).toBe(surface === 'terminal')
     expect(at.find(n => keyOf(n) === 'nav-add')?.props).toMatchObject({ plain: true, dimColor: true })
     expect(await top.find({ key: 'sticky-bar' })).toBeFalsy()
     await top.unmount()
@@ -3293,11 +3296,18 @@ test('the menu switches the view: + Ajouter un vault opens the list, the gear th
   wire(on, { list: LIST })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface: 'desktop' })
-  // The key in view: a bold text child, two blanks each side, no pill.
+  // The key in view, on the desktop: a blank Button (no pill) laid over a bold purple text, two blanks each
+  // side, in the tab's own box (`navopen-<id>`), where a closed tab is a dim labelled Button.
   const inView = async (key: string) => {
-    const button = nodesOf(await ui.drawn()).find(n => keyOf(n) === key)
+    const nodes = nodesOf(await ui.drawn())
+    const button = nodes.find(n => keyOf(n) === key)
+    const open = nodes.find(n => keyOf(n) === key.replace('nav-', 'navopen-'))
 
-    return button?.props?.variant === undefined && /^ {2}.* {2}$/.test(String(button?.props?.label)) && nodesOf(button as never).some(n => n.type === 'Text' && n.props?.weight === 'bold')
+    return (
+      button?.props?.variant === undefined &&
+      /^ +$/.test(String(button?.props?.label)) &&
+      nodesOf(open as never).some(n => n.type === 'Text' && n.props?.weight === 'bold' && n.props?.color === '#6040b0' && /^ {2}.* {2}$/.test(textOf(n)))
+    )
   }
   await ui.press({ key: 'nav-add' })
   expect(await ui.find({ type: 'Button', key: 'tab-tous' })).toBeTruthy()
@@ -3433,7 +3443,7 @@ test('a pane too narrow for the menu folds it into "☰" and the view in sight; 
   await wide.unmount()
 })
 
-test('under the menu, a legend says what each mark and each badge means: one wrapping row in two groups, "Ouvrir" and "Droits", each a bold word and its items parted by "·", never cut; each item in the hover group its tiles\' marks or radios join', async ($, on) => {
+test('under the menu, a legend says what each mark and each badge means: one wrapping row in two groups, "Ouvrir" and "Droits", each a bold word and its items parted by "·", a group cut only in a pane narrower than it; each item lights the tiles\' marks or radios of its kind, one way', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
   const texts = (n: Drawn | undefined) => nodesOf(n as never).filter(x => x.type === 'Text').map(textOf)
@@ -3465,7 +3475,8 @@ test('under the menu, a legend says what each mark and each badge means: one wra
     expect(texts(groups[1])).toEqual(['Droits :', '🔒', 'lecture seule', '·', '✋', 'écriture sur accord', '·', '✏️', 'écriture automatique'])
     expect(nodesOf(groups[1] as never).find(n => n.type === 'Text' && textOf(n) === 'Droits :')?.props?.weight).toBe('semibold')
     expect(boxes(groups[1]).map(keyOf)).toEqual(['legend-locked', 'legend-soft', 'legend-writable'])
-    // Each item joins the hover group of its mark or tier, on a grey ground while any member is under the pointer.
+    // Each item is the trigger of its hover group: a grey ground under the pointer, and the tiles' marks or radios
+    // of its kind lit with it (their hidden members, below).
     expect(boxes(groups[0]).map(n => n.hover)).toEqual(['open-obsidian', 'open-claude', 'open-browser'].map(scope => ({ scope, backgroundColor: 'inactive' })))
     expect(boxes(groups[1]).map(n => n.hover)).toEqual(['tier-locked', 'tier-soft', 'tier-writable'].map(scope => ({ scope, backgroundColor: 'inactive' })))
     // The legend comes right under the menu; nothing of the old wording is left.
@@ -3473,18 +3484,26 @@ test('under the menu, a legend says what each mark and each badge means: one wra
     expect(nodes.some(n => n.type === 'Text' && /ouvre dans|Distant :|Local :|Droits lecture/.test(textOf(n)))).toBe(false)
     await ui.unmount()
   }
-  // The tiles' marks join the same groups on the desktop: the planet's box "open-browser", Claude's "open-claude",
-  // Obsidian's "open-obsidian" — the legend's item lights with them. The terminal, with no hover, draws glyph keys.
+  // A tile's mark is no trigger: its box carries no hover of its own. Under the mark, drawn first, a hidden
+  // member of the group (`lit-<key>`: absolute over the box, display none, a grey ground) is revealed while the
+  // legend's item is under the pointer — one way only. The gear at the menu's right has none of this.
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await openAdd(ui)
   await ui.press({ key: 'tab-distants' })
   const nodes = nodesOf(await ui.drawn())
-  expect(nodes.find(n => keyOf(n) === 'icon-web-extra')?.hover).toEqual({ scope: 'open-browser', backgroundColor: 'inactive' })
-  expect(nodes.find(n => keyOf(n) === 'icon-ui-extra')?.hover).toEqual({ scope: 'open-claude', backgroundColor: 'inactive' })
-  // (Obsidian's: in the last-files test below, where a local vault has a path.)
-  // The gear at the menu's right joins no group.
+  for (const [key, scope] of [['web-extra', 'open-browser'], ['ui-extra', 'open-claude']] as const) {
+    const box = nodes.find(n => keyOf(n) === `icon-${key}`)
+    expect(box).toBeTruthy()
+    expect(box?.hover).toBeUndefined()
+    const member = childrenOf(box)[0]
+    expect(keyOf(member!)).toBe(`lit-${key}`)
+    expect(member?.props).toMatchObject({ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'none', backgroundColor: 'inactive' })
+    expect(member?.hover).toEqual({ scope, display: 'flex' })
+    expect(childrenOf(box).map(c => c.type)).toEqual(['Box', 'Svg', 'Box'])
+  }
   expect(nodes.some(n => keyOf(n) === 'icon-nav-admin')).toBe(true)
   expect(nodes.find(n => keyOf(n) === 'icon-nav-admin')?.hover).toBeUndefined()
+  expect(nodes.some(n => keyOf(n) === 'lit-nav-admin')).toBe(false)
   // Marks alone in the tiles: no "Distant · navigateur", no "Dans Claude".
   expect(await ui.find({ type: 'Text', text: /Distant · navigateur|Dans Claude/ })).toBeFalsy()
   await ui.unmount()
@@ -3593,15 +3612,26 @@ test("a secondary's tile, in a pane at least a tile wide: its head holds its dot
     expect(tiers?.props?.flexWrap).toBeUndefined()
     const radios = childrenOf(tiers)
     expect(radios.map(keyOf)).toEqual(['radio-locked-extra', 'radio-soft-extra', 'radio-writable-extra'])
-    const keys = radios.map(r => childrenOf(r)[0])
+    // In each radio's box, first the hidden member of its tier's hover group (lit from the legend alone), then the key.
+    expect(radios.map(r => keyOf(childrenOf(r)[0]!))).toEqual(['lit-tier-locked-extra', 'lit-tier-soft-extra', 'lit-tier-writable-extra'])
+    const keys = radios.map(r => childrenOf(r)[1])
     expect(keys.map(n => n?.type)).toEqual(['Button', 'Button', 'Button'])
     expect(keys.map(n => keyOf(n))).toEqual(['tier-locked-extra', 'tier-soft-extra', 'tier-writable-extra'])
     expect(keys.map(n => n?.props?.label)).toEqual(['○ 🔒', '◉ ✋', '○ ✏️'])
     expect(keys.map(n => n?.props?.dimColor)).toEqual([true, false, true])
-    // Each radio's box joins its tier's hover group: a grey ground while any member (the legend's item) is under the pointer.
-    expect(radios.map(r => r.hover)).toEqual(['locked', 'soft', 'writable'].map(m => ({ scope: `tier-${m}`, backgroundColor: 'inactive' })))
-    // A rule across the tile under its head: one line high, what overflows clipped (never truncated into '…').
-    expect(textOf(parts[1]!)).toBe('─'.repeat(65))
+    // A radio's box is no trigger (no hover of its own); its hidden member is absolute over it, drawn none, on a
+    // grey ground, and revealed with the group while the legend's item of that tier is under the pointer.
+    expect(radios.map(r => r.hover)).toEqual([undefined, undefined, undefined])
+    for (const [at, m] of (['locked', 'soft', 'writable'] as const).entries()) {
+      const member = childrenOf(radios[at])[0]
+      expect(member?.props).toMatchObject({ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'none', backgroundColor: 'inactive' })
+      expect(member?.hover).toEqual({ scope: `tier-${m}`, display: 'flex' })
+    }
+    // A rule across the tile under its head: one line high, one line only. The terminal draws the
+    // inside's 65 cells of "─"; the desktop, whose font draws "─" wider than the cell, 86 in a
+    // hundred of them (55), the Text cut at the edge rather than wrapped into a stub under the rule.
+    expect(textOf(parts[1]!)).toBe('─'.repeat(surface === 'terminal' ? 65 : 55))
+    expect(nodesOf(parts[1] as never).find(n => n.type === 'Text')?.props?.wrap).toBe('truncate-end')
     expect(parts[1]?.props?.height).toBe(1)
     expect(parts[1]?.props?.overflow).toBe('hidden')
     // The body on the full width — the tile's inside, 69 - 4: the title, bold, over the value; no file before the first write.
@@ -3670,7 +3700,8 @@ test("the primary's tile has the same shape: its marks in its head, its rights a
   expect(textOf(title!)).toBe('lecture/écriture :')
   // (A drawn tree keeps no Text's key: the radios' boxes are the keys to find.)
   expect(childrenOf(tiers).map(keyOf)).toEqual(['radio-locked-main', 'radio-soft-main', 'radio-writable-main'])
-  const keys = childrenOf(tiers).map(r => childrenOf(r)[0])
+  // (First in each radio's box, the hidden member of its hover group; then the told tier.)
+  const keys = childrenOf(tiers).map(r => childrenOf(r)[1])
   expect(keys.map(n => n?.type)).toEqual(['Text', 'Text', 'Text'])
   expect(keys.map(n => textOf(n!))).toEqual(['○ 🔒', '○ ✋', '◉ ✏️'])
   expect(keys.map(n => n?.props?.dimColor)).toEqual([true, true, false])
@@ -3695,7 +3726,7 @@ test('a locked session marks the primary read-only in its rights', async ($, on)
   const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   const menu = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'mode-main')
   const tiers = childrenOf(menu)[1]
-  expect(childrenOf(tiers).map(r => textOf(childrenOf(r)[0]!))).toEqual(['◉ 🔒', '○ ✋', '○ ✏️'])
+  expect(childrenOf(tiers).map(r => textOf(childrenOf(r)[1]!))).toEqual(['◉ 🔒', '○ ✋', '○ ✏️'])
   await ui.unmount()
 })
 
@@ -3729,8 +3760,8 @@ test("a pane narrower than a tile gets one as wide as itself: the rights on a li
       ['tier-soft-extra', '◉ ✋'],
       ['tier-writable-extra', '○ ✏️'],
     ])
-    // The rule over the tile's inside, 50 - 4; the body as wide, its paths cut to it.
-    expect(textOf(parts[2]!)).toBe('─'.repeat(46))
+    // The rule over the tile's inside, 50 - 4 (the desktop's 86 in a hundred of it: 39); the body as wide, its paths cut to it.
+    expect(textOf(parts[2]!)).toBe('─'.repeat(surface === 'terminal' ? 46 : 39))
     expect(parts[3]?.props?.width).toBe(46)
     // The foot keeps its keys.
     expect(nodesOf(parts[5] as never).filter(n => n.type === 'Button').map(keyOf)).toEqual(['resume-extra', 'pause-extra'])
@@ -3768,8 +3799,11 @@ test('a tile says when its vault was last written through the router and lists i
   const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   await openClosed(ui)
   const drawn = nodesOf(await ui.drawn())
-  // Obsidian's mark in a local vault's head joins the legend's "open-obsidian" hover group.
-  expect(drawn.find(n => keyOf(n) === 'icon-obsidian-notes')?.hover).toEqual({ scope: 'open-obsidian', backgroundColor: 'inactive' })
+  // Obsidian's mark in a local vault's head: a key that triggers no hover group, with the hidden member of the
+  // legend's "open-obsidian" group under it.
+  expect(drawn.some(n => keyOf(n) === 'icon-obsidian-notes')).toBe(true)
+  expect(drawn.find(n => keyOf(n) === 'icon-obsidian-notes')?.hover).toBeUndefined()
+  expect(drawn.find(n => keyOf(n) === 'lit-obsidian-notes')?.hover).toEqual({ scope: 'open-obsidian', display: 'flex' })
   const column = nodesOf(drawn.find(n => keyOf(n) === 'stamp-docs') as never)
   expect(column.some(n => n.type === 'Text' && textOf(n) === 'Dernière mise à jour :')).toBe(true)
   expect(column.some(n => n.type === 'Text' && /^\d{2}\/\d{2}\/2026 {2}\d{2}:\d{2}$/.test(textOf(n)))).toBe(true)
@@ -3901,7 +3935,7 @@ test("a recent file the router gives no link to says so, opens nothing; with the
   await ui.unmount()
 })
 
-test('the wide menu draws its keys as tabs on a shelf: round frames cut short of their bottom, the one in sight open over the rule', async ($, on) => {
+test("the wide menu draws its keys as tabs on a shelf: round frames cut short of their bottom on the rule, every tab two rows, the one in sight told by its key alone — bold, in the router's purple", async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
   const tabKeys = ['vaults', 'add'] as const
@@ -3909,7 +3943,7 @@ test('the wide menu draws its keys as tabs on a shelf: round frames cut short of
   const tabOf = (tree: unknown, key: string) => nodesOf(tree).find(n => keyOf(n) === key)
   // The tabs, with the one in sight open and the others closed, in a menu copy under `prefix`.
   // `inSight` 'admin': the console shows, no tab is open and the gear is held down.
-  const shelf = (tree: unknown, prefix: string, inSight: (typeof tabKeys)[number] | 'admin') => {
+  const shelf = (tree: unknown, prefix: string, inSight: (typeof tabKeys)[number] | 'admin', surface: 'terminal' | 'desktop') => {
     const gearBox = nodesOf(tree).find(n => keyOf(n) === `icon-${prefix}nav-admin`)
     if (gearBox) {
       expect(gearBox.props?.backgroundColor).toBe(inSight === 'admin' ? 'inactive' : undefined)
@@ -3920,45 +3954,61 @@ test('the wide menu draws its keys as tabs on a shelf: round frames cut short of
     for (const id of tabKeys) {
       const tab = tabOf(tree, `${prefix}navtab-${id}`) as Drawn & { children?: Drawn[] }
       const isOpen = id === inSight
-      // A cut: two rows of the frame for a closed tab, three for the open one.
-      expect(tab?.props).toMatchObject({ height: isOpen ? 3 : 2, overflow: 'hidden', flexShrink: 0, flexDirection: 'column' })
-      // A round frame in the tiles' colour (as plain to see as theirs, never dim), opaque on the
-      // page's ground when in sight, the key then a row of blanks as wide as the terminal draws
-      // the key, a padding row under them: its bottom edge well past the cut on every surface.
+      // A cut: two rows of the frame for every tab, open or closed — the open one's sides end on
+      // the rule too (three rows drew two stubs under it on the desktop, v0.117.3).
+      expect(tab?.props).toMatchObject({ height: 2, overflow: 'hidden', flexShrink: 0, flexDirection: 'column' })
+      // A round frame in the tiles' colour (as plain to see as theirs, never dim), no ground of its
+      // own, the key then a row of blanks as wide as the terminal draws the key, a padding row
+      // under them: its bottom edge well past the cut on every surface.
       const frame = (tab.children ?? [])[0] as Drawn & { children?: Drawn[] }
       expect(frame?.props).toMatchObject({ borderStyle: 'round', borderColor: 'inactive', flexDirection: 'column', paddingBottom: 1, flexShrink: 0, minHeight: 5 })
       expect(frame?.props?.borderDimColor).toBeUndefined()
-      expect(frame?.props?.backgroundColor).toBe(isOpen ? 'inverseText' : undefined)
+      expect(frame?.props?.backgroundColor).toBeUndefined()
       const parts = (frame.children ?? []).filter((c): c is Drawn => !!c && typeof c === 'object')
-      expect(parts.map(c => c.type)).toEqual(['Button', 'Text'])
-      expect(keyOf(parts[0] as Drawn)).toBe(`${prefix}nav-${id}`)
-      // The key in sight: no pill, a bold text in the text's colour as wide as the tab; the others dim labels.
+      // The key in sight: no pill, a bold text in the router's purple as wide as the tab; the others dim labels.
+      // On the desktop, which draws a Button's label in its own colour, the open key is a Box: the purple text,
+      // then a blank Button (three times the text's cells) in an absolute Box clipped to the text — the click's.
+      expect(parts.map(c => c.type)).toEqual([isOpen && surface === 'desktop' ? 'Box' : 'Button', 'Text'])
       const key = parts[0] as Drawn
       if (isOpen) {
-        expect(key.props?.variant).toBeUndefined()
-        expect(key.props?.plain).toBe(true)
         const text = nodesOf(key as never).find(n => n.type === 'Text')
-        expect(text?.props).toMatchObject({ weight: 'bold', color: 'text' })
+        expect(text?.props).toMatchObject({ weight: 'bold', color: '#6040b0' })
         expect(textOf(text!)).toBe(`  ${labels[id]}  `)
+        const button = nodesOf(key as never).find(n => n.type === 'Button')
+        expect(keyOf(button!)).toBe(`${prefix}nav-${id}`)
+        expect(button?.props?.variant).toBeUndefined()
+        expect(button?.props?.plain).toBe(true)
+        if (surface === 'desktop') {
+          expect(keyOf(key)).toBe(`${prefix}navopen-${id}`)
+          expect(childrenOf(key).map(c => c.type)).toEqual(['Text', 'Box'])
+          expect(childrenOf(key)[1]?.props).toMatchObject({ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, overflow: 'hidden' })
+          // Non-breaking blanks, as iconKey's: the desktop collapses plain spaces to nothing.
+          expect(button?.props?.label).toBe(' '.repeat(([...labels[id]].length + 4) * 3))
+          expect(nodesOf(button as never).some(n => n.type === 'Text')).toBe(false)
+        } else {
+          expect(keyOf(key)).toBe(`${prefix}nav-${id}`)
+        }
       } else {
+        expect(keyOf(key)).toBe(`${prefix}nav-${id}`)
         expect(key.props).toMatchObject({ label: labels[id], plain: true, dimColor: true })
       }
       expect(textOf(parts[1] as Drawn)).toBe(' '.repeat([...labels[id]].length + 4))
-      // The open tab alone is three rows tall; nothing of v0.116.1's covers is left.
+      // Nothing of v0.116.1's covers is left.
       expect(nodesOf(tab as never).some(n => n.type === 'Text' && /[╯╰│]/.test(textOf(n)))).toBe(false)
     }
-    const open = tabKeys.filter(id => tabOf(tree, `${prefix}navtab-${id}`)?.props?.height === 3)
+    // The one in sight is the one whose key is the purple bold text; none while the console shows.
+    const open = tabKeys.filter(id => nodesOf(tabOf(tree, `${prefix}navtab-${id}`) as never).some(n => n.type === 'Text' && n.props?.color === '#6040b0'))
     expect(open).toEqual(inSight === 'admin' ? [] : [inSight])
   }
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface })
     const tree = await ui.drawn()
-    shelf(tree, '', 'vaults')
+    shelf(tree, '', 'vaults', surface)
     // Every key of the tree is its own: no two nodes share one.
     const keys = nodesOf(tree).map(n => keyOf(n)).filter((k): k is string => !!k)
     expect(keys.length).toBe(new Set(keys).size)
     // The rule: a Box's top border on the third row, its sides and corners a cell past the pane's
-    // edges and its lower row cut, drawn first in the menu so the open tab's ground paints over it.
+    // edges and its lower row cut, drawn first in the menu; every tab ends on it, nothing paints over it.
     const nav = tabOf(tree, 'nav') as Drawn & { children?: Drawn[] }
     expect(nav.props?.paddingBottom).toBeUndefined()
     const first = (nav.children ?? [])[0] as Drawn & { children?: Drawn[] }
@@ -3968,34 +4018,36 @@ test('the wide menu draws its keys as tabs on a shelf: round frames cut short of
     expect(line?.props).toMatchObject({ position: 'absolute', top: 0, left: -1, right: -1, height: 2, borderStyle: 'single', borderColor: 'inactive' })
     expect(line?.props?.borderDimColor).toBeUndefined()
     expect(nodesOf(nav as never).some(n => n.type === 'Text' && /^─+$/.test(textOf(n)))).toBe(false)
-    // The tabs hang from the row's top, so the open one reaches a row further down than the closed
-    // ones; the mark and the right-hand group stand two rows tall, level with the closed tabs.
+    // The tabs hang from the row's top, every one two rows tall; the mark and the right-hand group
+    // stand two rows tall too, level with the tabs.
     const row = (nav.children ?? [])[1] as Drawn & { children?: Drawn[] }
     expect(row.props?.alignItems).toBe('flex-start')
     expect(tabOf(tree, 'nav-end')?.props?.height).toBe(2)
     if (surface === 'desktop') {
       const brandBox = nodesOf(row as never).find(n => n.type === 'Box' && n.props?.height === 2 && nodesOf(n as never).some(m => m.type === 'Svg' && m.props?.alt === 'obsidian-mcp-router'))
       expect(brandBox?.props?.alignItems).toBe('center')
+      // The router's mark a little larger than the keys' marks (16) and than before (22).
+      expect(nodesOf(brandBox as never).find(m => m.type === 'Svg')?.props).toMatchObject({ width: 26, height: 26 })
     }
     // The opening follows the view through the three keys.
     await ui.press({ key: 'nav-add' })
-    shelf(await ui.drawn(), '', 'add')
+    shelf(await ui.drawn(), '', 'add', surface)
     await ui.press({ key: 'nav-admin' })
-    shelf(await ui.drawn(), '', 'admin')
+    shelf(await ui.drawn(), '', 'admin', surface)
     // Back to Vaults: the view is the session's, kept from one mount to the next.
     await ui.press({ key: 'nav-vaults' })
-    shelf(await ui.drawn(), '', 'vaults')
+    shelf(await ui.drawn(), '', 'vaults', surface)
     await ui.unmount()
   }
   // The pinned copy draws the same tabs, with the same opening, and its keys switch the view too.
   const down = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120, scroll: { offset: 7, bodyRows: 20 } }, surface: 'desktop' })
   const bar = tabOf(await down.drawn(), 'sticky-bar')
-  shelf(bar, 'sticky-', 'vaults')
+  shelf(bar, 'sticky-', 'vaults', 'desktop')
   expect(tabOf(bar, 'sticky-nav-rule')).toBeTruthy()
   await down.press({ key: 'sticky-nav-admin' })
-  shelf(tabOf(await down.drawn(), 'sticky-bar'), 'sticky-', 'admin')
+  shelf(tabOf(await down.drawn(), 'sticky-bar'), 'sticky-', 'admin', 'desktop')
   await down.press({ key: 'sticky-nav-vaults' })
-  shelf(tabOf(await down.drawn(), 'sticky-bar'), 'sticky-', 'vaults')
+  shelf(tabOf(await down.drawn(), 'sticky-bar'), 'sticky-', 'vaults', 'desktop')
   await down.unmount()
   // Folded into "☰", no tab: the keys as before, the rule a row of "─" in the flow.
   const narrow = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 40 }, surface: 'desktop' })
