@@ -143,7 +143,6 @@ declare module 'claude-code' {
        * `wireguard`, `register`, `unregister`), or null: all folded. */
       adminSection: string | null
       navOpen: boolean
-      flipped: string[]
       openers: { obsidian: boolean; browser: boolean; claude: boolean }
       adminForm: AdminForm
       /** The vault whose removal waits for its confirming press. */

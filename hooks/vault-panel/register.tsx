@@ -48,32 +48,6 @@ const showAdmin = atom({ plugin: 'obsidian-router', key: 'showAdmin' } as const,
 const adminSection = atom({ plugin: 'obsidian-router', key: 'adminSection' } as const, 'general' as string | null)
 // The pane's menu folded into "☰" on a narrow pane: whether its list is open.
 const navOpen = atom({ plugin: 'obsidian-router', key: 'navOpen' } as const, false)
-// The tiles turned over to their last files (the vaults' names).
-const flipped = atom({ plugin: 'obsidian-router', key: 'flipped' } as const, [] as string[])
-// A tile turned over comes back on its own after BACK_FOR_MS — a peek, as a
-// flip box on a web page returns once the pointer leaves — unless its back is
-// used: opening a note restarts the wait; turning it back by hand ends it.
-// One pending return per vault; a hot reload cancels them with the plugin.
-const BACK_FOR_MS = 8_000
-const returns = new Map<string, { cancel: () => void }>()
-function keepTurned($: EngineInterface, name: string) {
-  returns.get(name)?.cancel()
-  returns.set(
-    name,
-    $.clock.after(BACK_FOR_MS, () => {
-      returns.delete(name)
-      void update($, flipped, now => now.filter(n => n !== name)).catch(() => undefined)
-    }),
-  )
-}
-function letTurnBack(name: string) {
-  returns.get(name)?.cancel()
-  returns.delete(name)
-}
-// A turned tile is a peek, not a setting: the ones left turned when a session
-// ended (or the plugin reloaded, its pending returns cancelled with it) come
-// back at the first drawing — they would stay turned for ever otherwise.
-let backsReset = false
 // Which ways of opening a vault the console allows, kept in the plugin's
 // store: a local vault in Obsidian, a remote one in the default browser, a
 // remote one in Claude's own browser. A way turned off draws no mark.
@@ -1613,8 +1587,6 @@ const markAlt = (source: string) =>
       ? 'Claude'
       : source === ROUTER_MARK
         ? 'obsidian-mcp-router'
-        : source === LIST_MARK
-          ? t('mark.recent')
         : source === LOCK_MARK
           ? modeLabel('locked')
         : source === HAND_MARK
@@ -1624,11 +1596,6 @@ const markAlt = (source: string) =>
         : source === GITHUB_MARK
           ? 'GitHub'
           : t('mark.browser')
-
-// The key that turns a tile over to its last files: three lines in a ring,
-// in a grey both themes read.
-const LIST_MARK =
-  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10.5" fill="none" stroke="#6e7781" stroke-width="1.8"/><path d="M7.5 8.5h9M7.5 12h9M7.5 15.5h9" stroke="#6e7781" stroke-width="1.8" stroke-linecap="round"/></svg>'
 
 // The router's mark, at the left of the pane's menu: the left of the
 // repository's logo (docs/assets/logo.png), 64 px, its white made transparent.
@@ -2333,14 +2300,6 @@ export const register: Register = on => {
       keptSection === 'open' || keptSection === 'wireguard' ? 'general' : keptSection === 'unregister' ? 'register' : keptSection
     const isNavOpen = await read($, navOpen)
     const open = await read($, openers)
-    let turned = await read($, flipped)
-    if (!backsReset) {
-      backsReset = true
-      if (turned.length > 0) {
-        turned = []
-        void update($, flipped, () => []).catch(() => undefined)
-      }
-    }
     const form = await read($, adminForm)
     const removing = await read($, confirmRemove)
     const picked = await read($, removePick)
@@ -2351,11 +2310,6 @@ export const register: Register = on => {
     const creating = await read($, createForm)
     const pending = await read($, pendingConventions)
     const conventions = isAdminShown ? await conventionIds($) : []
-    // The tier menu's width, in the surface's cells: the longest label in the
-    // current language, its badge (two cells and a space), and room for the
-    // menu's own arrow and padding.
-    const modeWidth = Math.max(...MODES.map(m => cells(modeLabel(m.mode)))) + 9
-
     // A glyph per state, the colour on top: a closed local vault is no fault
     // (opening it is one click), an unreachable remote one is. A surface that
     // draws SVG gets the marks at one size; the terminal keeps the characters.
@@ -2506,16 +2460,27 @@ export const register: Register = on => {
         // A column that neither shrinks nor stretches its frame: the frame
         // keeps its own height (five rows at least) and the cut is a cut.
         <Box key={`${prefix}navtab-${id}`} height={isOpen ? 3 : 2} overflow="hidden" flexShrink={0} flexDirection="column">
+          {/* The frame in the tiles' own colour, as plain to see as theirs. The
+              open tab on the page's own ground (`inverseText`: what the text
+              is drawn on), opaque, its key a bold text in the text's colour,
+              as wide as the tab (two blanks each side) — no pill of its own,
+              so the tab and the page below read as one; the closed ones dim keys. */}
           <Box
             borderStyle="round"
-            borderDimColor={!isOpen}
+            borderColor="inactive"
             backgroundColor={isOpen ? 'inverseText' : undefined}
             flexDirection="column"
             paddingBottom={1}
             flexShrink={0}
             minHeight={5}
           >
-            {menuItem(prefix, id, label)}
+            {isOpen ? (
+              <Button key={`${prefix}nav-${id}`} plain onPress={() => void showView($, id)}>
+                <Text weight="bold" color="text">{`  ${label}  `}</Text>
+              </Button>
+            ) : (
+              menuItem(prefix, id, label)
+            )}
             <Text>{' '.repeat(cells(label) + 4)}</Text>
           </Box>
         </Box>
@@ -2628,7 +2593,7 @@ export const register: Register = on => {
         // before the tabs, so the open tab's ground paints over it.
         <Box key={`${prefix}nav`} flexDirection="column">
           <Box key={`${prefix}nav-rule`} position="absolute" top={2} left={0} right={0} height={1} overflow="hidden">
-            <Box position="absolute" top={0} left={-1} right={-1} height={2} borderStyle="single" borderDimColor />
+            <Box position="absolute" top={0} left={-1} right={-1} height={2} borderStyle="single" borderColor="inactive" />
           </Box>
           <Box flexDirection="row" justifyContent="space-between" alignItems="flex-start" gap={2}>
             <Box flexDirection="row" gap={2} alignItems="flex-start">
@@ -3382,10 +3347,8 @@ export const register: Register = on => {
             ]
           : []
 
-    // When a vault was last written through the router, and the round key
-    // that turns its tile over to its last files (none before its first
-    // write). Turned over, the tile lists them, each opening that note, under
-    // the same key, which turns it back.
+    // When a vault was last written through the router, as a date; then its
+    // last files, in the tile's third column.
     const stamp = (iso: string) => {
       const d = new Date(iso)
       const two = (n: number) => String(n).padStart(2, '0')
@@ -3393,73 +3356,65 @@ export const register: Register = on => {
       return `${two(d.getDate())}/${two(d.getMonth() + 1)}/${d.getFullYear()}  ${two(d.getHours())}:${two(d.getMinutes())}`
     }
     const activityOf = (row: VaultRow) => snap.activity?.[row.name]
-    const isTurned = (row: VaultRow) => turned.includes(row.name)
-    // The return starts or ends on the state the update finds, not the one
-    // drawn: a return that fired between the drawing and the press would
-    // otherwise turn the tile over again with no return pending.
-    const turn = (row: VaultRow) =>
-      void update($, flipped, now => {
-        if (now.includes(row.name)) {
-          letTurnBack(row.name)
-
-          return now.filter(n => n !== row.name)
+    // A text cut to a width, "…" closing it: a note's path in its column,
+    // which a Button cannot truncate on its own. Cut between graphemes, so an
+    // emoji made of several code points is kept whole or dropped whole.
+    const clip = (text: string, width: number) => {
+      if (cells(text) <= width) {
+        return text
+      }
+      const graphemes = Array.from(new Intl.Segmenter().segment(text), s => s.segment)
+      let out = ''
+      for (const g of graphemes) {
+        if (cells(out + g) > width - 1) {
+          break
         }
-        keepTurned($, row.name)
+        out += g
+      }
 
-        return [...now, row.name]
-      }).catch(() => undefined)
-    const lastUpdate = (row: VaultRow) => {
+      return `${out}…`
+    }
+    // The tile's third column: the last update's title and date, then the
+    // last files, newest first, each a key that opens the note where the
+    // console allows — a local vault's in Obsidian, a remote one's in the
+    // default browser, never in Claude's own browser pane (it would stand where
+    // this pane stands). Otherwise the file is named, not linked. `width`, in a
+    // column side by side with the others: the paths are cut to it.
+    const activityColumn = (row: VaultRow, width?: number) => {
       const done = activityOf(row)
+      const canOpen = isRemote(row) ? open.browser : open.obsidian && !!row.path && row.isKnownToObsidian !== false
 
       return (
-        <Box key={`stamp-${row.name}`} flexDirection="row" gap={2} alignItems="center" flexShrink={1}>
-          <Box flexDirection="column" alignItems="center" flexShrink={1}>
-            <Text size="caption" weight="semibold" wrap="wrap">
-              {t('activity.title')}
-            </Text>
-            <Text size="caption" wrap="truncate-end">
-              {done?.lastWriteAt ? stamp(done.lastWriteAt) : t('activity.none')}
-            </Text>
-          </Box>
-          {(done?.recent?.length ?? 0) > 0 && iconKey(LIST_MARK, '☰', `flip-${row.name}`, () => turn(row))}
+        <Box key={`stamp-${row.name}`} flexDirection="column" alignItems="flex-start" width={width} overflow="hidden">
+          <Text size="body" weight="semibold" wrap="truncate-end">
+            {t('activity.title')}
+          </Text>
+          <Text size="caption" wrap="truncate-end">
+            {done?.lastWriteAt ? stamp(done.lastWriteAt) : t('activity.none')}
+          </Text>
+          {(done?.recent ?? []).map((entry, at) =>
+            canOpen ? (
+              <Button
+                key={`note-${at}-${row.name}`}
+                label={width ? clip(entry.path, width) : entry.path}
+                plain
+                dimColor
+                onPress={() => void openNote($, row, entry.path, false)}
+              />
+            ) : (
+              <Text key={`note-${at}-${row.name}`} size="caption" dimColor wrap="truncate-end">
+                {entry.path}
+              </Text>
+            ),
+          )}
         </Box>
       )
     }
-    const recentFiles = (row: VaultRow) => (
-      <Box key={`recent-${row.name}`} flexDirection="column" flexGrow={1} overflow="hidden">
-        <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
-          <Text size="caption" dimColor>
-            {t('activity.recent')}
-          </Text>
-          {iconKey(LIST_MARK, '☰', `flip-${row.name}`, () => turn(row), true)}
-        </Box>
-        {(activityOf(row)?.recent ?? []).map((entry, at) =>
-          // A link only where the console allows a way to open it: Obsidian for
-          // a local vault; Claude's browser, else the default one, for a remote
-          // one. Otherwise the file is named, not linked.
-          (isRemote(row) ? open.claude || open.browser : open.obsidian && !!row.path && row.isKnownToObsidian !== false) ? (
-            <Button
-              key={`note-${at}-${row.name}`}
-              label={entry.path}
-              plain
-              dimColor
-              onPress={() => {
-                keepTurned($, row.name)
-                void openNote($, row, entry.path, open.claude)
-              }}
-            />
-          ) : (
-            <Text key={`note-${at}-${row.name}`} size="caption" dimColor wrap="truncate-end">
-              {entry.path}
-            </Text>
-          ),
-        )}
-      </Box>
-    )
-
-    // The tiles' grid, from the pane's width: as many per line as fit at the
-    // least width, up to three bound vaults and four to add; one per line in
-    // the narrow side panel.
+    // The tiles' grid, from the pane's width. A bound vault's tile is as wide
+    // as its three fixed columns, and as many stand on a line as the pane
+    // holds — one in the narrow side panel, two on a full window, more on a
+    // wider screen; a pane narrower than one tile gets a tile as wide as the
+    // pane, its columns stacked. A tile to add fits up to four per line.
     const columns = e.props.bodyColumns ?? 60
     const fit = (most: number, least: number) => {
       for (let n = most; n > 1; n -= 1) {
@@ -3471,20 +3426,20 @@ export const register: Register = on => {
 
       return Math.max(least, columns)
     }
-    // Wide enough for a secondary's three columns where the pane allows, never
-    // wider than the pane: its rights in the middle, a side each way as wide
-    // as the longest of what a side holds (the last update's title, its date
-    // with the round key, a state), the frame, the rules and the gaps.
-    // Narrower, the columns stack.
-    const sideWidth = Math.max(
-      cells(t('activity.title')),
-      cells(stamp('2026-12-31T23:59:00.000Z')) + 4,
-      cells(t('state.active')),
-      cells(t('state.pause')),
-    )
-    const threeColumnsWidth = modeWidth + 2 * sideWidth + 10
-    const boundWidth = fit(3, Math.min(Math.max(TILE_WIDTH, threeColumnsWidth), columns))
-    const isStacked = boundWidth < threeColumnsWidth
+    // The columns' widths, cells, each a little over what it holds: the
+    // state's over its two keys; the rights' over their title and the longest
+    // option with its ring and badge; the files' over the update's title and
+    // date, and a path of some twenty cells — and the widest of the three,
+    // wider than the rights' by a cell at least, whatever the language. Each
+    // of the last two keeps a cell of air off the rule at its left.
+    const stateWidth = Math.max(cells(t('state.active')), cells(t('state.pause'))) + 2
+    const rightsWidth = Math.max(cells(t('mode.radioTitle')), ...MODES.map(m => cells(modeLabel(m.mode)) + 5)) + 1
+    const filesWidth = Math.max(cells(t('activity.title')) + 1, cells(stamp('2026-12-31T23:59:00.000Z')) + 1, 23, rightsWidth + 1)
+    // The frame and its padding (4), the two rules (2), the columns.
+    const threeColumnsWidth = 4 + stateWidth + 1 + rightsWidth + 1 + filesWidth
+    const isStacked = columns < threeColumnsWidth
+    // Stacked, the tile is as wide as the pane, however narrow.
+    const boundWidth = isStacked ? columns : threeColumnsWidth
     // A tile to add holds less, but not so little that two squeeze in the side panel.
     const addWidth = fit(4, TILE_WIDTH + 4)
     // A horizontal rule across a tile's inside (its frame and padding taken
@@ -3513,8 +3468,8 @@ export const register: Register = on => {
         width={opts.width}
         minWidth={opts.width}
         borderStyle="single"
-        // Turned over, the frame changes colour: one sees one is at the back.
-        borderColor={isTurned(row) ? 'permission' : opts.isHighlighted ? 'claude' : 'inactive'}
+        // The primary's frame in Claude's colour, every other one thin and plain.
+        borderColor={opts.isHighlighted ? 'claude' : 'inactive'}
         paddingX={1}
       >
         <Box key={`${key}-head`} flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
@@ -3566,64 +3521,9 @@ export const register: Register = on => {
       </Box>
     )
 
-    const primary = (
-      <Box flexDirection="column" gap={1}>
-        {section(t('primary.title'))}
-        {snap.primary ? (
-          tile(
-            'primary-row',
-            snap.primary,
-            <Box key="primary-badge" flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
-              <Text color="claude">●</Text>
-              <Text size="caption">{t('primary.badge')}</Text>
-            </Box>,
-            [
-              notes(snap.primary),
-              <Text key="primary-access" size="caption" dimColor>
-                {snap.isLocked ? t('primary.locked') : t('primary.access')}
-              </Text>,
-              isTurned(snap.primary) ? recentFiles(snap.primary) : lastUpdate(snap.primary),
-            ],
-            { width: boundWidth, isHighlighted: true },
-          )
-        ) : (
-          <Box key="primary-none" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
-            <Text color="warning">{t('primary.none')}</Text>
-            <Button key="primary-setup" label={t('primary.setup')} variant="primary" onPress={() => void showAdminSection($, 'create')} />
-          </Box>
-        )}
-        {snap.isImported && snap.primary && (
-          <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
-            <Text size="caption" color="warning">
-              {t('primary.imported')}
-            </Text>
-            <Button
-              key="confirm-binding"
-              label={t('primary.confirm')}
-              plain
-              onPress={() =>
-                void rebind($, { doing: t('action.confirm.doing'), done: t('action.confirm.done') }, shown, current => current)
-              }
-            />
-          </Box>
-        )}
-        {snap.isLocked && (
-          <Text size="caption" color="warning">
-            {t('primary.sessionLocked')}
-          </Text>
-        )}
-        {snap.lockedTo && (
-          <Text size="caption" color="warning">
-            {t('primary.routerLocked', { vault: snap.lockedTo })}
-          </Text>
-        )}
-      </Box>
-    )
-
-    // One secondary, one line where the pane is wide enough: where it stands,
-    // its write tier as one menu, and the two links it may need. Narrower, the
-    // controls wrap to a second line, indented under the name.
-    const setMode = (s: Secondary, value: string) => {
+    // A secondary's tier set from its radios: the router told, the tile drawn
+    // with the new tier at once (and drawn back if the router refuses).
+    const setMode =(s: Secondary, value: string) => {
       const next = MODES.find(m => m.mode === value)
       if (next && next.mode !== s.mode) {
         void act($, {
@@ -3690,60 +3590,59 @@ export const register: Register = on => {
           ))}
         </Box>
       )
-    // Its write tier as three radio buttons under a centred bold title, the
-    // one in force marked ◉ and lit, the others ○ and dim; a press sets it.
-    // The options line up at their left among themselves.
-    const tierMenu = (s: Secondary) => (
-      <Box key={`mode-${s.name}`} flexDirection="column" flexShrink={1} alignItems="center">
-        <Text size="caption" weight="semibold" wrap="truncate-end">
+    // A vault's write tier as three radio buttons under a bold title, title
+    // and options together at the left, the one in force marked ◉ and lit, the
+    // others ○ and dim. A secondary's are keys, a press sets its tier; the
+    // primary's are told, not set — the one it has (read-only while the
+    // session is locked, else writing without asking) marked, as text.
+    const tierMenu = (row: VaultRow, mode: SecondaryMode, setter: ((mode: SecondaryMode) => void) | null) => (
+      <Box key={`mode-${row.name}`} flexDirection="column" flexShrink={1} alignItems="flex-start">
+        <Text size="body" weight="semibold" wrap="truncate-end">
           {t('mode.radioTitle')}
         </Text>
-        <Box key={`tiers-${s.name}`} flexDirection="column" alignItems="flex-start">
-          {MODES.map(m => (
-            <Button
-              key={`tier-${m.mode}-${s.name}`}
-              label={`${s.mode === m.mode ? '◉' : '○'} ${m.icon} ${modeLabel(m.mode)}`}
-              plain
-              dimColor={s.mode !== m.mode}
-              onPress={() => setMode(s, m.mode)}
-            />
-          ))}
+        <Box key={`tiers-${row.name}`} flexDirection="column" alignItems="flex-start">
+          {MODES.map(m => {
+            const label = `${mode === m.mode ? '◉' : '○'} ${m.icon} ${modeLabel(m.mode)}`
+
+            return setter ? (
+              <Button key={`tier-${m.mode}-${row.name}`} label={label} plain dimColor={mode !== m.mode} onPress={() => setter(m.mode)} />
+            ) : (
+              <Text key={`tier-${m.mode}-${row.name}`} dimColor={mode !== m.mode} wrap="truncate-end">
+                {label}
+              </Text>
+            )
+          })}
         </Box>
       </Box>
     )
-    // A secondary's front, the user's mockup: three columns, a rule between
-    // two, each centred in its room — its state over its marks, one under the
-    // other; its rights under their title; its last update, or its last files
-    // when the tile is turned. Side by side, the rules run two cells taller
-    // than the tallest column, so a line of air stands above and below; in a
-    // tile too narrow for the three, they stack with a rule between.
-    // Turned over, its last files take the room of the rights and the last
-    // update together, under one rule: a quarter of the tile would cut their
-    // paths. The state stays, and the key that turns it back is with the files.
-    const front = (s: Secondary, isPaused: boolean) => {
-      const stacked = marks(s)
-      const recent = activityOf(s)?.recent ?? []
+    // A bound vault's front: three columns of fixed widths, a rule between
+    // two. The first, centred: a secondary's state keys, then the marks that
+    // open the vault, one under the other (the primary has the marks alone);
+    // the second, at its left: its rights under their title; the third, at
+    // its left and the widest: its last update and its last files. Side by
+    // side, the rules run two cells taller than the tallest column, a line of
+    // air above and below; in a pane too narrow for the three, they stack with
+    // a rule between. `state`: a secondary's, with its switch; null for the primary.
+    const front = (row: VaultRow, state: { s: Secondary; isPaused: boolean } | null) => {
+      const stacked = marks(row)
+      const recent = activityOf(row)?.recent ?? []
       // The rules' cells: the tallest column as counted in lines, plus one of
       // air at each end. Stretched to the row and clipped, a rule is as tall as
       // the row turns out on the surface, whatever a mark's height there.
       const rows =
-        Math.max(2 + (stacked.length > 0 ? 1 + stacked.length : 0), 1 + MODES.length, isTurned(s) ? 1 + recent.length : 2) + 2
-      // The columns' widths, cells: the rights at least as wide as their longest
-      // option, the sides sharing what is left — a quarter each of the whole,
-      // never under what their words need (the tile's least width sees to it).
-      const room = boundWidth - 4 - 2 - 4
-      const middle = Math.max(modeWidth, Math.floor(room / 2))
-      const side = Math.max(1, Math.floor((room - middle) / 2))
-      const cell = (key: string, width: number, body: unknown) => (
+        Math.max((state ? 2 : 0) + (stacked.length > 0 ? (state ? 1 : 0) + stacked.length : 0), 1 + MODES.length, 2 + recent.length) + 2
+      const mode: SecondaryMode = state ? state.s.mode : snap.isLocked ? 'locked' : 'writable'
+      const cell = (key: string, width: number, body: unknown, atLeft = false) => (
         <Box
-          key={`cell-${key}-${s.name}`}
+          key={`cell-${key}-${row.name}`}
           flexDirection="column"
-          alignItems="center"
+          alignItems={atLeft ? 'flex-start' : 'center'}
           justifyContent="center"
           gap={1}
           width={isStacked ? undefined : width}
           paddingY={1}
-          flexShrink={isStacked ? 0 : 1}
+          paddingLeft={atLeft ? 1 : 0}
+          flexShrink={0}
           overflow="hidden"
         >
           {body as never}
@@ -3751,21 +3650,22 @@ export const register: Register = on => {
       )
 
       return (
-        <Box key={`front-${s.name}`} flexDirection={isStacked ? 'column' : 'row'} alignItems="stretch" justifyContent="center" gap={isStacked ? 0 : 1}>
-          {cell('state', side, [
-            stateSwitch(s, isPaused),
+        <Box key={`front-${row.name}`} flexDirection={isStacked ? 'column' : 'row'} alignItems="stretch" justifyContent="flex-start">
+          {cell('state', stateWidth, [
+            ...(state ? [stateSwitch(state.s, state.isPaused)] : []),
             ...(stacked.length > 0
               ? [
-                  <Box key={`stack-${s.name}`} flexDirection="column" alignItems="center" flexShrink={0}>
+                  <Box key={`stack-${row.name}`} flexDirection="column" alignItems="center" flexShrink={0}>
                     {stacked as never}
                   </Box>,
                 ]
               : []),
           ])}
-          {divider(`1-${s.name}`, rows)}
-          {isTurned(s)
-            ? cell('recent', middle + 2 + side, recentFiles(s))
-            : [cell('rights', middle, tierMenu(s)), divider(`2-${s.name}`, rows), cell('stamp', side, lastUpdate(s))]}
+          {divider(`1-${row.name}`, rows)}
+          {cell('rights', rightsWidth, tierMenu(row, mode, state ? m => setMode(state.s, m) : null), true)}
+          {divider(`2-${row.name}`, rows)}
+          {/* Stacked: the tile's inside (its frame and padding, 4) less the cell's own padding. */}
+          {cell('files', filesWidth, activityColumn(row, Math.max(1, isStacked ? boundWidth - 5 : filesWidth - 1)), true)}
         </Box>
       )
     }
@@ -3797,8 +3697,58 @@ export const register: Register = on => {
           <Text weight="bold">✕</Text>
         </Button>,
         [notes(s)],
-        { width: boundWidth, isDim: isPaused, body: front(s, isPaused), marksInHead: false },
+        { width: boundWidth, isDim: isPaused, body: front(s, { s, isPaused }), marksInHead: false },
       )
+
+    const primary = (
+      <Box flexDirection="column" gap={1}>
+        {section(t('primary.title'))}
+        {snap.primary ? (
+          tile(
+            'primary-row',
+            snap.primary,
+            <Box key="primary-badge" flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
+              <Text color="claude">●</Text>
+              <Text size="caption">{t('primary.badge')}</Text>
+            </Box>,
+            // The same front as a secondary's: its marks, its rights (told,
+            // not set), its last update and files.
+            [notes(snap.primary)],
+            { width: boundWidth, isHighlighted: true, body: front(snap.primary, null), marksInHead: false },
+          )
+        ) : (
+          <Box key="primary-none" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+            <Text color="warning">{t('primary.none')}</Text>
+            <Button key="primary-setup" label={t('primary.setup')} variant="primary" onPress={() => void showAdminSection($, 'create')} />
+          </Box>
+        )}
+        {snap.isImported && snap.primary && (
+          <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+            <Text size="caption" color="warning">
+              {t('primary.imported')}
+            </Text>
+            <Button
+              key="confirm-binding"
+              label={t('primary.confirm')}
+              plain
+              onPress={() =>
+                void rebind($, { doing: t('action.confirm.doing'), done: t('action.confirm.done') }, shown, current => current)
+              }
+            />
+          </Box>
+        )}
+        {snap.isLocked && (
+          <Text size="caption" color="warning">
+            {t('primary.sessionLocked')}
+          </Text>
+        )}
+        {snap.lockedTo && (
+          <Text size="caption" color="warning">
+            {t('primary.routerLocked', { vault: snap.lockedTo })}
+          </Text>
+        )}
+      </Box>
+    )
 
     // Every secondary in the binding's own order, the paused ones in their place.
     const rank = (name: string) => {
@@ -3937,7 +3887,8 @@ export const register: Register = on => {
               null,
               [
                 notes(v),
-                ...(activityOf(v)?.lastWriteAt ? [isTurned(v) ? recentFiles(v) : lastUpdate(v)] : []),
+                // Its files cut to the tile's inside: the frame and padding (4), the line's indent (2).
+                ...(activityOf(v)?.lastWriteAt ? [activityColumn(v, Math.max(1, addWidth - 6))] : []),
               ],
               {
                 width: addWidth,
