@@ -98,6 +98,7 @@ import {
   loadWorkspaceDotenv,
   readRouterConfig,
   detectVaultContext,
+  hookWriteTier,
 } from './_helpers/workspace-vault.mjs';
 import { reconcileVaultSessions, buildLogLineSummary } from './_helpers/session-reconcile.mjs';
 import { isLoggedTool, isRouterWriteTool, routerWriteToolName } from './_helpers/tool-names.mjs';
@@ -353,8 +354,31 @@ function findResumableJournal(sessionsDir, dateIso, slug, sessionIdShort) {
   return null;
 }
 
+// The user narrowed this workspace's PRIMARY (read-only strict, or read-only
+// unless asked): the journal is the hook's own write into the vault, with
+// no one to ask, so it stops — the one still open included, and the next
+// prompt, tool call and closing leave it as it is. Asked of the config as it
+// stands NOW, so a tier set mid-session takes effect at the next event.
+//
+// A CONFIG THAT CANNOT BE READ IS NOT "NO TIER": a journal already open in
+// workspace-bound mode took its vault from that config, and the tier lives in
+// it — so the journal stops until the config reads again (failing closed, as
+// the tier itself does). A journal whose cwd IS the vault never needed the
+// config, and cannot be narrowed by it.
+function journalBlockedByTier(cwd, state = null) {
+  try {
+    const cfg = readRouterConfig();
+    if (!cfg) return !!state && state.vaultMode !== 'cwd-is-vault';
+
+    return hookWriteTier(cfg, cwd) !== null;
+  } catch {
+    return !!state && state.vaultMode !== 'cwd-is-vault';
+  }
+}
+
 function ensureJournalForSession(payload) {
   const cwd = resolveCwd(payload);
+
   // v0.12.5 (review+ pass 2 — Reviewer A + codex pass 2 P3): when Claude
   // Code omits session_id (very rare), use a raw UUID as the fallback.
   // Earlier iterations tried `unknown-${Date.now()}` then
@@ -367,6 +391,7 @@ function ensureJournalForSession(payload) {
 
   // Existing state for this session?
   const existing = readState(sessionId);
+  if (journalBlockedByTier(cwd, existing)) return null;
   if (existing) return existing;
 
   loadWorkspaceDotenv(cwd);
@@ -745,6 +770,7 @@ function handleSessionEnd(payload) {
   const sessionId = payload.session_id || '';
   const state = readState(sessionId);
   if (!state) return;
+  if (journalBlockedByTier(state.cwd || resolveCwd(payload), state)) return;
   const endedAt = new Date().toISOString();
 
   // Closing chronological marker

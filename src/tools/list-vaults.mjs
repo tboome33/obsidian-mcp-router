@@ -467,6 +467,11 @@ export async function listVaults(registry, sharedConfig = null) {
       alsoWritable: Array.isArray(b.alsoWritable) ? b.alsoWritable.filter(str) : [],
       // The secondaries this workspace paused (v0.107.0): in `also`, not reachable.
       alsoPaused: Array.isArray(b.alsoPaused) ? b.alsoPaused.filter(str) : [],
+      // The write tier of the PRIMARY (v0.117.0): "writable" unless the user
+      // narrowed it, and only while the stored tier still names this primary.
+      primaryMode: b.primaryTier && b.primaryTier.vault === b.vault && ['locked', 'soft'].includes(b.primaryTier.mode)
+        ? b.primaryTier.mode
+        : 'writable',
     };
   };
   // The hint, same treatment. `status` must be one the classifier can produce

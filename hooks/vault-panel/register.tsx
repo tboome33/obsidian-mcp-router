@@ -18,7 +18,7 @@ const TRUTHY = new Set(['true', '1', 'yes', 'on'])
 // The router as /mcp lists it: shipped as a plugin, or declared by hand.
 const SERVERS = ['plugin:obsidian-router:router', 'obsidian-router']
 const ROUTER_TOOL =
-  /^mcp__(plugin_obsidian-router_router|obsidian-router)__(confirm_workspace_binding|set_secondary_vault_mode|lock_vault|unlock_vaults)$/
+  /^mcp__(plugin_obsidian-router_router|obsidian-router)__(confirm_workspace_binding|set_secondary_vault_mode|set_primary_vault_mode|lock_vault|unlock_vaults)$/
 
 const snapshot = atom({ plugin: 'obsidian-router', key: 'snapshot' } as const, null)
 const busy = atom({ plugin: 'obsidian-router', key: 'busy' } as const, null)
@@ -329,6 +329,8 @@ type Binding = {
   alsoWritable?: string[]
   /** The secondaries this project paused (router v0.107.0+): bound, unreachable. */
   alsoPaused?: string[]
+  /** The primary's own write tier (router v0.117.0+): absent from an older router. */
+  primaryMode?: SecondaryMode
 }
 
 // A `remoteVaults` entry on the loopback is a vault of this machine's own
@@ -418,7 +420,13 @@ let reading = 0
 // `$.mcp.call: no connected MCP tool …`, is a server not (yet) connected, which
 // the next server name or the next startup try may well reach.
 const REFUSED = /\$\.mcp\.call\([^()]*\) refused: (.*)$/s
-const WRITE_TOOLS = ['confirm_workspace_binding', 'set_secondary_vault_mode', 'register_remote_vault', 'unregister_vault']
+const WRITE_TOOLS = [
+  'confirm_workspace_binding',
+  'set_secondary_vault_mode',
+  'set_primary_vault_mode',
+  'register_remote_vault',
+  'unregister_vault',
+]
 
 class Refused extends Error {
   constructor(server: string, tool: string, reason: string) {
@@ -737,6 +745,9 @@ function toSnapshot(data: ListVaults, fetchedAt: number): Snapshot {
 
   return {
     primary: b ? row(b.vault) : null,
+    // Only a router that knows the primary's tier reports one: an older one
+    // leaves it out, and the panel then tells the rights without offering to set them.
+    ...(b?.primaryMode ? { primaryMode: b.primaryMode } : {}),
     isLocked: b?.locked ?? false,
     lockedTo: data.lockedTo ?? null,
     isImported: b?.confirmedVia === 'migration',
@@ -3551,6 +3562,21 @@ export const register: Register = on => {
         })
       }
     }
+    // The primary's tier set from its radios, the same way: the router told,
+    // the tile drawn with the new tier at once (and drawn back if it refuses).
+    // A narrowing is the user's to ask for; the router refuses a stranger.
+    const setPrimaryMode = (row: VaultRow, value: string) => {
+      const next = MODES.find(m => m.mode === value)
+      if (next && next.mode !== snap.primaryMode) {
+        void act($, {
+          doing: t('action.mode.doing', { name: row.name, mode: modeLabel(next.mode).toLowerCase() }),
+          done: t('action.mode.done', { name: row.name, mode: modeLabel(next.mode).toLowerCase() }),
+          tool: 'set_primary_vault_mode',
+          args: () => ({ vault: row.name, mode: next.mode }),
+          shows: snap => ({ ...snap, primaryMode: next.mode }),
+        })
+      }
+    }
     // A secondary's state, as two keys one over the other: ▶ Actif and ❚❚
     // Pause, the one in force on a tinted ground (green, soft red): a ground
     // the desktop draws, where a native button keeps no colour of its own text.
@@ -3604,9 +3630,10 @@ export const register: Register = on => {
       )
     // A vault's write tier as three radio buttons under a bold title, title
     // and options together at the left, the one in force marked ◉ and lit, the
-    // others ○ and dim. A secondary's are keys, a press sets its tier; the
-    // primary's are told, not set — the one it has (read-only while the
-    // session is locked, else writing without asking) marked, as text.
+    // others ○ and dim. Keys where a press sets the tier (a secondary's, and
+    // the primary's on a router that keeps one for it); else told, as text —
+    // the primary of an older router: read-only while the session is locked,
+    // else writing without asking.
     const tierMenu = (row: VaultRow, mode: SecondaryMode, setter: ((mode: SecondaryMode) => void) | null) => (
       <Box key={`mode-${row.name}`} flexDirection="column" flexShrink={1} alignItems="flex-start">
         <Text size="body" weight="semibold" wrap="truncate-end">
@@ -3643,7 +3670,13 @@ export const register: Register = on => {
       // the row turns out on the surface, whatever a mark's height there.
       const rows =
         Math.max((state ? 2 : 0) + (stacked.length > 0 ? (state ? 1 : 0) + stacked.length : 0), 1 + MODES.length, 2 + recent.length) + 2
-      const mode: SecondaryMode = state ? state.s.mode : snap.isLocked ? 'locked' : 'writable'
+      const mode: SecondaryMode = state ? state.s.mode : (snap.primaryMode ?? (snap.isLocked ? 'locked' : 'writable'))
+      // Set from the tile where the router reports a tier for it (v0.117.0+).
+      const setter: ((mode: SecondaryMode) => void) | null = state
+        ? m => setMode(state.s, m)
+        : snap.primaryMode
+          ? m => setPrimaryMode(row, m)
+          : null
       const cell = (key: string, width: number, body: unknown, atLeft = false) => (
         <Box
           key={`cell-${key}-${row.name}`}
@@ -3674,7 +3707,7 @@ export const register: Register = on => {
               : []),
           ])}
           {divider(`1-${row.name}`, rows)}
-          {cell('rights', rightsWidth, tierMenu(row, mode, state ? m => setMode(state.s, m) : null), true)}
+          {cell('rights', rightsWidth, tierMenu(row, mode, setter), true)}
           {divider(`2-${row.name}`, rows)}
           {/* Stacked: the tile's inside (its frame and padding, 4) less the cell's own padding. */}
           {cell('files', filesWidth, activityColumn(row, Math.max(1, isStacked ? boundWidth - 5 : filesWidth - 1)), true)}

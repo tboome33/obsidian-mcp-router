@@ -158,6 +158,34 @@ export function canonicalWorkspaceKey(cwd) {
  * @param {unknown} raw
  * @returns {{ vault: string, also: string[], locked: boolean, confirmedAt: string|null, confirmedVia: string|null }|null}
  */
+/** The closed vocabulary of the primary's write tier ("writable" = no restriction). */
+export const PRIMARY_MODES = Object.freeze(['locked', 'soft', 'writable']);
+
+/**
+ * The primary's own write tier, as `{ primaryTier: { vault, mode } }` — or
+ * nothing. The tier NAMES the vault it qualifies, so a stored tier whose
+ * vault is not the binding's primary (the workspace was re-bound since) is
+ * stale and reads as no tier — but only a tier that names ANOTHER vault by a
+ * valid name is stale. A tier that IS there but cannot be read (a hand edit:
+ * a bare string, `null`, a missing or non-string vault, an unknown mode) is a restriction nobody
+ * can interpret, and it stays one: it reads as "locked" — failing closed, the
+ * way the rest of the binding's tiers do — rather than silently lifting
+ * what the user asked for.
+ *
+ * @param {unknown} value the stored `primaryTier`
+ * @param {string} primary the binding's primary vault
+ * @returns {{ primaryTier?: { vault: string, mode: 'locked'|'soft'|'writable' } }}
+ */
+export function normalizePrimaryTier(value, primary) {
+  if (value === undefined) return {};
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    if (typeof value.vault === 'string' && value.vault.trim() !== '' && value.vault !== primary) return {};
+    if (value.vault === primary && PRIMARY_MODES.includes(value.mode)) return { primaryTier: { vault: primary, mode: value.mode } };
+  }
+
+  return { primaryTier: { vault: primary, mode: 'locked' } };
+}
+
 export function normalizeBinding(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const vault = raw.vault;
@@ -203,6 +231,10 @@ export function normalizeBinding(raw) {
   // when the stored entry carries the field, so a binding that never paused
   // anything reads exactly as before.
   const paused = Array.isArray(raw.alsoPaused) ? { alsoPaused: tierList(raw.alsoPaused) } : {};
+  // THE PRIMARY'S OWN TIER (v0.117.0): present only when the stored entry
+  // carries one, so a binding that never qualified its primary reads exactly
+  // as before — read-write, the decision's default.
+  const primaryTier = normalizePrimaryTier(raw.primaryTier, vault);
 
   return {
     vault,
@@ -213,6 +245,7 @@ export function normalizeBinding(raw) {
     alsoLocked,
     alsoWritable,
     ...paused,
+    ...primaryTier,
   };
 }
 
@@ -1261,6 +1294,17 @@ export function withBinding(config, cwd, binding) {
       : [];
     if (kept.length) entry.alsoPaused = kept;
     else delete entry.alsoPaused;
+  }
+  // THE PRIMARY'S TIER FOLLOWS THE SAME RULE AS THE PAUSE, with its own
+  // twist: it is a field this version knows but `KNOWN` leaves out, so a
+  // writer that does not name it carries the stored one through — and it is
+  // kept only while it still qualifies THIS primary (a re-binding leaves it
+  // naming the old one). "writable" is the absence of a restriction and is
+  // never written down.
+  if (Object.prototype.hasOwnProperty.call(entry, 'primaryTier')) {
+    const kept = normalizePrimaryTier(entry.primaryTier, normalized.vault).primaryTier;
+    if (kept && kept.mode !== 'writable') entry.primaryTier = kept;
+    else delete entry.primaryTier;
   }
   all[key] = entry;
   // WRITING THE SAME BINDING BACK CHANGES NOTHING, and returning the input

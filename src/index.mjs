@@ -182,7 +182,7 @@ import { sanitizeResponse, safeForMessage, NO_TRUNCATION } from './helpers/sanit
 import { writeTargets, isRecoveryCall } from './helpers/write-targets.mjs';
 import { activityPaths, recordActivity } from './helpers/vault-activity.mjs';
 import {
-  alsoWriteTierFor, assertVaultWritable, isVaultReachable, vaultsContainingPath, CONFIRM_SECONDARY_WRITE_PROP,
+  alsoWriteTierFor, writeTierFor, assertVaultWritable, isVaultReachable, vaultsContainingPath, CONFIRM_SECONDARY_WRITE_PROP,
   unreachableReason,
 } from './helpers/vault-reach.mjs';
 import { renderProposalLines } from './helpers/binding-proposal.mjs';
@@ -194,6 +194,10 @@ import {
   assertSharedVaultPrecondition, createBindingsReader, sharingRequirement, preconditionState,
   IF_MATCH_EXEMPT,
 } from './helpers/vault-sharing.mjs';
+import {
+  TOOL_DEFINITION as SET_PRIMARY_VAULT_MODE_TOOL_DEFINITION,
+  setPrimaryVaultMode,
+} from './tools/set-primary-vault-mode.mjs';
 import {
   TOOL_DEFINITION as SET_SECONDARY_VAULT_MODE_TOOL_DEFINITION,
   setSecondaryVaultMode,
@@ -938,6 +942,7 @@ const TOOLS = [
     },
   },
   SET_SECONDARY_VAULT_MODE_TOOL_DEFINITION,
+  SET_PRIMARY_VAULT_MODE_TOOL_DEFINITION,
   {
     name: 'set_auto_enrich_mode',
     description:
@@ -1315,6 +1320,7 @@ const TOOL_HANDLERS = {
   merge_frontmatter: (reg, args) => mergeFrontmatterTool(reg, args),
   confirm_workspace_binding: (reg, args) => confirmWorkspaceBinding(reg, args),
   set_secondary_vault_mode: (reg, args) => setSecondaryVaultMode(reg, args),
+  set_primary_vault_mode: (reg, args) => setPrimaryVaultMode(reg, args),
   lock_vault: (reg, args) => lockVault(reg, args),
   unlock_vaults: (reg, args) => unlockVaults(reg, args),
   set_auto_enrich_mode: (reg, args) => setAutoEnrichMode(reg, args),
@@ -1734,7 +1740,7 @@ function toolActuallyWrote(toolName, args) {
  */
 function automaticWriteAllowed(vaultName, reg, { confirmed = false } = {}) {
   if (!isVaultReachable(vaultName, reg)) return false;
-  const tier = alsoWriteTierFor(vaultName, reg);
+  const tier = writeTierFor(vaultName, reg);
   if (tier === 'locked') return false;
   if (tier === 'soft') return confirmed === true;
   return true;
@@ -1758,7 +1764,7 @@ function automaticWriteAllowed(vaultName, reg, { confirmed = false } = {}) {
 function queuedMaintenanceBlocked(vaultName, reg, { unsolicited = false } = {}) {
   if (unsolicited) return !automaticWriteAllowed(vaultName, reg);
   if (!isVaultReachable(vaultName, reg)) return true;
-  return alsoWriteTierFor(vaultName, reg) === 'locked';
+  return writeTierFor(vaultName, reg) === 'locked';
 }
 
 /**
@@ -2105,6 +2111,8 @@ const CONFORMANCE_TRIGGER_EXEMPT = new Set([
   // and its `vault` argument names a SECONDARY, whose repair is exactly what
   // a read-only tier forbids.
   'set_secondary_vault_mode',
+  // Same nature, for the primary: it qualifies the binding, not vault content.
+  'set_primary_vault_mode',
 ]);
 
 /** Exported for tests: the trigger set, computed from the live tool catalog. */

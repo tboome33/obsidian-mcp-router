@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.19.0-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.116.13-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.117.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -37,7 +37,7 @@ What you get:
 | File management | `move_file` (also accepts `ifMatch`, checked against the source) |
 | Templater | `execute_template` |
 | Router state | `lock_vault`, `unlock_vaults`, `set_auto_enrich_mode` |
-| Workspace binding | `confirm_workspace_binding` (bind this workspace to a primary vault, add secondaries, refuse a proposal), `set_secondary_vault_mode` (a secondary's write tier: `locked` / `soft` / `writable`) |
+| Workspace binding | `confirm_workspace_binding` (bind this workspace to a primary vault, add secondaries, refuse a proposal), `set_secondary_vault_mode` (a secondary's write tier: `locked` / `soft` / `writable`), `set_primary_vault_mode` (the same three tiers for the PRIMARY, which is read-write unless the user narrows it) |
 | Vault provisioning | `plan_vault`, `provision_vault` — defaults-first vault-creation wizard engine; `register_remote_vault` records an already-running remote vault (URL + key) straight from a conversation, `unregister_vault` takes one out |
 | Conversion | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown`, plus `pdf_to_markdown_docling` (opt-in high-fidelity PDF via [Docling](https://github.com/docling-project/docling), MIT) — port of [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). Also `pptx_extract_assets` (a deck's embedded images to disk, per slide — no Python), `pdf_to_images` (render PDF pages to PNG the model can *see*) and `filter_relevant_blocks` (BM25 relevance filter over already-acquired markdown). |
 | Web/page metadata | `extract_page_metadata`, `propose_linked_sources`, `download_page_assets` |
@@ -620,7 +620,9 @@ read-write in another:
 | `soft` *(default)* | refused unless the call carries `confirmSecondaryWrite: true`, which Claude may set only after you have said yes |
 | `writable` | goes through, no friction |
 
-The primary is always read-write. Record a tier with
+The primary is read-write — unless the user narrows it, per workspace, with the same three
+modes: `set_primary_vault_mode({ vault, mode })` (a primary nobody qualified stays read-write).
+Record a secondary's tier with
 `set_secondary_vault_mode({ vault, mode })`, or let the **`/bind-workspace`**
 wizard walk you through the whole thing — where we are, the primary, the
 secondaries, one tier question per secondary, then a table of what it recorded.
@@ -1393,7 +1395,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.19.0-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.116.13-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.117.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -1899,7 +1901,9 @@ strict dans un projet et ouvert dans un autre :
 | `soft` *(défaut)* | refusée sauf si l'appel porte `confirmSecondaryWrite: true`, que Claude ne pose qu'après ton oui explicite |
 | `writable` | passe, sans friction |
 
-Le principal est toujours en lecture-écriture. On enregistre un palier avec
+Le principal est en lecture-écriture — sauf si l'utilisateur le restreint, par workspace, avec les
+mêmes trois modes : `set_primary_vault_mode({ vault, mode })` (un principal que personne n'a qualifié
+reste en lecture-écriture). On enregistre le palier d'un secondaire avec
 `set_secondary_vault_mode({ vault, mode })`, ou on laisse l'assistant
 **`/bind-workspace`** dérouler l'ensemble — où on en est, le principal, les
 secondaires, une question de palier par secondaire, puis un tableau de ce qui a

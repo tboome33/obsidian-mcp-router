@@ -77,6 +77,8 @@ export type VaultActivity = { lastWriteAt?: string; recent?: { path: string; at:
 
 export type Snapshot = {
   primary: VaultRow | null
+  /** The primary's own write tier, when the router keeps one (v0.117.0+). */
+  primaryMode?: SecondaryMode
   /** The binding restricts the session to the primary. */
   isLocked: boolean
   /** A session lock from lock_vault: runtime only, never written to the binding. */

@@ -730,6 +730,11 @@ describe('GUARD: every write tool runs caller paths through the containment guar
       // only ever qualify a secondary the user already declared — never name
       // one into existence, never touch a vault.
       'set-secondary-vault-mode.mjs',
+      // v0.117.0 — set-primary-vault-mode.mjs. The same shape, for the
+      // primary: writes ONLY `registry.configPath` through
+      // `updateConfigBindings`; the caller's `vault` must equal the binding's
+      // own primary inside the lock, and it carries no path at all.
+      'set-primary-vault-mode.mjs',
       // install-conventions.mjs — writes ONLY the conventions file it resolves
       // itself among the fixed candidates CLAUDE_MD_CANDIDATES (CLAUDE.md,
       // wiki-meta/CLAUDE.md, Documentation/CLAUDE.md). The tool has no path

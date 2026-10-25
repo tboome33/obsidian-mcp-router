@@ -379,6 +379,62 @@ test('a write the router refuses as stale says so plainly', async ($, on) => {
   await ui.unmount()
 })
 
+test("the primary's rights are keys where the router keeps a tier for it: a press sets it, the tile follows at once", async ($, on) => {
+  const list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, primaryMode: 'writable' } }
+  const state = { list }
+  const calls = wire(on, state)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // The three tiers, as keys, the one in force marked: on the primary as on a secondary.
+  const label = async (mode: string) => String((await ui.find({ type: 'Button', key: `tier-${mode}-main` }))?.props?.label)
+  expect(await label('writable')).toMatch(/^◉/)
+  expect(await label('locked')).toMatch(/^○/)
+  expect(await label('soft')).toMatch(/^○/)
+  // The router now answers with the tier it recorded, as the real one does.
+  state.list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, primaryMode: 'locked' } }
+  await ui.press({ key: 'tier-locked-main' })
+  expect(calls.find(c => c.tool === 'set_primary_vault_mode')?.args).toEqual({ vault: 'main', mode: 'locked' })
+  expect(calls.some(c => c.tool === 'set_secondary_vault_mode')).toBe(false)
+  expect(await label('locked')).toMatch(/^◉/)
+  expect(await label('writable')).toMatch(/^○/)
+  // The key already in force asks the router for nothing.
+  const before = calls.filter(c => c.tool === 'set_primary_vault_mode').length
+  await ui.press({ key: 'tier-locked-main' })
+  expect(calls.filter(c => c.tool === 'set_primary_vault_mode').length).toBe(before)
+  await ui.unmount()
+})
+
+test("the primary's tier read from the router is the one drawn; a router that keeps none leaves the rights told, not set", async ($, on) => {
+  const list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, primaryMode: 'soft' } }
+  wire(on, { list })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(String((await ui.find({ type: 'Button', key: 'tier-soft-main' }))?.props?.label)).toMatch(/^◉/)
+  await ui.unmount()
+})
+
+test("an older router, which reports no tier for the primary, gets its rights told as text, with no key to press", async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Button', key: 'tier-locked-main' })).toBeFalsy()
+  expect(await ui.find({ type: 'Button', key: 'tier-writable-main' })).toBeFalsy()
+  const texts = nodesOf(await ui.drawn()).filter(n => n.type === 'Text').map(textOf)
+  expect(texts).toContain('◉ ✏️ Écriture automatique')
+  await ui.unmount()
+})
+
+test("a primary tier the router refuses is drawn back, with its error", async ($, on) => {
+  const list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, primaryMode: 'writable' } }
+  wire(on, { list, refuse: 'set_primary_vault_mode' })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'tier-locked-main' })
+  expect(await ui.find({ type: 'Text', text: /binding changed meanwhile/ })).toBeTruthy()
+  expect(String((await ui.find({ type: 'Button', key: 'tier-writable-main' }))?.props?.label)).toMatch(/^◉/)
+  await ui.unmount()
+})
+
 test('a refused change keeps its error on screen after the read-back', async ($, on) => {
   wire(on, { list: LIST, refuse: 'set_secondary_vault_mode' })
   await begin($)
@@ -1142,7 +1198,7 @@ test('every tier is three radio buttons under a title, the one in force marked',
 // What the pane and /vaults must name when Claude Code's permissions refuse
 // the read: the rules to add, under the server the call went to.
 const READ_RULES =
-  /permissions\.allow.*mcp__plugin_obsidian-router_router__list_vaults\. Pour ses liens 🌐 et 🪟 : mcp__plugin_obsidian-router_router__list_files, mcp__plugin_obsidian-router_router__get_view_link\. Pour que ses clics changent la liaison : mcp__plugin_obsidian-router_router__confirm_workspace_binding, mcp__plugin_obsidian-router_router__set_secondary_vault_mode, mcp__plugin_obsidian-router_router__register_remote_vault, mcp__plugin_obsidian-router_router__unregister_vault — ces règles laissent aussi le modèle/s
+  /permissions\.allow.*mcp__plugin_obsidian-router_router__list_vaults\. Pour ses liens 🌐 et 🪟 : mcp__plugin_obsidian-router_router__list_files, mcp__plugin_obsidian-router_router__get_view_link\. Pour que ses clics changent la liaison : mcp__plugin_obsidian-router_router__confirm_workspace_binding, mcp__plugin_obsidian-router_router__set_secondary_vault_mode, mcp__plugin_obsidian-router_router__set_primary_vault_mode, mcp__plugin_obsidian-router_router__register_remote_vault, mcp__plugin_obsidian-router_router__unregister_vault — ces règles laissent aussi le modèle/s
 
 test('a read refused by auto mode names the permissions to add, never "router injoignable"', async ($, on) => {
   wire(on, { list: LIST, blocked: ['list_vaults'] })
@@ -1256,7 +1312,7 @@ test('a click refused by auto mode says nothing changed and names the two write 
   expect(
     await ui.find({
       type: 'Text',
-      text: /rien n'a été changé.*mcp__plugin_obsidian-router_router__confirm_workspace_binding, mcp__plugin_obsidian-router_router__set_secondary_vault_mode, mcp__plugin_obsidian-router_router__register_remote_vault, mcp__plugin_obsidian-router_router__unregister_vault — ces règles laissent aussi le modèle/s,
+      text: /rien n'a été changé.*mcp__plugin_obsidian-router_router__confirm_workspace_binding, mcp__plugin_obsidian-router_router__set_secondary_vault_mode, mcp__plugin_obsidian-router_router__set_primary_vault_mode, mcp__plugin_obsidian-router_router__register_remote_vault, mcp__plugin_obsidian-router_router__unregister_vault — ces règles laissent aussi le modèle/s,
     }),
   ).toBeTruthy()
   // Only the write rules: the read ones are not what this click needs.
