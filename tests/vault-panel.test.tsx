@@ -1818,7 +1818,7 @@ test('OBSIDIAN_ROUTER_LANG=en draws the English file, French where it lacks a ke
 // are session state, so each is opened only if it is not open already.
 const openAdmin = async (ui: Mounted, section = 'register') => {
   if (!(await ui.find({ key: 'admin-general' }))) {
-    await ui.press({ key: 'toggle-admin' })
+    await ui.press({ key: 'nav-admin' })
   }
   if (!(await ui.find({ key: `admin-${section}-panel` }))) {
     await ui.press({ key: `admin-sec-${section}` })
@@ -1840,7 +1840,7 @@ test('the console lists the language files and switches the language', async ($,
   await pane.select({ key: 'admin-language-select', value: 'en' })
   // The console, in English, holds the pane; back to the vaults, they are in English too.
   expect(await pane.find({ type: 'Text', text: /^GENERAL$/ })).toBeTruthy()
-  await pane.press({ key: 'toggle-admin' })
+  await pane.press({ key: 'nav-admin' })
   expect(await pane.find({ type: 'Text', text: /^Primary$/ })).toBeTruthy()
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
   expect(await bandTexts(band)).toContain('Primary:')
@@ -1884,7 +1884,7 @@ test('WireGuard installed but off, remote vaults silent: the banner says so and 
   await openAdmin(ui, 'wireguard')
   expect(await ui.find({ type: 'Text', text: /^installé, mais aucun tunnel actif/ })).toBeTruthy()
   // The banner is the vaults' own: back to them, it opens the client.
-  await ui.press({ key: 'toggle-admin' })
+  await ui.press({ key: 'nav-admin' })
   await ui.press({ key: 'tunnel-open' })
   expect(wg.launched).toContainEqual(['cmd', '/c', 'start', '', 'C:\\Program Files\\WireGuard\\wireguard.exe'])
   await ui.unmount()
@@ -2066,8 +2066,8 @@ test('a key typed but not sent is dropped when the console is folded', async ($,
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await openAdmin(ui)
   await ui.input({ key: 'admin-apiKey', text: 'SECRET-1', kind: 'change' })
-  await ui.press({ key: 'toggle-admin' })
-  await ui.press({ key: 'toggle-admin' })
+  await ui.press({ key: 'nav-admin' })
+  await ui.press({ key: 'nav-admin' })
   const keyField = nodesOf(await ui.drawn()).find(n => n.type === 'Input' && keyOf(n) === 'admin-apiKey')
   expect(keyField?.props?.value).toBe('')
   await ui.unmount()
@@ -2131,12 +2131,12 @@ test('the menu holds the router mark, the version, the repository and, when GitH
   // The router's mark at the left, the version, the badge and GitHub's mark at the right.
   expect(nodesOf(menu as never).some(n => n.type === 'Svg' && n.props?.alt === 'obsidian-mcp-router')).toBe(true)
   const end = nodesOf(menu as never).find(n => keyOf(n) === 'nav-end')
-  expect(['update-badge', 'github'].every(key => nodesOf(end as never).some(n => keyOf(n) === key))).toBe(true)
+  expect(['update-badge', 'nav-admin', 'github'].every(key => nodesOf(end as never).some(n => keyOf(n) === key))).toBe(true)
   expect(nodesOf(end as never).some(n => n.type === 'Svg' && n.props?.alt === 'GitHub')).toBe(true)
-  // The footer keeps the console's fold alone.
-  const footer = nodes.find(n => keyOf(n) === 'pane-footer')
-  expect(nodesOf(footer as never).some(n => keyOf(n) === 'github')).toBe(false)
-  expect(nodesOf(footer as never).some(n => keyOf(n) === 'toggle-admin')).toBe(true)
+  // The gear (the console's key) just before GitHub's mark; no footer any more.
+  const endMarks = nodesOf(end as never).filter(n => n.type === 'Svg').map(n => n.props?.alt)
+  expect(endMarks.slice(-2)).toEqual(['Administration', 'GitHub'])
+  expect(nodes.some(n => keyOf(n) === 'pane-footer' || keyOf(n) === 'toggle-admin')).toBe(false)
   await ui.press({ key: 'github' })
   expect(launched).toContainEqual(['rundll32', 'url.dll,FileProtocolHandler', 'https://github.com/tboome33/obsidian-mcp-router'])
   // The badge unfolds the console, where the update is.
@@ -2276,9 +2276,9 @@ test('/vault-setup opens the pane on the console, where a vault is created with 
   await $.session.start(START)
   await $.command.run({ command: 'vault-setup', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  // The console holds the pane, the vaults behind "‹ Retour aux vaults".
+  // The console holds the pane, the gear held down; the vaults come back on its press.
   expect(await ui.find({ type: 'Button', key: 'create-submit' })).toBeTruthy()
-  expect(await ui.find({ type: 'Button', key: 'toggle-admin' })).toMatchObject({ props: { label: '‹ Retour aux vaults' } })
+  expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'icon-nav-admin')?.props?.backgroundColor).toBe('inactive')
   expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
   await ui.input({ key: 'create-name-field', text: 'Notes Pro', kind: 'change' })
   await ui.input({ key: 'create-path-field', text: 'C:\\VAULTS\\Notes Pro', kind: 'change' })
@@ -2749,7 +2749,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     windowsWireguard(on, { isInstalled: true, tunnels: ['wg0'], launched: [] })
     await begin($)
     const ui = await $.ui.mount({ ...PANE, surface })
-    await ui.press({ key: 'toggle-admin' })
+    await ui.press({ key: 'nav-admin' })
     expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
     // Six headers, in order, each with its title; Général open, the others folded, their bodies not drawn.
     const first = await ui.drawn()
@@ -2799,9 +2799,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(accordionOf(await ui.drawn())).toEqual({ headers: [...ADMIN_SECTIONS], open: [] })
     // The section kept across a redraw: the console folded and unfolded, the pane mounted again.
     await ui.press({ key: 'admin-sec-unregister' })
-    await ui.press({ key: 'toggle-admin' })
+    await ui.press({ key: 'nav-admin' })
     expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeTruthy()
-    await ui.press({ key: 'toggle-admin' })
+    await ui.press({ key: 'nav-admin' })
     expect(accordionOf(await ui.drawn()).open).toEqual(['unregister'])
     await ui.unmount()
     const again = await $.ui.mount({ ...PANE, surface })
@@ -2823,9 +2823,9 @@ test('a flow that leads to the console unfolds its section: no primary → Crée
   await begin($)
   const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   // Another section was left open earlier in the session.
-  await ui.press({ key: 'toggle-admin' })
+  await ui.press({ key: 'nav-admin' })
   await ui.press({ key: 'admin-sec-wireguard' })
-  await ui.press({ key: 'toggle-admin' })
+  await ui.press({ key: 'nav-admin' })
   await ui.press({ key: 'primary-setup' })
   expect(accordionOf(await ui.drawn()).open).toEqual(['create'])
   expect(await ui.find({ type: 'Button', key: 'create-submit' })).toBeTruthy()
@@ -2841,8 +2841,10 @@ test('the console holds the pane while open: its sections one under the other, t
   wire(on, { list: LIST })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 130 }, surface: 'desktop' })
-  expect(await ui.find({ type: 'Button', key: 'toggle-admin' })).toMatchObject({ props: { label: '⚙ Administration ›', variant: 'secondary' } })
-  await ui.press({ key: 'toggle-admin' })
+  // The gear, up while the vaults show; a press holds it down and opens the console.
+  expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'icon-nav-admin')?.props?.backgroundColor).toBeUndefined()
+  await ui.press({ key: 'nav-admin' })
+  expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'icon-nav-admin')?.props?.backgroundColor).toBe('inactive')
   // The vaults hidden, the six sections drawn in one column, no frame, a rule under each.
   expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
   const nodes = nodesOf(await ui.drawn())
@@ -2872,7 +2874,7 @@ test('the console holds the pane while open: its sections one under the other, t
   await ui.press({ key: 'conventions-none' })
   expect(await ui.find({ type: 'Text', text: /^0 sur \d+$/ })).toBeTruthy()
   // Back to the vaults.
-  await ui.press({ key: 'toggle-admin' })
+  await ui.press({ key: 'nav-admin' })
   expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeTruthy()
   await ui.unmount()
 })
@@ -2881,7 +2883,7 @@ test('the console says what the vaults view would: every remote vault silent, an
   wire(on, { list: SILENT_REMOTES })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await ui.press({ key: 'toggle-admin' })
+  await ui.press({ key: 'nav-admin' })
   expect(nodesOf(await ui.drawn()).some(n => n.type === 'Text' && textOf(n) === "WireGuard semble inactif : les vaults distants ne sont pas disponibles.")).toBe(true)
   await ui.unmount()
 })
@@ -2928,12 +2930,17 @@ test('the menu stays at the top while the pane scrolls: a copy, no frame, over t
   wire(on, { list: LIST })
   await begin($)
   for (const surface of ['terminal', 'desktop'] as const) {
-    // At the top: the menu in the flow — Vaults (in view), + Ajouter un vault, ⚙ Administration — and no copy.
+    // At the top: the menu in the flow — Vaults (in view), + Ajouter un vault; the gear at the right — and no copy.
     const top = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface })
-    const items = ['nav-vaults', 'nav-add', 'nav-admin']
+    const items = ['nav-vaults', 'nav-add']
     const at = nodesOf(await top.drawn())
-    // The key in view is a bold text in the text's colour, two blanks each side (no pill); the others plain labels, dim.
-    expect(items.map(key => at.find(n => keyOf(n) === key)?.props?.label)).toEqual(['  Vaults  ', '+ Ajouter un vault', '⚙ Administration'])
+    // The key in view is a bold text in the text's colour, two blanks each side (no pill); the other a plain label, dim.
+    expect(items.map(key => at.find(n => keyOf(n) === key)?.props?.label)).toEqual(['  Vaults  ', '+ Ajouter un vault'])
+    // The gear: a blank key over its mark on the desktop, the glyph on the terminal; in the end group, before GitHub.
+    const gear = at.find(n => keyOf(n) === 'nav-admin')
+    expect(gear?.props?.label).toBe(surface === 'terminal' ? '⚙' : '  ')
+    const endKeys = nodesOf(at.find(n => keyOf(n) === 'nav-end') as never).filter(n => n.type === 'Button').map(keyOf)
+    expect(endKeys.slice(-2)).toEqual(['nav-admin', 'github'])
     const inView = at.find(n => keyOf(n) === 'nav-vaults')
     expect(inView?.props?.plain).toBe(true)
     expect(inView?.props?.variant).toBeUndefined()
@@ -2958,7 +2965,7 @@ test('the menu stays at the top while the pane scrolls: a copy, no frame, over t
   }
 })
 
-test('the menu switches the view: + Ajouter un vault opens the list, ⚙ Administration the console, Vaults back', async ($, on) => {
+test('the menu switches the view: + Ajouter un vault opens the list, the gear the console (and back), Vaults back', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface: 'desktop' })
@@ -2974,9 +2981,17 @@ test('the menu switches the view: + Ajouter un vault opens the list, ⚙ Adminis
   expect(await inView('nav-vaults')).toBe(false)
   await ui.press({ key: 'nav-admin' })
   expect(await ui.find({ key: 'admin-general' })).toBeTruthy()
-  expect(await inView('nav-admin')).toBe(true)
-  // The console holds the pane, the menu still on top of it.
+  // The console in sight: no tab open, the gear held down.
+  expect(await inView('nav-add')).toBe(false)
+  expect(await inView('nav-vaults')).toBe(false)
+  expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'icon-nav-admin')?.props?.backgroundColor).toBe('inactive')
+  // The console holds the pane, the menu still on top of it; the gear again brings the vaults back.
   expect(await ui.find({ type: 'Button', key: 'nav-vaults' })).toBeTruthy()
+  await ui.press({ key: 'nav-admin' })
+  expect(await ui.find({ key: 'admin-general' })).toBeFalsy()
+  expect(await inView('nav-vaults')).toBe(true)
+  await ui.press({ key: 'nav-admin' })
+  expect(await ui.find({ key: 'admin-general' })).toBeTruthy()
   await ui.press({ key: 'nav-vaults' })
   expect(await ui.find({ key: 'admin-general' })).toBeFalsy()
   expect(await ui.find({ type: 'Button', key: 'tab-tous' })).toBeFalsy()
@@ -3051,10 +3066,15 @@ test('a pane too narrow for the menu folds it into "☰" and the view in sight; 
   expect(await ui.find({ type: 'Button', key: 'tab-tous' })).toBeTruthy()
   expect(await ui.find({ type: 'Button', key: 'nav-add' })).toBeFalsy()
   expect((await ui.find({ type: 'Button', key: 'nav-burger' }))?.props?.label).toBe('☰ + Ajouter un vault')
+  // Folded too, the gear stays at the right; the console in sight names itself on the fold.
+  expect(await ui.find({ type: 'Button', key: 'nav-admin' })).toBeTruthy()
+  await ui.press({ key: 'nav-admin' })
+  expect((await ui.find({ type: 'Button', key: 'nav-burger' }))?.props?.label).toBe('☰ Administration')
   await ui.unmount()
-  // Wide enough: the three on one line, no "☰".
+  // Wide enough: the two on one line, no "☰"; the gear there in both cases.
   const wide = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface: 'desktop' })
   expect(await wide.find({ type: 'Button', key: 'nav-burger' })).toBeFalsy()
+  expect(await wide.find({ type: 'Button', key: 'nav-add' })).toBeTruthy()
   expect(await wide.find({ type: 'Button', key: 'nav-admin' })).toBeTruthy()
   await wide.unmount()
 })
@@ -3493,11 +3513,19 @@ test("a recent file the router gives no link to says so, opens nothing; with the
 test('the wide menu draws its keys as tabs on a shelf: round frames cut short of their bottom, the one in sight open over the rule', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
-  const tabKeys = ['vaults', 'add', 'admin'] as const
-  const labels = { vaults: 'Vaults', add: '+ Ajouter un vault', admin: '⚙ Administration' }
+  const tabKeys = ['vaults', 'add'] as const
+  const labels = { vaults: 'Vaults', add: '+ Ajouter un vault' }
   const tabOf = (tree: unknown, key: string) => nodesOf(tree).find(n => keyOf(n) === key)
   // The tabs, with the one in sight open and the others closed, in a menu copy under `prefix`.
-  const shelf = (tree: unknown, prefix: string, inSight: (typeof tabKeys)[number]) => {
+  // `inSight` 'admin': the console shows, no tab is open and the gear is held down.
+  const shelf = (tree: unknown, prefix: string, inSight: (typeof tabKeys)[number] | 'admin') => {
+    const gearBox = nodesOf(tree).find(n => keyOf(n) === `icon-${prefix}nav-admin`)
+    if (gearBox) {
+      expect(gearBox.props?.backgroundColor).toBe(inSight === 'admin' ? 'inactive' : undefined)
+    } else {
+      // The terminal: the glyph key, lit while held down, dim otherwise.
+      expect(nodesOf(tree).find(n => keyOf(n) === `${prefix}nav-admin`)?.props?.dimColor).toBe(inSight !== 'admin')
+    }
     for (const id of tabKeys) {
       const tab = tabOf(tree, `${prefix}navtab-${id}`) as Drawn & { children?: Drawn[] }
       const isOpen = id === inSight
@@ -3529,7 +3557,7 @@ test('the wide menu draws its keys as tabs on a shelf: round frames cut short of
       expect(nodesOf(tab as never).some(n => n.type === 'Text' && /[╯╰│]/.test(textOf(n)))).toBe(false)
     }
     const open = tabKeys.filter(id => tabOf(tree, `${prefix}navtab-${id}`)?.props?.height === 3)
-    expect(open).toEqual([inSight])
+    expect(open).toEqual(inSight === 'admin' ? [] : [inSight])
   }
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface })
@@ -3598,21 +3626,29 @@ test('the menu keeps its shape when the router, the version and the update check
     badge: nodesOf(tree).some(n => keyOf(n) === 'update-badge'),
     version: nodesOf(tree).some(n => n.type === 'Text' && /^v\d/.test(textOf(n))),
   })
-  // Before the router is read: no "+ Ajouter un vault", no version, no badge — a 95-column
-  // terminal pane would hold what is drawn, even with two of the three to come, yet it
-  // folds, as it will once all of them are there (103 cells, as the terminal counts them).
-  const narrow = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 95 }, surface: 'terminal' })
+  // Before the router is read: no "+ Ajouter un vault", no version, no badge — an 80-column
+  // terminal pane would hold what is drawn, even with the rest to come, yet it folds, as it
+  // will once all of them are there (83 cells, as the terminal counts them: two tabs, the
+  // version's room, the badge, the gear and GitHub, with their gaps).
+  const narrow = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80 }, surface: 'terminal' })
   const wide = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   expect(shape(await narrow.drawn())).toEqual({ burger: true, tabs: [], badge: false, version: false })
-  expect(shape(await wide.drawn())).toEqual({ burger: false, tabs: ['navtab-vaults', 'navtab-admin'], badge: false, version: false })
+  expect(shape(await wide.drawn())).toEqual({ burger: false, tabs: ['navtab-vaults'], badge: false, version: false })
   // Read: the same panes, drawn again with the third key, the version and the badge, keep their shape.
   await begin($)
   expect(shape(await narrow.drawn())).toEqual({ burger: true, tabs: [], badge: false, version: false })
-  expect(shape(await wide.drawn())).toEqual({ burger: false, tabs: ['navtab-vaults', 'navtab-add', 'navtab-admin'], badge: true, version: true })
+  expect(shape(await wide.drawn())).toEqual({ burger: false, tabs: ['navtab-vaults', 'navtab-add'], badge: true, version: true })
   await narrow.press({ key: 'nav-burger' })
   expect(await narrow.find({ type: 'Button', key: 'nav-add' })).toBeTruthy()
   await narrow.unmount()
   await wide.unmount()
+  // The thresholds themselves, French: the terminal folds at 82 and spreads at 83; the desktop
+  // (its mark three cells, its gear and GitHub three each) at 80 and 81.
+  for (const [surface, columns, isFolded] of [['terminal', 82, true], ['terminal', 83, false], ['desktop', 80, true], ['desktop', 81, false]] as const) {
+    const pane = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: columns }, surface })
+    expect(shape(await pane.drawn()).burger).toBe(isFolded)
+    await pane.unmount()
+  }
 })
 
 test('the band\'s page keys are black arrows with the count inside: "◀N" before the page, "N▶" after it; the terminal draws the texts', async ($, on) => {

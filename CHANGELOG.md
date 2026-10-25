@@ -10,6 +10,20 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.116.9] — 2026-10-25 — the console behind a gear at the menu's right; no tab, no footer
+
+- **The gear**: the administration console is no tab any more. A gear (the octicon, in
+  GitHub's grey) stands at the menu's right just before GitHub's mark, on the wide menu and
+  on the folded one alike; a press shows the console, another brings the vaults back. While
+  the console is in sight the gear is drawn held down and no tab is open (the folded menu
+  then reads "☰ Administration"). The terminal gets a "⚙" key in its place.
+- **The footer is gone**: the "⚙ Administration ›" / "‹ Retour aux vaults" button at the
+  bottom of the pane, and its strings, are removed — the gear does both.
+- The fold threshold counts the gear (83 cells on the terminal in French, 81 on the desktop,
+  down from 103 / 100: one tab fewer, one mark more).
+- Tests: `tests/vault-panel.test.tsx` 131 (the admin-tab and footer tests rewritten around
+  the gear: its place, its pressed state, the toggle, the fold); 7 mutations killed.
+
 ## [0.116.8] — 2026-10-25 — fixed columns, tiles that wrap, the files in sight; tabs with one frame colour
 
 Roland's review of v0.116.7 on screen (one tile per line, the primary's tile unlike the
