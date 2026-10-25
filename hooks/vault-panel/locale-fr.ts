@@ -101,7 +101,7 @@ export const FR: Record<string, string> = {
   "legend.claude": "Distant : ouvre dans le navigateur interne",
   "error.noteLink": "Pas de lien vers {note} : {error}",
   "error.noteLinkNone": "le router n'en a pas donné",
-  "activity.title": "Dernière mise à jour",
+  "activity.title": "Dernière mise à jour :",
   "activity.none": "aucune via le router",
   "activity.recent": "Derniers fichiers modifiés :",
   "mark.recent": "Derniers fichiers",

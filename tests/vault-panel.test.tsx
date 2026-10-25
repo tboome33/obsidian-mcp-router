@@ -1330,23 +1330,30 @@ test('the primary, the secondaries and the vaults to add are the same tile, in g
     await openAdd(ui)
     const nodes = nodesOf(await ui.drawn())
     // In LIST: one primary, two secondaries (one open, one closed), two vaults to add.
-    const tiles = nodes.filter(n => n.props?.borderStyle === 'bold' && /^(primary-row|sec-|av-)/.test(keyOf(n) ?? ''))
+    const tiles = nodes.filter(n => n.props?.borderStyle === 'single' && /^(primary-row|sec-|av-)/.test(keyOf(n) ?? ''))
     expect(tiles.map(n => keyOf(n))).toEqual(['primary-row', 'sec-docs', 'sec-notes', 'av-closed', 'av-extra'])
     const width = tiles[0]!.props?.width
     for (const tile of tiles) {
       // One tile for all three: same width (the side panel holds one per line), same border, same parts.
       expect(tile.props?.width).toBe(width)
-      expect(tile.props?.borderStyle).toBe('bold')
+      expect(tile.props?.borderStyle).toBe('single')
       expect(tile.props?.flexDirection).toBe('column')
-      const nameText = nodesOf(tile as never).find(n => n.type === 'Text' && n.props?.weight === 'semibold')
-      expect(nameText).toBeTruthy()
-      // Its marks in its head, right of its name; its lines (when it has any) wrap inside it.
+      // Its name, bold, in its head (not any bold title further down the tile).
+      const name = keyOf(tile)!.replace(/^(primary-row|sec-|av-)/, '') || 'main'
+      const nameText = nodesOf(nodes.find(n => keyOf(n) === `${keyOf(tile)}-head`) as never).find(n => n.type === 'Text' && textOf(n) === name)
+      expect(nameText?.props?.weight).toBe('semibold')
+      // Its marks in its head, right of its name (a secondary's stand in its
+      // first column instead); a rule under the head; its lines (when it has
+      // any) wrap inside it.
       const head = nodes.find(n => keyOf(n) === `${keyOf(tile)}-head`)
-      expect(nodesOf(head as never).some(n => keyOf(n) === `marks-${keyOf(tile)}`)).toBe(true)
+      expect(nodesOf(head as never).some(n => keyOf(n) === `marks-${keyOf(tile)}`)).toBe(!/^sec-/.test(keyOf(tile) ?? ''))
+      const headAt = nodesOf(tile as never).findIndex(n => keyOf(n) === `${keyOf(tile)}-head`)
+      const ruleAt = nodesOf(tile as never).findIndex(n => keyOf(n) === `hrule-${keyOf(tile)}`)
+      expect(ruleAt).toBeGreaterThan(headAt)
       const controls = nodes.find(n => keyOf(n) === `${keyOf(tile)}-controls`)
       expect(controls === undefined || controls.props?.flexWrap === 'wrap').toBe(true)
     }
-    // A bold frame for every tile, the primary's in Claude's colour.
+    // A thin frame for every tile, the primary's in Claude's colour.
     expect(tiles.map(n => n.props?.borderColor)).toEqual(['claude', 'inactive', 'inactive', 'inactive', 'inactive'])
     // The grids wrap.
     for (const key of ['sec-tiles', 'av-tiles']) {
@@ -2607,7 +2614,7 @@ const MANY = {
 }
 const addedNames = async (ui: { drawn(): Promise<unknown> }) =>
   nodesOf(await ui.drawn())
-    .filter(n => n.props?.borderStyle === 'bold' && /^av-/.test(keyOf(n) ?? ''))
+    .filter(n => n.props?.borderStyle === 'single' && /^av-/.test(keyOf(n) ?? ''))
     .map(n => keyOf(n)!.slice(3))
 
 test('adding: all, local or remote ones, a search, and A → Z or Z → A regardless of case', async ($, on) => {
@@ -2660,12 +2667,18 @@ test('a wide pane lays the tiles in a grid: three bound ones, four to add per li
   await ui.press({ key: 'toggle-add' })
   const nodes = nodesOf(await ui.drawn())
   const width = (key: string) => nodes.find(n => keyOf(n) === key)?.props?.width as number
-  // (130 - 2) / 3 and (130 - 3) / 4, rounded down.
-  expect(width('primary-row')).toBe(42)
-  expect(width('sec-docs')).toBe(42)
+  // A bound vault's tile holds three columns (its rights, 37 cells, in the
+  // middle, a side of 22 each way), so none narrower than 91: at 130 one per
+  // line, on the whole width; the tiles to add (130 - 3) / 4, rounded down.
+  expect(width('primary-row')).toBe(130)
+  expect(width('sec-docs')).toBe(130)
   expect(width('av-closed')).toBe(31)
-  // The narrow side panel: one per line.
   await ui.unmount()
+  // Two per line from 183 on.
+  const twoUp = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 183 }, surface: 'desktop' })
+  expect(nodesOf(await twoUp.drawn()).find(n => keyOf(n) === 'sec-docs')?.props?.width).toBe(91)
+  await twoUp.unmount()
+  // The narrow side panel: one per line.
   const narrow = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(nodesOf(await narrow.drawn()).find(n => keyOf(n) === 'sec-docs')?.props?.width).toBe(50)
   await narrow.unmount()
@@ -3095,43 +3108,164 @@ test('folded into "☰", the menu keeps the router mark at the left and GitHub a
   await ui.unmount()
 })
 
-test("a tile's marks sit in its head, right of its name; its state at the left, its rights framed at the right", async ($, on) => {
-  wire(on, { list: LIST })
+// The direct children of a drawn node, in order, the empty ones dropped.
+const childrenOf = (n: Drawn | undefined): Drawn[] =>
+  ((Array.isArray(n?.children) ? n.children : [n?.children]) as unknown[]).flat().filter(Boolean) as Drawn[]
+
+test("a tile to add keeps its marks in its head, right of its name; a secondary's head holds its dot, its name and ✕, and nothing else", async ($, on) => {
+  const list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'extra'] } }
+  wire(on, { list })
   await begin($)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdd(ui)
-  await ui.press({ key: 'tab-distants' })
-  const nodes = nodesOf(await ui.drawn())
-  // extra (remote, a web UI): the planet then Claude's mark, in the head, after the name.
-  const head = nodesOf(nodes.find(n => keyOf(n) === 'av-extra-head') as never)
-  const at = (key: string) => head.findIndex(n => keyOf(n) === key)
-  expect(head.findIndex(n => n.type === 'Text' && textOf(n) === 'extra')).toBeLessThan(at('web-extra'))
-  expect(at('web-extra')).toBeLessThan(at('ui-extra'))
-  // A secondary: its state and its last update at the left, its rights framed at the right.
-  const front = nodes.find(n => keyOf(n) === 'front-docs')
-  expect(nodesOf(front as never).some(n => keyOf(n) === 'state-docs')).toBe(true)
-  expect(nodesOf(front as never).some(n => keyOf(n) === 'stamp-docs')).toBe(true)
-  // Both halves at mid-height with air above and below; the state centred in
-  // its half; a rule between the halves, as tall as the framed rights.
-  expect(front?.props?.alignItems).toBe('center')
-  expect(front?.props?.paddingY).toBe(1)
-  // Its direct children, in order: the state half, then the rights with their rule.
-  const halves = (Array.isArray(front?.children) ? front.children : [front?.children]).filter(Boolean) as Drawn[]
-  expect(halves.map(keyOf)).toEqual(['half-docs', 'aside-docs'])
-  const [half, aside] = halves
-  expect(half?.props?.alignItems).toBe('center')
-  expect(half?.props?.flexGrow).toBe(1)
-  expect(nodesOf(half as never).some(n => keyOf(n) === 'state-docs')).toBe(true)
-  expect(nodesOf(half as never).some(n => keyOf(n) === 'stamp-docs')).toBe(true)
-  const sides = (Array.isArray(aside?.children) ? aside.children : [aside?.children]).filter(Boolean) as Drawn[]
-  expect(sides.map(keyOf)).toEqual(['rule-docs', 'rights-docs'])
-  expect(aside?.props?.flexShrink).toBe(1)
-  const [rule, rights] = sides
-  expect(nodesOf(rule as never).filter(n => n.type === 'Text' && textOf(n) === '│')).toHaveLength(6)
-  expect(rights?.props?.borderStyle).toBe('round')
-  expect(nodesOf(rights as never).some(n => keyOf(n) === 'mode-docs')).toBe(true)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...WIDE, surface })
+    await openAdd(ui)
+    const nodes = nodesOf(await ui.drawn())
+    // A tile to add keeps its marks' box in its head, after its name.
+    const addHead = nodesOf(nodes.find(n => keyOf(n) === 'av-closed-head') as never)
+    expect(addHead.some(n => keyOf(n) === 'marks-av-closed')).toBe(true)
+    // A secondary's head: at the left its dot and its bold name; at the far right ✕, a bold one; no mark between.
+    const tile = nodes.find(n => keyOf(n) === 'sec-extra')
+    expect(tile?.props?.borderStyle).toBe('single')
+    const parts = childrenOf(tile)
+    // Its head, the rule, then (no note line for a vault that answers) its front.
+    expect(parts.map(keyOf)).toEqual(['sec-extra-head', 'hrule-sec-extra', 'front-extra'])
+    const head = parts[0]
+    expect(head?.props?.justifyContent).toBe('space-between')
+    const [left, right] = childrenOf(head)
+    const leftNodes = nodesOf(left as never)
+    // The dot's fixed-width cell (its glyph is drawn by the surface).
+    const dotAt = leftNodes.findIndex(n => n.type === 'Box' && n.props?.width === 2 && n.props?.justifyContent === 'center')
+    const nameAt = leftNodes.findIndex(n => n.type === 'Text' && textOf(n) === 'extra')
+    expect(dotAt).toBeGreaterThanOrEqual(0)
+    expect(nameAt).toBeGreaterThan(dotAt)
+    expect(leftNodes[nameAt]?.props?.weight).toBe('semibold')
+    expect(leftNodes.some(n => keyOf(n) === 'web-extra' || keyOf(n) === 'ui-extra' || keyOf(n) === 'marks-sec-extra')).toBe(false)
+    expect(keyOf(right as Drawn)).toBe('remove-extra')
+    expect(right?.type).toBe('Button')
+    expect(nodesOf(right as never).some(n => n.type === 'Text' && textOf(n) === '✕' && n.props?.weight === 'bold')).toBe(true)
+    // A rule across the tile under its head: one line high, what overflows clipped (never truncated into '…').
+    expect(textOf(parts[1]!)).toBe('─'.repeat(136))
+    expect(parts[1]?.props?.height).toBe(1)
+    expect(parts[1]?.props?.overflow).toBe('hidden')
+    await ui.unmount()
+  }
+})
+
+test("a secondary's front: three columns parted by rules, its state over its marks, its rights under their title, its last update; both surfaces", async ($, on) => {
+  const list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'extra'] } }
+  wire(on, { list })
+  await begin($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...WIDE, surface })
+    const nodes = nodesOf(await ui.drawn())
+    const front = nodes.find(n => keyOf(n) === 'front-extra')
+    // Side by side, each column as tall as the row, its content at mid-height with a line of air at each end.
+    expect(front?.props?.flexDirection).toBe('row')
+    expect(front?.props?.alignItems).toBe('stretch')
+    const parts = childrenOf(front)
+    expect(parts.map(keyOf)).toEqual(['cell-state-extra', 'rule-1-extra', 'cell-rights-extra', 'rule-2-extra', 'cell-stamp-extra'])
+    const [state, rule1, rights, rule2, stamp] = parts
+    // Each column centred in its room: the sides a quarter, the rights the half, of 140 - 10.
+    for (const cell of [state, rights, stamp]) {
+      expect(cell?.props?.alignItems).toBe('center')
+      expect(cell?.props?.justifyContent).toBe('center')
+      expect(cell?.props?.paddingY).toBe(1)
+      expect(cell?.props?.flexDirection).toBe('column')
+    }
+    expect(state?.props?.width).toBe(32)
+    expect(rights?.props?.width).toBe(65)
+    expect(stamp?.props?.width).toBe(32)
+    // The rules: two cells taller than the tallest column (the state's: 2 + 1 + 2 marks), stretched to the row and clipped to it.
+    for (const rule of [rule1, rule2]) {
+      expect(nodesOf(rule as never).filter(n => n.type === 'Text' && textOf(n) === '│')).toHaveLength(7)
+      expect(rule?.props?.overflow).toBe('hidden')
+    }
+    // First column: ▶ Actif (on green) over ❚❚ Pause, then the planet over Claude's mark.
+    const stateParts = childrenOf(state)
+    expect(stateParts.map(keyOf)).toEqual(['state-extra', 'stack-extra'])
+    expect(stateParts[0]?.props?.flexDirection).toBe('column')
+    expect(childrenOf(stateParts[0]).map(keyOf)).toEqual(['state-on-extra', 'state-off-extra'])
+    expect(stateParts[0] && nodesOf(stateParts[0] as never).find(n => keyOf(n) === 'state-on-extra')?.props?.backgroundColor).toBe('diffAddedDimmed')
+    expect(stateParts[1]?.props?.flexDirection).toBe('column')
+    const marks = nodesOf(stateParts[1] as never).filter(n => n.type === 'Button').map(keyOf)
+    expect(marks).toEqual(['web-extra', 'ui-extra'])
+    // Second column: the bold title, then the three options, ◉ on the one in force, left-aligned among themselves.
+    const menu = childrenOf(rights)[0]
+    expect(keyOf(menu!)).toBe('mode-extra')
+    const [title, tiers] = childrenOf(menu)
+    expect(textOf(title!)).toBe('Droits de lecture/écriture :')
+    expect(title?.props?.weight).toBe('semibold')
+    expect(tiers?.props?.alignItems).toBe('flex-start')
+    expect(childrenOf(tiers).map(n => n.props?.label)).toEqual(['○ 🔒 Lecture seule', '◉ ✋ Écriture sur accord', '○ ✏️ Lecture/écriture automatique'])
+    expect(childrenOf(tiers).map(n => n.props?.dimColor)).toEqual([true, false, true])
+    // Third column: the bold title over the value.
+    const stampNodes = nodesOf(stamp as never)
+    expect(stampNodes.some(n => keyOf(n) === 'stamp-extra')).toBe(true)
+    const titleAt = stampNodes.findIndex(n => n.type === 'Text' && textOf(n) === 'Dernière mise à jour :')
+    expect(stampNodes[titleAt]?.props?.weight).toBe('semibold')
+    expect(stampNodes.findIndex(n => n.type === 'Text' && textOf(n) === 'aucune via le router')).toBeGreaterThan(titleAt)
+    // docs, a remote one with no web UI: no marks, the rules as tall as the rights (1 + 3) + 2.
+    const docs = childrenOf(nodes.find(n => keyOf(n) === 'front-docs'))
+    expect(childrenOf(docs[0]).map(keyOf)).toEqual(['state-docs'])
+    expect(nodesOf(docs[1] as never).filter(n => n.type === 'Text' && textOf(n) === '│')).toHaveLength(6)
+    await ui.unmount()
+  }
+})
+
+test("a tile too narrow for three columns stacks them: state and marks, rights, last update, a rule between two", async ($, on) => {
+  const list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'extra'] } }
+  wire(on, { list })
+  await begin($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    const nodes = nodesOf(await ui.drawn())
+    expect(nodes.find(n => keyOf(n) === 'sec-extra')?.props?.width).toBe(50)
+    const front = nodes.find(n => keyOf(n) === 'front-extra')
+    expect(front?.props?.flexDirection).toBe('column')
+    const parts = childrenOf(front)
+    expect(parts.map(keyOf)).toEqual(['cell-state-extra', 'rule-1-extra', 'cell-rights-extra', 'rule-2-extra', 'cell-stamp-extra'])
+    // The rules now run across: one line of ─ over the tile's inside, 50 - 4.
+    for (const rule of [parts[1], parts[3]]) {
+      expect(rule?.type).toBe('Box')
+      expect(rule?.props?.height).toBe(1)
+      expect(rule?.props?.overflow).toBe('hidden')
+      expect(textOf(rule!)).toBe('─'.repeat(46))
+    }
+    // Each stacked column keeps its air and its centre, and no fixed width.
+    for (const cell of [parts[0], parts[2], parts[4]]) {
+      expect(cell?.props?.paddingY).toBe(1)
+      expect(cell?.props?.alignItems).toBe('center')
+      expect(cell?.props?.width).toBeUndefined()
+    }
+    expect(childrenOf(parts[0]).map(keyOf)).toEqual(['state-extra', 'stack-extra'])
+    expect(nodesOf(parts[2] as never).some(n => keyOf(n) === 'mode-extra')).toBe(true)
+    expect(nodesOf(parts[4] as never).some(n => keyOf(n) === 'stamp-extra')).toBe(true)
+    await ui.unmount()
+  }
+})
+
+test("turned over, a tile keeps its state; its last files take the rights' and the last update's room, under one rule", async ($, on) => {
+  const list = {
+    ...LIST,
+    vaultActivity: { docs: { lastWriteAt: '2026-10-24T20:21:00.000Z', recent: [{ path: 'a.md', at: '2026-10-24T20:21:00.000Z' }, { path: 'b.md', at: '2026-10-24T19:00:00.000Z' }, { path: 'c.md', at: '2026-10-24T18:00:00.000Z' }, { path: 'd.md', at: '2026-10-24T17:00:00.000Z' }] } },
+  }
+  wire(on, { list })
+  await begin($)
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  await ui.press({ key: 'flip-docs' })
+  const parts = childrenOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'front-docs'))
+  expect(parts.map(keyOf)).toEqual(['cell-state-docs', 'rule-1-docs', 'cell-recent-docs'])
+  expect(nodesOf(parts[2] as never).some(n => keyOf(n) === 'recent-docs')).toBe(true)
+  expect(nodesOf(parts[2] as never).some(n => keyOf(n) === 'stamp-docs')).toBe(false)
+  expect(await ui.find({ key: 'mode-docs' })).toBeFalsy()
+  // Its room: the rights' 65, their rule and gap, the last update's 32; the paths clipped inside it.
+  expect(parts[2]?.props?.width).toBe(99)
+  expect(parts[2]?.props?.overflow).toBe('hidden')
+  // The rules grow with the list: 1 + 4 files, + 2.
+  expect(nodesOf(parts[1] as never).filter(n => n.type === 'Text' && textOf(n) === '│')).toHaveLength(7)
   await ui.unmount()
 })
+
 
 test('a tile says when its vault was last written through the router; its round key turns it over to its last files, each opening that note', async ($, on) => {
   const launched: (readonly string[])[] = []
@@ -3156,13 +3290,13 @@ test('a tile says when its vault was last written through the router; its round 
   const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   await openClosed(ui)
   const stamp = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'stamp-docs') as never)
-  expect(stamp.some(n => n.type === 'Text' && textOf(n) === 'Dernière mise à jour')).toBe(true)
+  expect(stamp.some(n => n.type === 'Text' && textOf(n) === 'Dernière mise à jour :')).toBe(true)
   expect(stamp.some(n => n.type === 'Text' && /^\d{2}\/\d{2}\/2026 {2}\d{2}:\d{2}$/.test(textOf(n)))).toBe(true)
   // Turned over: the last files, newest first; a remote one's note through the view agent, in Claude's browser.
   await ui.press({ key: 'flip-docs' })
   const back = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'recent-docs') as never)
   expect(back.filter(n => n.type === 'Button' && /^note-/.test(keyOf(n) ?? '')).map(n => n.props?.label)).toEqual(['wiki/a.md', 'b.md'])
-  expect(await ui.find({ key: 'front-docs' })).toBeFalsy()
+  expect(await ui.find({ key: 'stamp-docs' })).toBeFalsy()
   // At the back: the frame in another colour, the round key held down.
   const turnedTile = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'sec-docs')
   expect(turnedTile?.props?.borderColor).toBe('permission')
@@ -3172,38 +3306,38 @@ test('a tile says when its vault was last written through the router; its round 
   expect(calls.find(c => c.tool === 'preview_start')?.args).toEqual({ url: 'http://10.8.0.1:27200/go?v=docs&n=wiki%2Fa.md&s=sig' })
   // The same key turns it back; the frame and the key as before.
   await ui.press({ key: 'flip-docs' })
-  expect(await ui.find({ key: 'front-docs' })).toBeTruthy()
+  expect(await ui.find({ key: 'stamp-docs' })).toBeTruthy()
   const frontTile = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'sec-docs')
   expect(frontTile?.props?.borderColor).toBe('inactive')
   expect(nodesOf(frontTile as never).find(n => keyOf(n) === 'icon-flip-docs')?.props?.backgroundColor).toBeUndefined()
   // Left turned and untouched, a tile comes back on its own after eight seconds.
   await ui.press({ key: 'flip-docs' })
   await wired.clock!.advance(7_900)
-  expect(await ui.find({ key: 'front-docs' })).toBeFalsy()
+  expect(await ui.find({ key: 'stamp-docs' })).toBeFalsy()
   await wired.clock!.advance(100)
-  await eventually(async () => !!(await ui.find({ key: 'front-docs' })))
-  expect(await ui.find({ key: 'front-docs' })).toBeTruthy()
+  await eventually(async () => !!(await ui.find({ key: 'stamp-docs' })))
+  expect(await ui.find({ key: 'stamp-docs' })).toBeTruthy()
   // A note opened meanwhile restarts the wait.
   await ui.press({ key: 'flip-docs' })
   await wired.clock!.advance(6_000)
   await ui.press({ key: 'note-1-docs' })
   await wired.clock!.advance(6_000)
-  expect(await ui.find({ key: 'front-docs' })).toBeFalsy()
+  expect(await ui.find({ key: 'stamp-docs' })).toBeFalsy()
   await wired.clock!.advance(2_000)
-  await eventually(async () => !!(await ui.find({ key: 'front-docs' })))
-  expect(await ui.find({ key: 'front-docs' })).toBeTruthy()
+  await eventually(async () => !!(await ui.find({ key: 'stamp-docs' })))
+  expect(await ui.find({ key: 'stamp-docs' })).toBeTruthy()
   // Turned back by hand, then over again: the first return, cancelled, does
   // not fire at its deadline; the second runs its own eight seconds.
   await ui.press({ key: 'flip-docs' })
   await wired.clock!.advance(5_000)
   await ui.press({ key: 'flip-docs' })
-  expect(await ui.find({ key: 'front-docs' })).toBeTruthy()
+  expect(await ui.find({ key: 'stamp-docs' })).toBeTruthy()
   await ui.press({ key: 'flip-docs' })
   await wired.clock!.advance(4_000)
-  expect(await ui.find({ key: 'front-docs' })).toBeFalsy()
+  expect(await ui.find({ key: 'stamp-docs' })).toBeFalsy()
   await wired.clock!.advance(4_000)
-  await eventually(async () => !!(await ui.find({ key: 'front-docs' })))
-  expect(await ui.find({ key: 'front-docs' })).toBeTruthy()
+  await eventually(async () => !!(await ui.find({ key: 'stamp-docs' })))
+  expect(await ui.find({ key: 'stamp-docs' })).toBeTruthy()
   // A local one's note: Obsidian at that file, the address handed over whole.
   await ui.press({ key: 'flip-notes' })
   await ui.press({ key: 'note-0-notes' })
@@ -3227,7 +3361,7 @@ test('a tile left turned when a session ended is drawn on its front at the next'
   })
   await begin($)
   const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
-  expect(await ui.find({ key: 'front-docs' })).toBeTruthy()
+  expect(await ui.find({ key: 'stamp-docs' })).toBeTruthy()
   expect(await ui.find({ key: 'recent-docs' })).toBeFalsy()
   await ui.unmount()
 })

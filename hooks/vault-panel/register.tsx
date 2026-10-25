@@ -3262,19 +3262,21 @@ export const register: Register = on => {
       const done = activityOf(row)
 
       return (
-        <Box key={`stamp-${row.name}`} flexDirection="row" gap={2} alignItems="center">
-          <Box flexDirection="column" alignItems="center">
-            <Text size="caption" dimColor>
+        <Box key={`stamp-${row.name}`} flexDirection="row" gap={2} alignItems="center" flexShrink={1}>
+          <Box flexDirection="column" alignItems="center" flexShrink={1}>
+            <Text size="caption" weight="semibold" wrap="wrap">
               {t('activity.title')}
             </Text>
-            <Text size="caption">{done?.lastWriteAt ? stamp(done.lastWriteAt) : t('activity.none')}</Text>
+            <Text size="caption" wrap="truncate-end">
+              {done?.lastWriteAt ? stamp(done.lastWriteAt) : t('activity.none')}
+            </Text>
           </Box>
           {(done?.recent?.length ?? 0) > 0 && iconKey(LIST_MARK, '☰', `flip-${row.name}`, () => turn(row))}
         </Box>
       )
     }
     const recentFiles = (row: VaultRow) => (
-      <Box key={`recent-${row.name}`} flexDirection="column" flexGrow={1}>
+      <Box key={`recent-${row.name}`} flexDirection="column" flexGrow={1} overflow="hidden">
         <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
           <Text size="caption" dimColor>
             {t('activity.recent')}
@@ -3319,26 +3321,48 @@ export const register: Register = on => {
 
       return Math.max(least, columns)
     }
-    // Wide enough for the tier's radios where the pane allows, never wider than
-    // the pane: a narrow one cuts the longest label instead.
-    const boundWidth = fit(3, Math.min(Math.max(TILE_WIDTH, modeWidth + 4), columns))
+    // Wide enough for a secondary's three columns where the pane allows, never
+    // wider than the pane: its rights in the middle, a side each way as wide
+    // as the longest of what a side holds (the last update's title, its date
+    // with the round key, a state), the frame, the rules and the gaps.
+    // Narrower, the columns stack.
+    const sideWidth = Math.max(
+      cells(t('activity.title')),
+      cells(stamp('2026-12-31T23:59:00.000Z')) + 4,
+      cells(t('state.active')),
+      cells(t('state.pause')),
+    )
+    const threeColumnsWidth = modeWidth + 2 * sideWidth + 10
+    const boundWidth = fit(3, Math.min(Math.max(TILE_WIDTH, threeColumnsWidth), columns))
+    const isStacked = boundWidth < threeColumnsWidth
     // A tile to add holds less, but not so little that two squeeze in the side panel.
     const addWidth = fit(4, TILE_WIDTH + 4)
+    // A horizontal rule across a tile's inside (its frame and padding taken
+    // off), dim: the parting under its head, or between stacked columns. A row
+    // of "─" one line high, what overflows clipped — never truncated, since a
+    // truncation ends in "…" on the desktop, whose font draws "─" wider than
+    // the cell the columns are counted in.
+    const hrule = (key: string, width: number) => (
+      <Box key={key} flexShrink={0} height={1} overflow="hidden">
+        <Text dimColor>{'─'.repeat(Math.max(1, width - 4))}</Text>
+      </Box>
+    )
     // A vault's tile: its state and name on top, with what acts on the tile
-    // as a whole on the right; then its lines, each wrapping inside it.
+    // as a whole on the right, a rule under them; then its lines, each
+    // wrapping inside it, and its body (a secondary's columns) on the full width.
     const tile = (
       key: string,
       row: VaultRow,
       right: unknown,
       lines: unknown[],
-      opts: { width: number; isDim?: boolean; isHighlighted?: boolean; foot?: unknown },
+      opts: { width: number; isDim?: boolean; isHighlighted?: boolean; foot?: unknown; body?: unknown; marksInHead?: boolean },
     ) => (
       <Box
         key={key}
         flexDirection="column"
         width={opts.width}
         minWidth={opts.width}
-        borderStyle="bold"
+        borderStyle="single"
         // Turned over, the frame changes colour: one sees one is at the back.
         borderColor={isTurned(row) ? 'permission' : opts.isHighlighted ? 'claude' : 'inactive'}
         paddingX={1}
@@ -3349,12 +3373,15 @@ export const register: Register = on => {
             <Text weight="semibold" dimColor={opts.isDim || row.online === false} wrap="truncate-end">
               {row.name}
             </Text>
-            <Box key={`marks-${key}`} flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
-              {marks(row) as never}
-            </Box>
+            {opts.marksInHead !== false && (
+              <Box key={`marks-${key}`} flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
+                {marks(row) as never}
+              </Box>
+            )}
           </Box>
           {right as never}
         </Box>
+        {hrule(`hrule-${key}`, opts.width)}
         {lines.filter(line => !(Array.isArray(line) && line.length === 0)).map((line, i) => (
           <Box
             key={i === 0 ? `${key}-controls` : `${key}-line-${i}`}
@@ -3367,6 +3394,7 @@ export const register: Register = on => {
             {line as never}
           </Box>
         ))}
+        {opts.body as never}
         {opts.foot !== undefined && (
           // The tile's action, at its bottom right: a spacer takes what height
           // the row's tallest tile leaves, then the foot sits on its own line.
@@ -3461,11 +3489,11 @@ export const register: Register = on => {
         })
       }
     }
-    // A secondary's state, as two keys side by side: ▶ Actif and ❚❚ Pause, the
-    // one in force on a tinted ground (green, soft red): a ground the desktop
-    // draws, where a native button keeps no colour of its own text.
+    // A secondary's state, as two keys one over the other: ▶ Actif and ❚❚
+    // Pause, the one in force on a tinted ground (green, soft red): a ground
+    // the desktop draws, where a native button keeps no colour of its own text.
     const stateSwitch = (s: Secondary, isPaused: boolean) => (
-      <Box key={`state-${s.name}`} flexDirection="row" alignItems="center">
+      <Box key={`state-${s.name}`} flexDirection="column" alignItems="center">
         <Box key={`state-on-${s.name}`} backgroundColor={isPaused ? undefined : 'diffAddedDimmed'}>
           <Button
             key={`resume-${s.name}`}
@@ -3494,38 +3522,103 @@ export const register: Register = on => {
         </Box>
       </Box>
     )
-    // A vertical rule of `rows` cells, dim: the parting between a tile's state
-    // and its rights (the desktop draws no border on one side only).
-    // Keys: one word before the name, no word a prefix of another's ("half",
-    // "aside", "rule", "rulecell-N"), so that no vault's name can forge a
-    // sibling's key.
-    const divider = (key: string, rows: number) => (
-      <Box key={`rule-${key}`} flexDirection="column" flexShrink={0}>
-        {Array.from({ length: rows }, (_, i) => (
-          <Text key={`rulecell-${i}-${key}`} dimColor>
-            │
-          </Text>
-        ))}
-      </Box>
-    )
-    // Its write tier as three radio buttons under a title, the one in force
-    // marked ◉ and lit, the others ○ and dim; a press sets it.
+    // The parting between two of a tile's columns, dim: side by side, a
+    // vertical rule of `rows` cells (the desktop draws no border on one side
+    // only); stacked, a horizontal rule across the tile.
+    // Keys: one word before the name, no word a prefix of another's ("cell",
+    // "front", "rule-N", "rulecell-N", "stack"), so that no vault's name can
+    // forge a sibling's key.
+    const divider = (key: string, rows: number) =>
+      isStacked ? (
+        hrule(`rule-${key}`, boundWidth)
+      ) : (
+        <Box key={`rule-${key}`} flexDirection="column" flexShrink={0} overflow="hidden">
+          {Array.from({ length: rows }, (_, i) => (
+            <Text key={`rulecell-${i}-${key}`} dimColor>
+              │
+            </Text>
+          ))}
+        </Box>
+      )
+    // Its write tier as three radio buttons under a centred bold title, the
+    // one in force marked ◉ and lit, the others ○ and dim; a press sets it.
+    // The options line up at their left among themselves.
     const tierMenu = (s: Secondary) => (
-      <Box key={`mode-${s.name}`} flexDirection="column" flexShrink={1}>
-        <Text size="caption" dimColor>
+      <Box key={`mode-${s.name}`} flexDirection="column" flexShrink={1} alignItems="center">
+        <Text size="caption" weight="semibold" wrap="truncate-end">
           {t('mode.radioTitle')}
         </Text>
-        {MODES.map(m => (
-          <Button
-            key={`tier-${m.mode}-${s.name}`}
-            label={`${s.mode === m.mode ? '◉' : '○'} ${m.icon} ${modeLabel(m.mode)}`}
-            plain
-            dimColor={s.mode !== m.mode}
-            onPress={() => setMode(s, m.mode)}
-          />
-        ))}
+        <Box key={`tiers-${s.name}`} flexDirection="column" alignItems="flex-start">
+          {MODES.map(m => (
+            <Button
+              key={`tier-${m.mode}-${s.name}`}
+              label={`${s.mode === m.mode ? '◉' : '○'} ${m.icon} ${modeLabel(m.mode)}`}
+              plain
+              dimColor={s.mode !== m.mode}
+              onPress={() => setMode(s, m.mode)}
+            />
+          ))}
+        </Box>
       </Box>
     )
+    // A secondary's front, the user's mockup: three columns, a rule between
+    // two, each centred in its room — its state over its marks, one under the
+    // other; its rights under their title; its last update, or its last files
+    // when the tile is turned. Side by side, the rules run two cells taller
+    // than the tallest column, so a line of air stands above and below; in a
+    // tile too narrow for the three, they stack with a rule between.
+    // Turned over, its last files take the room of the rights and the last
+    // update together, under one rule: a quarter of the tile would cut their
+    // paths. The state stays, and the key that turns it back is with the files.
+    const front = (s: Secondary, isPaused: boolean) => {
+      const stacked = marks(s)
+      const recent = activityOf(s)?.recent ?? []
+      // The rules' cells: the tallest column as counted in lines, plus one of
+      // air at each end. Stretched to the row and clipped, a rule is as tall as
+      // the row turns out on the surface, whatever a mark's height there.
+      const rows =
+        Math.max(2 + (stacked.length > 0 ? 1 + stacked.length : 0), 1 + MODES.length, isTurned(s) ? 1 + recent.length : 2) + 2
+      // The columns' widths, cells: the rights at least as wide as their longest
+      // option, the sides sharing what is left — a quarter each of the whole,
+      // never under what their words need (the tile's least width sees to it).
+      const room = boundWidth - 4 - 2 - 4
+      const middle = Math.max(modeWidth, Math.floor(room / 2))
+      const side = Math.max(1, Math.floor((room - middle) / 2))
+      const cell = (key: string, width: number, body: unknown) => (
+        <Box
+          key={`cell-${key}-${s.name}`}
+          flexDirection="column"
+          alignItems="center"
+          justifyContent="center"
+          gap={1}
+          width={isStacked ? undefined : width}
+          paddingY={1}
+          flexShrink={isStacked ? 0 : 1}
+          overflow="hidden"
+        >
+          {body as never}
+        </Box>
+      )
+
+      return (
+        <Box key={`front-${s.name}`} flexDirection={isStacked ? 'column' : 'row'} alignItems="stretch" justifyContent="center" gap={isStacked ? 0 : 1}>
+          {cell('state', side, [
+            stateSwitch(s, isPaused),
+            ...(stacked.length > 0
+              ? [
+                  <Box key={`stack-${s.name}`} flexDirection="column" alignItems="center" flexShrink={0}>
+                    {stacked as never}
+                  </Box>,
+                ]
+              : []),
+          ])}
+          {divider(`1-${s.name}`, rows)}
+          {isTurned(s)
+            ? cell('recent', middle + 2 + side, recentFiles(s))
+            : [cell('rights', middle, tierMenu(s)), divider(`2-${s.name}`, rows), cell('stamp', side, lastUpdate(s))]}
+        </Box>
+      )
+    }
     // A secondary's tile, paused or not, in its place: ✕ removes it from the
     // project, the links open it, the menu sets its tier, the switch pauses it.
     const secondaryTile = (s: Secondary, isPaused: boolean) =>
@@ -3534,9 +3627,7 @@ export const register: Register = on => {
         s,
         <Button
           key={`remove-${s.name}`}
-          label="✕"
           plain
-          dimColor
           onPress={() =>
             void rebind(
               $,
@@ -3552,48 +3643,11 @@ export const register: Register = on => {
               },
             )
           }
-        />,
-        [
-          notes(s),
-          isTurned(s) ? (
-            recentFiles(s)
-          ) : (
-            // The user's mockup: at the left, its state over its last update,
-            // centred in the room the rights leave; a rule between; the rights
-            // framed at the right. Both halves sit at mid-height, with a line
-            // of air above and below. Narrower, the rights (their rule with
-            // them) wrap under the state.
-            <Box
-              key={`front-${s.name}`}
-              flexDirection="row"
-              flexWrap="wrap"
-              gap={2}
-              alignItems="center"
-              flexGrow={1}
-              paddingY={1}
-              paddingRight={1}
-            >
-              <Box key={`half-${s.name}`} flexDirection="column" gap={1} alignItems="center" flexGrow={1}>
-                {stateSwitch(s, isPaused)}
-                {lastUpdate(s)}
-              </Box>
-              <Box key={`aside-${s.name}`} flexDirection="row" gap={2} alignItems="center" flexShrink={1}>
-                {divider(s.name, MODES.length + 3)}
-                <Box
-                  key={`rights-${s.name}`}
-                  flexDirection="column"
-                  borderStyle="round"
-                  borderColor="success"
-                  borderDimColor
-                  paddingX={1}
-                >
-                  {tierMenu(s)}
-                </Box>
-              </Box>
-            </Box>
-          ),
-        ],
-        { width: boundWidth, isDim: isPaused },
+        >
+          <Text weight="bold">✕</Text>
+        </Button>,
+        [notes(s)],
+        { width: boundWidth, isDim: isPaused, body: front(s, isPaused), marksInHead: false },
       )
 
     // Every secondary in the binding's own order, the paused ones in their place.
