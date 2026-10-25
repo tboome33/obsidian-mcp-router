@@ -10,6 +10,29 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.116.13] — 2026-10-25 — each vault of the band in its own round frame
+
+Asked by Roland from a mockup over v0.116.12's band, "pour mieux voir les différents vaults
+en cours":
+
+- **A frame per vault, on the desktop.** The primary ("● name, marks") and each secondary
+  ("▶ name tier │ marks") stand in their own thin round frame (`inactive`, the tab frames'
+  colour); nothing is drawn between two any more — the "·" is gone, the frame parts them.
+  The "│" inside a slot, before the marks that open the vault, stays.
+- **The terminal is unchanged**: no frame (a bordered box takes three lines there), a "│"
+  between two secondaries.
+- `bandFit` counts a frame as two cells (one each side) on the primary and on each slot of a
+  graphical surface, and no "· " any more; the pinned desktop thresholds move by four
+  (81/88 for two vaults that open nowhere, 90/102 for a remote and a local one), the
+  terminal's (83/92) do not.
+- Adversarial review by Codex: SHIP, two nits taken — two stale comments, and two older
+  assertions that looked for "›" (gone since v0.116.6) now look for the "N▶" text. The one
+  thing the trees cannot prove is the band's height on the desktop (a frame drawn as a
+  rectangle on the line, as the tabs' are): to be seen on screen. Tests:
+  `tests/vault-panel.test.tsx` 134 (every slot framed `round`/`inactive` on the desktop,
+  none on the terminal, no "·"/"│" text between two on the desktop; three mutations seen
+  red — the frame uncounted, a frame on the terminal, none on the primary).
+
 ## [0.116.12] — 2026-10-25 — the band's slots in order: ▶, name, tier, a bar, the marks; "+N" centred in its arrow
 
 Asked by Roland from two crops of v0.116.9's band (the count in the black arrow too low, no
