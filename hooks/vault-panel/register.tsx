@@ -2478,7 +2478,7 @@ export const register: Register = on => {
     // on the terminal, whose painter does not clear a cell nothing draws on
     // (seen on v0.116.1, a "╮" after "☰ Vaults").
     // Two tabs: the administration is no tab but a key at the right, the gear
-    // beside GitHub's mark (v0.116.10); the console in sight opens no tab.
+    // beside GitHub's mark (v0.116.11); the console in sight opens no tab.
     const menuLabels: [PaneView, string][] = [['vaults', t('nav.vaults')], ...(snap ? [['add', t('add.open')] as [PaneView, string]] : [])]
     const foldLabels = [t('nav.vaults'), t('add.open')]
     const menuColumns = e.props.bodyColumns ?? 60
