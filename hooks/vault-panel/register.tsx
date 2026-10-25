@@ -195,7 +195,8 @@ const modeLabel = (mode: SecondaryMode) => t(`mode.${mode}`)
 // "›+N" (a page to turn). The line as the band draws it, cell by cell:
 // "Principal :", a gap, "●", a gap, the primary, a gap, a one-cell spacer, a
 // gap, "Secondaires :", "◀N" and a gap past the first page, then per secondary
-// a gap, "·" (or "│") and a gap after the first, its ▶ and a gap, its name, a
+// a gap, its frame (a cell each side, on the desktop; on the terminal "│" and
+// a gap after the first instead), its ▶ and a gap, its name, a
 // gap and its badge (two cells), a gap, "│" and its marks when it has any;
 // "N▶" after a gap; the toggle after a gap of two, with room
 // for its chrome. In the current language's words. Measured in
@@ -262,7 +263,8 @@ function pageKeyMark(direction: 'back' | 'more', count: number) {
 }
 // The secondaries the band's line shows from `start` on, in the binding's
 // order, each as its ▶, its name, its badge, then a "│" and its marks when it
-// has any; a "·" between two (a "│" on the terminal); `paused[i]` says which
+// has any; each in a round frame on the desktop (a "│" between two on the
+// terminal); `paused[i]` says which
 // are paused (the ▶ the same width either way). `marks[i]` (and
 // `primaryMark`): the cells that name's marks take beside it. Past the first
 // page the line starts with "◀N" (the key and its gap); what does not fit
@@ -270,18 +272,23 @@ function pageKeyMark(direction: 'back' | 'more', count: number) {
 function bandFit(primary: string | null, secondaries: string[], columns: number, paused: boolean[] = [], marks: number[] = [], primaryMark = 0, start = 0, keysAsMarks = false) {
   void paused
   const toggle = 2 + Math.max(cells(t('band.show')), cells(t('band.hide'))) + 4
-  // "Principal :", a gap, "● " and the name with its marks; two gaps and
-  // "Secondaires :"; the pane's toggle at the right.
+  // On a graphical surface (`keysAsMarks`: the one that draws the page keys
+  // as marks) each slot stands in a round frame, a cell each side, and
+  // nothing parts two; on the terminal a "│" and its gap part two slots.
+  const frame = keysAsMarks ? 2 : 0
+  // "Principal :", a gap, "● " and the name with its marks (in a frame on
+  // the desktop); two gaps and "Secondaires :"; the pane's toggle at the right.
   const base =
-    cells(t('band.primary')) + 1 + 2 + primaryMark + cells(primary ?? t('band.none')) + 1 + 1 + 1 + cells(t('band.secondaries')) + toggle + (start > 0 ? pageKeyCells('back', start, keysAsMarks) : 0)
+    cells(t('band.primary')) + 1 + frame + 2 + primaryMark + cells(primary ?? t('band.none')) + 1 + 1 + 1 + cells(t('band.secondaries')) + toggle + (start > 0 ? pageKeyCells('back', start, keysAsMarks) : 0)
   const rest = secondaries.slice(start)
-  // A gap, "· " after the first, its control (▶, dimmed while paused) and a
-  // gap, the name, a gap and its badge; then, when it has marks, a gap and
-  // the "│" (two cells) before the marks (each counted with its gap).
+  // A gap, its frame (or "│ " after the first on the terminal), its control
+  // (▶, dimmed while paused) and a gap, the name, a gap and its badge; then,
+  // when it has marks, a gap and the "│" (two cells) before the marks (each
+  // counted with its gap).
   const widths = rest.map((name, i) => {
     const mark = marks[start + i] ?? 0
 
-    return 1 + (i > 0 ? 2 : 0) + 1 + 1 + cells(name) + 1 + 2 + (mark > 0 ? 2 + mark : 0)
+    return 1 + (keysAsMarks ? frame : i > 0 ? 2 : 0) + 1 + 1 + cells(name) + 1 + 2 + (mark > 0 ? 2 + mark : 0)
   })
   // The most secondaries that fit with the "N▶" their remainder needs. A
   // page one turned to shows at least one, cut where it runs over: a page
@@ -4001,7 +4008,7 @@ export const register: Register = on => {
     // The terminal draws no SVG (its element draws nothing there): no mark is
     // drawn, and none is counted.
     const BandSvg = e.surface !== 'terminal' && 'Svg' in bandEls ? bandEls.Svg : null
-    // A graphical surface parts the vaults with a "·"; the terminal with a "│".
+    // A graphical surface frames each vault; the terminal parts two with a "│".
     const isChip = !!BandSvg
     const bandOpen = await read($, openers)
     // The cells a name's controls take beyond the name: Obsidian's mark (2 and
@@ -4167,15 +4174,21 @@ export const register: Register = on => {
         {text}
       </Text>
     )
-    // A vault's place on the line: after a "·" from the one before (a "│" on
-    // the terminal), the first after nothing. No frame: the line reads as the
-    // counters above it do.
-    const slot = (key: string, isFirst: boolean, children: unknown) => (
-      <Box key={key} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
-        {!isFirst && caption(isChip ? '·' : '│')}
-        {children as never}
-      </Box>
-    )
+    // A vault's place on the line. On the desktop (Roland's mockup of v0.116.12) each vault stands in its
+    // own thin round frame, the primary too, and nothing parts two: the frame
+    // is the separator. The terminal, where a frame would take three lines,
+    // keeps the "│" between two slots and no frame.
+    const slot = (key: string, isFirst: boolean, children: unknown) =>
+      isChip ? (
+        <Box key={key} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0} borderStyle="round" borderColor="inactive">
+          {children as never}
+        </Box>
+      ) : (
+        <Box key={key} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
+          {!isFirst && caption('│')}
+          {children as never}
+        </Box>
+      )
     // Its tier: a mark on a graphical surface (the alt names it), the badge
     // on the terminal.
     const tier = (row: Secondary, isPaused: boolean, list = '') =>
@@ -4267,10 +4280,7 @@ export const register: Register = on => {
           <Box key="vault-band-names" flexDirection="row" flexWrap="nowrap" alignItems="center" columnGap={1} flexShrink={1} overflow="hidden">
             {heading(t('band.primary'))}
             {snap.primary ? (
-              <Box key="band-main-row" flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
-                <Text color="claude">●</Text>
-                {opener(snap.primary, snap.primary.name, false, 'main-')}
-              </Box>
+              slot('band-main-row', true, [<Text key="band-main-dot" color="claude">●</Text>, opener(snap.primary, snap.primary.name, false, 'main-')])
             ) : (
               <Text wrap="truncate-end">{t('band.none')}</Text>
             )}
