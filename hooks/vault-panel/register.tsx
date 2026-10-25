@@ -1567,6 +1567,21 @@ async function openVault($: EngineInterface, row: VaultRow) {
 const REPO_URL = 'https://github.com/tboome33/obsidian-mcp-router'
 const LATEST_MANIFEST = 'https://raw.githubusercontent.com/tboome33/obsidian-mcp-router/main/.claude-plugin/plugin.json'
 // Obsidian's mark, in its purple, before the button that opens a local vault in
+// The administration's six sections, in order, each with its mark for the
+// settings page's side list: a grey line icon on the desktop, a glyph on the
+// terminal (WireGuard's glyph is a dot, coloured by its state when drawn).
+const ADMIN_SECTIONS = ['general', 'open', 'create', 'wireguard', 'register', 'unregister'] as const
+type AdminSectionName = (typeof ADMIN_SECTIONS)[number]
+const sectionIcon = (d: string) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="${d}" fill="none" stroke="#8c8c8c" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+const SECTION_MARKS: Record<AdminSectionName, { svg: string; glyph: string }> = {
+  general: { svg: sectionIcon('M2 4.5h12M2 8h12M2 11.5h12M5 3v3M11 6.5v3M7 10v3'), glyph: '⚙' },
+  open: { svg: sectionIcon('M6.5 3H3v10h10V9.5M9 3h4v4M13 3L7.5 8.5'), glyph: '↗' },
+  create: { svg: sectionIcon('M8 2.5a5.5 5.5 0 110 11 5.5 5.5 0 010-11zM8 5.5v5M5.5 8h5'), glyph: '+' },
+  wireguard: { svg: sectionIcon('M8 2l5 2v4c0 3-2.2 5-5 6-2.8-1-5-3-5-6V4l5-2zM5.8 8l1.6 1.6L10.5 6.5'), glyph: '●' },
+  register: { svg: sectionIcon('M6.5 9.5l3-3M5 8L3.5 9.5a2.1 2.1 0 003 3L8 11M8 5l1.5-1.5a2.1 2.1 0 013 3L11 8'), glyph: '⊕' },
+  unregister: { svg: sectionIcon('M8 2.5a5.5 5.5 0 110 11 5.5 5.5 0 010-11zM5.5 8h5'), glyph: '−' },
+}
 // Obsidian (a surface with no SVG element keeps 💎). From LobeHub's icons
 // (@lobehub/icons-static-svg 1.98.0, obsidian-color.svg, MIT).
 const OBSIDIAN_MARK =
@@ -2698,10 +2713,67 @@ export const register: Register = on => {
         ),
       ],
     }
+    // Two layouts for the same six sections. Wide enough (a desktop pane): a
+    // settings page, as ChatGPT's or Perplexity's — the sections listed down
+    // a side column (an icon, the name, the one shown on a grey ground), the
+    // shown section's title, its state line and its settings in a rounded
+    // card at the right. Narrower: the accordion, one section unfolded.
+    const navWidth = 26
+    const isSidebar = !isPhone && cardColumns >= 96
+    const shownSection: AdminSectionName = ADMIN_SECTIONS.find(n => n === openSection) ?? 'general'
+    // The card's inner width: the pane less the side column, the gap, the
+    // frame and its padding.
+    const pageColumns = Math.max(20, cardColumns - navWidth - 2 - 4)
+    // A setting as a row: its label (and a dim hint under it) at the left,
+    // its control at the right; a thin rule between two rows.
+    const rowRule = (key: string) => (
+      <Box key={`${key}-rule`} height={1} overflow="hidden">
+        <Text dimColor>{'─'.repeat(isSidebar ? pageColumns : Math.max(1, cardColumns - 2))}</Text>
+      </Box>
+    )
+    const settingRow = (key: string, label: unknown, control: unknown, hint?: string) => (
+      <Box key={key} flexDirection="row" justifyContent="space-between" alignItems="center" gap={2} flexWrap="wrap">
+        <Box key={`${key}-label`} flexDirection="column" flexShrink={1}>
+          {typeof label === 'string' ? <Text>{label}</Text> : (label as never)}
+          {hint && (
+            <Text size="caption" dimColor>
+              {hint}
+            </Text>
+          )}
+        </Box>
+        <Box key={`${key}-control`} flexDirection="row" flexWrap="wrap" gap={1} alignItems="center" flexShrink={0}>
+          {control as never}
+        </Box>
+      </Box>
+    )
+    const settingRows = (key: string, rows: unknown[]) => (
+      <Box key={key} flexDirection="column" gap={1}>
+        {rows.flatMap((row, i) => (i === 0 ? [row] : [rowRule(`${key}-${i}`), row])) as never}
+      </Box>
+    )
     const card = (key: string, title: string, body: unknown) => {
       const name = key.replace(/^admin-/, '')
       const isOpen = openSection === name
       const chevron = isOpen ? '▾' : '▸'
+      if (isSidebar) {
+        if (name !== shownSection) {
+          return null
+        }
+
+        return (
+          <Box key={key} flexDirection="column" gap={1}>
+            <Text size="heading" weight="semibold">
+              {title}
+            </Text>
+            <Box key={`admin-page-note`} flexDirection="row" gap={1} alignItems="center">
+              {(headNotes[name] ?? []) as never}
+            </Box>
+            <Box key={`${key}-panel`} flexDirection="column" gap={1} borderStyle="round" borderDimColor paddingX={1} paddingY={1}>
+              {body as never}
+            </Box>
+          </Box>
+        )
+      }
 
       return (
         <Box key={key} flexDirection="column">
@@ -2762,77 +2834,116 @@ export const register: Register = on => {
       </Box>
     )
     const isUpToDate = !!upd?.installed && !!upd.latest && !upd.isAvailable
-    const admin = (
-      <Box key="admin" flexDirection="column">
-        {isAdminShown && [
+    // The side list of the settings page: each section a row (its mark, its
+    // name), the shown one on a grey ground. The mark is an Svg beside the
+    // Button on the desktop (a Button may not hold one), a glyph inside it
+    // on the terminal.
+    const sectionTitles: Record<AdminSectionName, string> = {
+      general: t('admin.general'),
+      open: t('admin.open'),
+      create: t('create.title'),
+      wireguard: t('wg.title'),
+      register: t('register.title'),
+      unregister: t('unregister.title'),
+    }
+    const adminNav = (
+      <Box key="admin-nav" flexDirection="column" width={navWidth} flexShrink={0}>
+        {ADMIN_SECTIONS.map(name => {
+          const isShown = name === shownSection
+          const glyphColor =
+            name === 'wireguard' ? (wg?.state === 'active' ? 'success' : wg?.state === 'inactive' || wg?.state === 'absent' ? 'warning' : undefined) : undefined
+
+          return (
+            <Box key={`admin-nav-${name}`} flexDirection="row" gap={1} alignItems="center" paddingX={1} backgroundColor={isShown ? 'inactive' : undefined}>
+              {Mark && <Mark source={SECTION_MARKS[name].svg} alt={sectionTitles[name]} width={14} height={14} />}
+              <Button key={`admin-sec-${name}`} plain dimColor={!isShown} onPress={() => void update($, adminSection, () => name)}>
+                {!Mark && (
+                  <Text color={glyphColor} dimColor={!glyphColor && !isShown}>
+                    {SECTION_MARKS[name].glyph}{' '}
+                  </Text>
+                )}
+                <Text weight={isShown ? 'semibold' : undefined} dimColor={!isShown} wrap="truncate-end">
+                  {sectionTitles[name]}
+                </Text>
+              </Button>
+            </Box>
+          )
+        })}
+      </Box>
+    )
+    const adminSections = isAdminShown
+      ? [
           card(
             'admin-general',
             t('admin.general'),
-            <Box key="admin-general-body" flexDirection="column" gap={1}>
-            <Box key="admin-language" flexDirection="column">
-              <Text size="caption" dimColor>
-                {t('admin.language')}
-              </Text>
-              {Select ? (
-                <Select
-                  key="admin-language-select"
-                  options={languages.map(l => ({ value: l.code, label: l.name }))}
-                  value={languageCode}
-                  onSelect={(code: string) => void setLanguage($, code)}
-                />
-              ) : (
-                choice('admin-language-choice', languages.map(l => ({ value: l.code, label: l.name })), languageCode, code =>
-                  void setLanguage($, code),
-                )
-              )}
-            </Box>
-
-            <Box key="admin-update" flexDirection="column" gap={1}>
-              <Box key="admin-update-line" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
-                <Text size="caption" dimColor>
-                  {t('admin.plugin')}
-                </Text>
-                {upd?.installed && <Text>v{upd.installed}</Text>}
-                {isUpToDate && <Text color="success">●</Text>}
-                <Text size="caption" color={upd?.isAvailable ? 'warning' : undefined} dimColor={!upd?.isAvailable}>
-                  {!upd?.installed || !upd.latest
-                    ? t('update.unknown')
-                    : upd.isAvailable
-                      ? t('update.versions', { installed: upd.installed, latest: upd.latest })
-                      : t('admin.upToDate')}
-                </Text>
-                <Button key="update-check" label={t('update.check')} plain dimColor onPress={() => void checkUpdate($)} />
-              </Box>
-              {upd?.isAvailable && (
-                <Box key="admin-update-actions" flexDirection="row">
-                  <Button key="update-run" label={t('update.button')} variant="primary" onPress={() => void updatePlugin($)} />
-                </Box>
-              )}
-              {upd?.log && (
-                <Text size="caption" color={upd.log.startsWith(t('update.failed', { error: '' }).trim()) ? 'error' : 'success'}>
-                  {upd.log}
-                </Text>
-              )}
-            </Box>
-            </Box>,
+            settingRows('admin-general-body', [
+              settingRow(
+                'admin-language',
+                t('admin.language'),
+                Select ? (
+                  <Select
+                    key="admin-language-select"
+                    options={languages.map(l => ({ value: l.code, label: l.name }))}
+                    value={languageCode}
+                    onSelect={(code: string) => void setLanguage($, code)}
+                  />
+                ) : (
+                  choice('admin-language-choice', languages.map(l => ({ value: l.code, label: l.name })), languageCode, code =>
+                    void setLanguage($, code),
+                  )
+                ),
+              ),
+              <Box key="admin-update" flexDirection="column" gap={1}>
+                {settingRow(
+                  'admin-update-line',
+                  t('admin.plugin'),
+                  [
+                    upd?.installed ? <Text key="update-installed">v{upd.installed}</Text> : null,
+                    isUpToDate ? (
+                      <Text key="update-dot" color="success">
+                        ●
+                      </Text>
+                    ) : null,
+                    <Text key="update-status" size="caption" color={upd?.isAvailable ? 'warning' : undefined} dimColor={!upd?.isAvailable}>
+                      {!upd?.installed || !upd.latest
+                        ? t('update.unknown')
+                        : upd.isAvailable
+                          ? t('update.versions', { installed: upd.installed, latest: upd.latest })
+                          : t('admin.upToDate')}
+                    </Text>,
+                    <Button key="update-check" label={t('update.check')} plain dimColor onPress={() => void checkUpdate($)} />,
+                    upd?.isAvailable ? (
+                      <Button key="update-run" label={t('update.button')} variant="primary" onPress={() => void updatePlugin($)} />
+                    ) : null,
+                  ],
+                )}
+                {upd?.log && (
+                  <Text size="caption" color={upd.log.startsWith(t('update.failed', { error: '' }).trim()) ? 'error' : 'success'}>
+                    {upd.log}
+                  </Text>
+                )}
+              </Box>,
+            ]),
           ),
           card(
             'admin-open',
             t('admin.open'),
-            <Box key="admin-open-body" flexDirection="column" gap={1}>
-              {(
+            settingRows(
+              'admin-open-body',
+              (
                 [
                   ['obsidian', OBSIDIAN_MARK, '💎', t('admin.openObsidian')],
                   ['browser', GLOBE_MARK, '🌐', t('admin.openBrowser')],
                   ['claude', CLAUDE_PANE_MARK, '✳', t('admin.openClaude')],
                 ] as [keyof Openers, string, string, string][]
-              ).map(([way, source, glyph, label]) => (
-                <Box key={`admin-open-${way}`} flexDirection="column">
-                  <Box flexDirection="row" gap={1} alignItems="center">
+              ).map(([way, source, glyph, label]) =>
+                settingRow(
+                  `admin-open-${way}`,
+                  <Box key={`admin-open-${way}-name`} flexDirection="row" gap={1} alignItems="center" flexShrink={1}>
                     {Mark ? <Mark source={source} alt={markAlt(source)} width={14} height={14} /> : <Text>{glyph}</Text>}
-                    <Text size="caption">{label}</Text>
-                  </Box>
-                  {toggle(
+                    <Text>{label}</Text>
+                  </Box>,
+                  toggle(
                     `open-${way}`,
                     [
                       { value: 'on', label: t('admin.yes') },
@@ -2840,10 +2951,10 @@ export const register: Register = on => {
                     ],
                     open[way] ? 'on' : 'off',
                     value => void setOpener($, way, value === 'on'),
-                  )}
-                </Box>
-              ))}
-            </Box>,
+                  ),
+                ),
+              ),
+            ),
           ),
           card(
             'admin-create',
@@ -3134,7 +3245,18 @@ export const register: Register = on => {
               </Text>
             </Box>,
           ),
-        ]}
+        ]
+      : []
+    const admin = isSidebar ? (
+      <Box key="admin" flexDirection="row" gap={2} alignItems="flex-start">
+        {isAdminShown && adminNav}
+        <Box key="admin-page" flexDirection="column" flexGrow={1} flexShrink={1} minWidth={40}>
+          {adminSections as never}
+        </Box>
+      </Box>
+    ) : (
+      <Box key="admin" flexDirection="column">
+        {adminSections as never}
       </Box>
     )
 
