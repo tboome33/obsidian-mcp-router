@@ -10,6 +10,12 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.119.1] — 2026-10-26 — the console's shown section framed and bold; the held gear in purple
+
+The ⚙ console's section list frames the shown section, its name bold, in place of a grey ground
+that made it unreadable, and draws that frame under the pointer; the gear held down turns the
+router's purple instead of a grey square.
+
 ### The console's shown section framed, and a gear you can see
 
 Roland, on screen (v0.119.0): the console's shown section, on a grey ground, could not be read, and
