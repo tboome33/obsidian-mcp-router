@@ -122,7 +122,7 @@
   "admin.yes": "Yes",
   "admin.no": "No",
   "admin.noteOpen": "{on} of {total}",
-  "nav.vaults": "Vaults",
+  "nav.vaults": "Current vaults",
   "nav.admin": "Administration",
   "admin.general": "General",
   "admin.plugin": "Plugin",
@@ -330,5 +330,8 @@
   "hooks.note": "{on} of {total} on",
   "hooks.alwaysOnShort": "always on",
   "hooks.globalShort": "installed machine-wide",
-  "hooks.help": "? Help on hooks"
+  "hooks.help": "? Help on hooks",
+  "nav.add": "Add a vault",
+  "nav.config": "Configuration",
+  "nav.workspace": "Workspace:"
 }

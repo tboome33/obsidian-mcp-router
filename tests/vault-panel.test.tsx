@@ -2986,8 +2986,8 @@ test('a remote vault that does not answer says so on its tile, with a retry that
   await ui.unmount()
 })
 
-const ADMIN_SECTIONS = ['general', 'open', 'create', 'wireguard', 'register', 'unregister', 'hooks'] as const
-const ADMIN_TITLES = ['Général', 'Ouverture des vaults', 'Créer un vault Obsidian', 'WireGuard', 'Enregistrer un vault', 'Retirer un vault du router', 'Hooks de ce workspace']
+const ADMIN_SECTIONS = ['general', 'open', 'create', 'wireguard', 'register', 'unregister'] as const
+const ADMIN_TITLES = ['Général', 'Ouverture des vaults', 'Créer un vault Obsidian', 'WireGuard', 'Enregistrer un vault', 'Retirer un vault du router']
 
 // The accordion as drawn: each section's header in order, and which one is unfolded.
 const accordionOf = (tree: unknown) => {
@@ -2999,14 +2999,14 @@ const accordionOf = (tree: unknown) => {
 }
 
 for (const surface of ['terminal', 'desktop'] as const) {
-  test(`the console is an accordion on the ${surface}: seven headers in order, Général unfolded first, one section open at a time`, async ($, on) => {
+  test(`the console is an accordion on the ${surface}: six headers in order, Général unfolded first, one section open at a time`, async ($, on) => {
     wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
     windowsWireguard(on, { isInstalled: true, tunnels: ['wg0'], launched: [] })
     await begin($)
     const ui = await $.ui.mount({ ...PANE, surface })
     await ui.press({ key: 'nav-admin' })
     expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
-    // Seven headers, in order, each with its title; Général open, the others folded, their bodies not drawn.
+    // Six headers, in order, each with its title; Général open, the others folded, their bodies not drawn.
     const first = await ui.drawn()
     expect(accordionOf(first)).toEqual({ headers: [...ADMIN_SECTIONS], open: ['general'] })
     const nodes = nodesOf(first)
@@ -3041,7 +3041,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
       return parts.find(p => ['▸', '▾'].includes(p))
     })
-    expect(chevrons).toEqual(['▾', '▸', '▸', '▸', '▸', '▸', '▸'])
+    expect(chevrons).toEqual(['▾', '▸', '▸', '▸', '▸', '▸'])
     // A press on another header unfolds it and folds Général; its body is indented, with air above and below.
     await ui.press({ key: 'admin-sec-create' })
     const second = await ui.drawn()
@@ -3106,7 +3106,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(nodes.find(n => keyOf(n) === 'admin-nav')?.props).toMatchObject({ width: 26, flexShrink: 0 })
     expect(nodes.some(n => String(keyOf(n)).endsWith('-head') && String(keyOf(n)).startsWith('admin-'))).toBe(false)
     expect(nodes.some(n => /^admin-(general|open|create|wireguard|register|unregister)-rule$/.test(String(keyOf(n))))).toBe(false)
-    // The seven sections in order in the side list, each a Button; Général shown, on a grey ground, the others dim.
+    // The six sections in order in the side list, each a Button; Général shown, on a grey ground, the others dim.
     expect(accordionOf(tree)).toEqual({ headers: [...ADMIN_SECTIONS], open: ['general'] })
     for (const [i, name] of ADMIN_SECTIONS.entries()) {
       const row = nodes.find(n => keyOf(n) === `admin-nav-${name}`)
@@ -3121,7 +3121,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
         expect(children.findIndex(n => n.type === 'Svg' && n.props?.alt === ADMIN_TITLES[i])).toBe(0)
         expect(nodesOf(button as never).some(n => n.type === 'Svg')).toBe(false)
       } else {
-        expect(nodesOf(button as never).some(n => n.type === 'Text' && ['⚙', '↗', '+', '●', '⊕', '−', '↪'].includes(textOf(n).trim()))).toBe(true)
+        expect(nodesOf(button as never).some(n => n.type === 'Text' && ['⚙', '↗', '+', '●', '⊕', '−'].includes(textOf(n).trim()))).toBe(true)
       }
     }
     // The page: the title, the state line, the settings in a rounded card.
@@ -3165,7 +3165,7 @@ test('the console holds the pane while open: its sections one under the other, t
   expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'icon-nav-admin')?.props?.backgroundColor).toBeUndefined()
   await ui.press({ key: 'nav-admin' })
   expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'icon-nav-admin')?.props?.backgroundColor).toBe('inactive')
-  // The vaults hidden, the seven sections drawn in one column, no frame, a rule under each.
+  // The vaults hidden, the six sections drawn in one column, no frame, a rule under each.
   expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
   const nodes = nodesOf(await ui.drawn())
   expect(nodes.find(n => keyOf(n) === 'admin')?.props?.flexDirection).toBe('column')
@@ -3256,11 +3256,15 @@ test('the menu stays at the top while the pane scrolls: a copy, no frame, over t
   for (const surface of ['terminal', 'desktop'] as const) {
     // At the top: the menu in the flow — Vaults (in view), + Ajouter un vault; the gear at the right — and no copy.
     const top = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface })
-    const items = ['nav-vaults', 'nav-add']
+    const items = ['nav-vaults', 'nav-add', 'nav-config']
     const at = nodesOf(await top.drawn())
     // The key in view is a bold text in the router's purple, two blanks each side (no pill); the other a plain
     // label, dim. On the desktop the key is a blank Button over that text (three times its cells of blanks).
-    expect(items.map(key => at.find(n => keyOf(n) === key)?.props?.label)).toEqual([surface === 'terminal' ? '  Vaults  ' : ' '.repeat(30), '+ Ajouter un vault'])
+    expect(items.map(key => at.find(n => keyOf(n) === key)?.props?.label)).toEqual([
+      surface === 'terminal' ? '  Vaults en cours  ' : ' '.repeat(57),
+      'Ajouter un vault',
+      'Configuration',
+    ])
     // The gear: a blank key over its mark on the desktop, the glyph on the terminal; in the end group, before GitHub.
     const gear = at.find(n => keyOf(n) === 'nav-admin')
     expect(gear?.props?.label).toBe(surface === 'terminal' ? '⚙' : '  ')
@@ -3270,7 +3274,7 @@ test('the menu stays at the top while the pane scrolls: a copy, no frame, over t
     expect(inView?.props?.plain).toBe(true)
     expect(inView?.props?.variant).toBeUndefined()
     // The purple bold text: inside the key on the terminal, beside it (under the blank key) on the desktop.
-    const inViewText = nodesOf(at.find(n => keyOf(n) === 'navtab-vaults') as never).find(n => n.type === 'Text' && textOf(n) === '  Vaults  ')
+    const inViewText = nodesOf(at.find(n => keyOf(n) === 'navtab-vaults') as never).find(n => n.type === 'Text' && textOf(n) === '  Vaults en cours  ')
     expect(inViewText?.props).toMatchObject({ weight: 'bold', color: '#6040b0' })
     expect(nodesOf(inView as never).some(n => n.type === 'Text')).toBe(surface === 'terminal')
     expect(at.find(n => keyOf(n) === 'nav-add')?.props).toMatchObject({ plain: true, dimColor: true })
@@ -3421,7 +3425,7 @@ test('a pane too narrow for the menu folds it into "☰" and the view in sight; 
   await begin($)
   const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 40 }, surface: 'desktop' })
   // Folded: one key, the three hidden.
-  expect((await ui.find({ type: 'Button', key: 'nav-burger' }))?.props?.label).toBe('☰ Vaults')
+  expect((await ui.find({ type: 'Button', key: 'nav-burger' }))?.props?.label).toBe('☰ Vaults en cours')
   expect(await ui.find({ type: 'Button', key: 'nav-add' })).toBeFalsy()
   await ui.press({ key: 'nav-burger' })
   // Open: the three, one under the other; a pick shows its view and folds the menu.
@@ -3429,7 +3433,7 @@ test('a pane too narrow for the menu folds it into "☰" and the view in sight; 
   await ui.press({ key: 'nav-add' })
   expect(await ui.find({ type: 'Button', key: 'tab-tous' })).toBeTruthy()
   expect(await ui.find({ type: 'Button', key: 'nav-add' })).toBeFalsy()
-  expect((await ui.find({ type: 'Button', key: 'nav-burger' }))?.props?.label).toBe('☰ + Ajouter un vault')
+  expect((await ui.find({ type: 'Button', key: 'nav-burger' }))?.props?.label).toBe('☰ Ajouter un vault')
   // Folded too, the gear stays at the right; the console in sight names itself on the fold.
   expect(await ui.find({ type: 'Button', key: 'nav-admin' })).toBeTruthy()
   await ui.press({ key: 'nav-admin' })
@@ -3938,8 +3942,8 @@ test("a recent file the router gives no link to says so, opens nothing; with the
 test("the wide menu draws its keys as tabs on a shelf: round frames cut short of their bottom on the rule, every tab two rows, the one in sight told by its key alone — bold, in the router's purple", async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
-  const tabKeys = ['vaults', 'add'] as const
-  const labels = { vaults: 'Vaults', add: '+ Ajouter un vault' }
+  const tabKeys = ['vaults', 'add', 'config'] as const
+  const labels = { vaults: 'Vaults en cours', add: 'Ajouter un vault', config: 'Configuration' }
   const tabOf = (tree: unknown, key: string) => nodesOf(tree).find(n => keyOf(n) === key)
   // The tabs, with the one in sight open and the others closed, in a menu copy under `prefix`.
   // `inSight` 'admin': the console shows, no tab is open and the gear is held down.
@@ -4007,27 +4011,30 @@ test("the wide menu draws its keys as tabs on a shelf: round frames cut short of
     // Every key of the tree is its own: no two nodes share one.
     const keys = nodesOf(tree).map(n => keyOf(n)).filter((k): k is string => !!k)
     expect(keys.length).toBe(new Set(keys).size)
-    // The rule: a Box's top border on the third row, its sides and corners a cell past the pane's
+    // The rule: a Box's top border on the fourth row (under the workspace's line and the tabs), its sides and corners a cell past the pane's
     // edges and its lower row cut, drawn first in the menu; every tab ends on it, nothing paints over it.
     const nav = tabOf(tree, 'nav') as Drawn & { children?: Drawn[] }
     expect(nav.props?.paddingBottom).toBeUndefined()
     const first = (nav.children ?? [])[0] as Drawn & { children?: Drawn[] }
     expect(keyOf(first)).toBe('nav-rule')
-    expect(first.props).toMatchObject({ position: 'absolute', top: 2, left: 0, right: 0, height: 1, overflow: 'hidden' })
+    expect(first.props).toMatchObject({ position: 'absolute', top: 3, left: 0, right: 0, height: 1, overflow: 'hidden' })
     const line = (first.children ?? [])[0] as Drawn
     expect(line?.props).toMatchObject({ position: 'absolute', top: 0, left: -1, right: -1, height: 2, borderStyle: 'single', borderColor: 'inactive' })
     expect(line?.props?.borderDimColor).toBeUndefined()
     expect(nodesOf(nav as never).some(n => n.type === 'Text' && /^─+$/.test(textOf(n)))).toBe(false)
-    // The tabs hang from the row's top, every one two rows tall; the mark and the right-hand group
-    // stand two rows tall too, level with the tabs.
+    // The tabs hang from the row's top, every one two rows tall; the right-hand group stands two
+    // rows tall too, level with the tabs. Above them, the workspace's line: "Workspace :" and its name.
     const row = (nav.children ?? [])[1] as Drawn & { children?: Drawn[] }
     expect(row.props?.alignItems).toBe('flex-start')
     expect(tabOf(tree, 'nav-end')?.props?.height).toBe(2)
+    const workspace = tabOf(tree, 'nav-workspace')
+    expect(workspace?.props?.height).toBe(1)
+    expect(nodesOf(workspace as never).filter(n => n.type === 'Text').map(n => textOf(n))).toEqual(['Workspace :', ''])
     if (surface === 'desktop') {
-      const brandBox = nodesOf(row as never).find(n => n.type === 'Box' && n.props?.height === 2 && nodesOf(n as never).some(m => m.type === 'Svg' && m.props?.alt === 'obsidian-mcp-router'))
-      expect(brandBox?.props?.alignItems).toBe('center')
-      // The router's mark a little larger than the keys' marks (16) and than before (22).
-      expect(nodesOf(brandBox as never).find(m => m.type === 'Svg')?.props).toMatchObject({ width: 26, height: 26 })
+      // The router's mark as tall as the workspace's line and the tabs together: three rows.
+      const brandBox = tabOf(tree, 'nav-brand')
+      expect(brandBox?.props).toMatchObject({ height: 3, alignItems: 'center' })
+      expect(nodesOf(brandBox as never).find(m => m.type === 'Svg')?.props).toMatchObject({ width: 44, height: 44 })
     }
     // The opening follows the view through the three keys.
     await ui.press({ key: 'nav-add' })
@@ -4076,18 +4083,18 @@ test('the menu keeps its shape when the router, the version and the update check
   const narrow = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80 }, surface: 'terminal' })
   const wide = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   expect(shape(await narrow.drawn())).toEqual({ burger: true, tabs: [], badge: false, version: false })
-  expect(shape(await wide.drawn())).toEqual({ burger: false, tabs: ['navtab-vaults'], badge: false, version: false })
+  expect(shape(await wide.drawn())).toEqual({ burger: false, tabs: ['navtab-vaults', 'navtab-config'], badge: false, version: false })
   // Read: the same panes, drawn again with the third key, the version and the badge, keep their shape.
   await begin($)
   expect(shape(await narrow.drawn())).toEqual({ burger: true, tabs: [], badge: false, version: false })
-  expect(shape(await wide.drawn())).toEqual({ burger: false, tabs: ['navtab-vaults', 'navtab-add'], badge: true, version: true })
+  expect(shape(await wide.drawn())).toEqual({ burger: false, tabs: ['navtab-vaults', 'navtab-add', 'navtab-config'], badge: true, version: true })
   await narrow.press({ key: 'nav-burger' })
   expect(await narrow.find({ type: 'Button', key: 'nav-add' })).toBeTruthy()
   await narrow.unmount()
   await wide.unmount()
-  // The thresholds themselves, French: the terminal folds at 82 and spreads at 83; the desktop
-  // (its mark three cells, its gear and GitHub three each) at 80 and 81.
-  for (const [surface, columns, isFolded] of [['terminal', 82, true], ['terminal', 83, false], ['desktop', 80, true], ['desktop', 81, false]] as const) {
+  // The thresholds themselves, French, with three tabs: the terminal folds at 110 and spreads at
+  // 111; the desktop (its mark six cells, three rows tall; its gear and GitHub three each) at 111 and 112.
+  for (const [surface, columns, isFolded] of [['terminal', 110, true], ['terminal', 111, false], ['desktop', 111, true], ['desktop', 112, false]] as const) {
     const pane = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: columns }, surface })
     expect(shape(await pane.drawn()).burger).toBe(isFolded)
     await pane.unmount()
@@ -4206,12 +4213,12 @@ test('the console shows the read-only hooks always on and switches the others fo
   const hooks = { enabled: [] as string[], global: ['vault-link-linter'], runs: [] as (readonly string[])[] }
   hooksScript(on, hooks)
   await begin($)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdmin(ui, 'hooks')
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  await ui.press({ key: 'nav-config' })
 
   expect(hooks.runs[0]?.slice(2)).toEqual(['status', '--workspace', '/work/project'])
-  // The header's line: how many are on, the ones wired machine-wide counted.
-  expect(nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'admin-sec-hooks-note') as never).some(n => n.type === 'Text' && textOf(n) === '1 sur 4 activés')).toBe(true)
+  // The section's state line: how many are on, the ones wired machine-wide counted.
+  expect(nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'config-hooks-note') as never).some(n => n.type === 'Text' && textOf(n) === '1 sur 4 activés')).toBe(true)
   expect(await ui.find({ type: 'Text', text: /^Pour \/work\/project\./ })).toBeTruthy()
   // The read-only ones: listed, with no switch.
   expect(await ui.find({ type: 'Text', text: 'hot-cache-load' })).toBeTruthy()
@@ -4232,21 +4239,21 @@ test('the console shows the read-only hooks always on and switches the others fo
   await ui.unmount()
 })
 
-test('the console opened from the pane menu reads this workspace’s hooks too', async ($, on) => {
+test('the hooks are the Configuration tab’s, read when it opens; the ⚙ console has none', async ($, on) => {
   wire(on, { list: LIST })
   const hooks = { enabled: ['wiki-autocommit'], global: [] as string[], runs: [] as (readonly string[])[] }
   hooksScript(on, hooks)
   await begin($)
   const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  // The console: the router's own settings, no hooks section and no read of them.
   await ui.press({ key: 'nav-admin' })
+  expect(await ui.find({ type: 'Button', key: 'admin-sec-hooks' })).toBeFalsy()
+  expect(hooks.runs.some(argv => argv[2] === 'status')).toBe(false)
+  // The Configuration tab: the hooks read, each a row.
+  await ui.press({ key: 'nav-config' })
   expect(hooks.runs.some(argv => argv[2] === 'status')).toBe(true)
-  await openAdmin(ui, 'hooks')
   expect(await ui.find({ type: 'Button', key: 'hook-wiki-autocommit-on' })).toBeTruthy()
-  // Wide, the settings page: Hooks last in the side list, its page titled, each hook a row.
   const nodes = nodesOf(await ui.drawn())
-  const side = nodes.filter(n => n.type === 'Button' && String(keyOf(n)).startsWith('admin-sec-')).map(n => String(keyOf(n)))
-  expect(side.at(-1)).toBe('admin-sec-hooks')
-  expect(nodesOf(nodes.find(n => keyOf(n) === 'admin-hooks') as never).some(n => n.type === 'Text' && n.props?.size === 'heading' && textOf(n) === 'Hooks de ce workspace')).toBe(true)
   expect(nodes.find(n => keyOf(n) === 'hook-wiki-autocommit')?.props?.justifyContent).toBe('space-between')
   await ui.unmount()
 })
@@ -4257,8 +4264,7 @@ test('the hooks section links to its help: the guide of the hooks on GitHub', as
   hooksScript(on, hooks)
   await begin($)
   const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
-  await ui.press({ key: 'nav-admin' })
-  await openAdmin(ui, 'hooks')
+  await ui.press({ key: 'nav-config' })
   expect((await ui.find({ type: 'Button', key: 'hooks-help' }))?.props?.label).toBe('? Aide sur les hooks')
   await ui.press({ key: 'hooks-help' })
   expect(hooks.launched.at(-1)?.at(-1)).toBe('https://github.com/tboome33/obsidian-mcp-router/blob/main/docs/features/14-guide-des-hooks.md')

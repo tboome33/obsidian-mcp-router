@@ -114,7 +114,7 @@ export const FR: Record<string, string> = {
   "admin.yes": "Oui",
   "admin.no": "Non",
   "admin.noteOpen": "{on} sur {total}",
-  "nav.vaults": "Vaults",
+  "nav.vaults": "Vaults en cours",
   "nav.admin": "Administration",
   "admin.general": "Général",
   "admin.plugin": "Plugin",
@@ -299,5 +299,8 @@ export const FR: Record<string, string> = {
   "hooks.note": "{on} sur {total} activés",
   "hooks.alwaysOnShort": "toujours actif",
   "hooks.globalShort": "installé globalement",
-  "hooks.help": "? Aide sur les hooks"
+  "hooks.help": "? Aide sur les hooks",
+  "nav.add": "Ajouter un vault",
+  "nav.config": "Configuration",
+  "nav.workspace": "Workspace :"
 }

@@ -161,6 +161,8 @@ declare module 'claude-code' {
       wireguard: WireguardState | null
       /** This workspace's hooks as last read; null before the first read. */
       workspaceHooks: WorkspaceHooks | null
+      /** The Configuration tab is in sight (this workspace's hooks and settings). */
+      showConfig: boolean
     }
   }
 }
