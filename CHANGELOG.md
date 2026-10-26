@@ -10,6 +10,13 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.119.0] — 2026-10-26 — the pane in three tabs, the workspace on top; a guide to the hooks
+
+The vault panel gets a workspace line over three tabs — **Vaults en cours**, **Ajouter un vault**
+(two columns and two arrows) and **Configuration** (this workspace's hooks, enrichment mode,
+primary's rights, lock and conventions) — and the hooks section a link to a new guide to the
+eleven hooks. 0.118.0 is skipped: that number is held by unreleased work on another branch.
+
 ### The pane in three tabs, the workspace on top
 
 Asked by Roland, from a sketch: "Hooks de ce workspace" is not a router setting, and the vaults to
@@ -42,7 +49,7 @@ add do not belong under the vaults in use.
   three always on, then the eight to switch on per project — for each, what it is for, when to
   switch it on, what it does concretely and the variable that turns it off everywhere; how to
   switch one on, and what "installé globalement" means.
-- **"? Aide sur les hooks"** in the hooks section of the administration opens that guide on
+- **"? Aide sur les hooks"** in the hooks section (the Configuration tab) opens that guide on
   GitHub.
 - `docs/features/README.md` lists the guide, and counts eleven hooks, not nine.
 
