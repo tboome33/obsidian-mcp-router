@@ -10,6 +10,18 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### The console's shown section framed, and a gear you can see
+
+Roland, on screen (v0.119.0): the console's shown section, on a grey ground, could not be read, and
+the gear held down was a grey square.
+
+- **The section list of the ⚙ console**: no grey ground any more. The shown section is framed and
+  its name bold and plain; the pointer draws the same frame on any other row. Each row is three
+  rows tall, the frame's lines above and under the name; on the desktop the name is a text of its
+  own and a blank key is laid over the row, since a key draws its label in its own weight.
+- **The gear**: held down while the console is in sight, it turns the router's purple, on no grey
+  ground — the grey ground hid the grey gear.
+
 ## [0.119.0] — 2026-10-26 — the pane in three tabs, the workspace on top; a guide to the hooks
 
 The vault panel gets a workspace line over three tabs — **Vaults en cours**, **Ajouter un vault**
