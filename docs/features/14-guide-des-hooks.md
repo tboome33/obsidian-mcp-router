@@ -1,6 +1,6 @@
 # 14 · Guide des hooks
 
-> Cette fiche est l'aide de la section **Hooks de ce workspace** du panneau des vaults (roue dentée ⚙ → Hooks de ce workspace). Elle dit, pour chacun des onze hooks du router, **à quoi il sert**, **quand l'activer** et **ce qu'il fait concrètement** : s'il lit seulement, s'il écrit, s'il peut bloquer une réponse, s'il va sur le réseau. Pour l'historique et le fonctionnement interne détaillé, voir la [fiche 12](12-hooks-et-automatisations.md).
+> Cette fiche est l'aide de la section **Hooks de ce workspace** du panneau des vaults (onglet **Configuration**). Elle dit, pour chacun des onze hooks du router, **à quoi il sert**, **quand l'activer** et **ce qu'il fait concrètement** : s'il lit seulement, s'il écrit, s'il peut bloquer une réponse, s'il va sur le réseau. Pour l'historique et le fonctionnement interne détaillé, voir la [fiche 12](12-hooks-et-automatisations.md).
 
 ## Un hook, c'est quoi ?
 
@@ -56,7 +56,7 @@ flowchart LR
 
 ## Activer ou désactiver un hook
 
-1. Ouvrez le panneau des vaults (`/vaults`), puis la **roue dentée ⚙**.
+1. Ouvrez le panneau des vaults (`/vaults`), puis l'onglet **Configuration**.
 2. Section **Hooks de ce workspace** : les trois hooks toujours actifs sont marqués « ✓ toujours actif » ; chacun des huit autres a un interrupteur **Désactivé / Activé**.
 3. Le choix vaut **pour ce projet seulement** (le dossier de la session). Il prend effet au prochain événement ; pour un hook de démarrage, à la prochaine session.
 

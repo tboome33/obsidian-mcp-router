@@ -18,7 +18,7 @@ const TRUTHY = new Set(['true', '1', 'yes', 'on'])
 // The router as /mcp lists it: shipped as a plugin, or declared by hand.
 const SERVERS = ['plugin:obsidian-router:router', 'obsidian-router']
 const ROUTER_TOOL =
-  /^mcp__(plugin_obsidian-router_router|obsidian-router)__(confirm_workspace_binding|set_secondary_vault_mode|set_primary_vault_mode|lock_vault|unlock_vaults)$/
+  /^mcp__(plugin_obsidian-router_router|obsidian-router)__(confirm_workspace_binding|set_secondary_vault_mode|set_primary_vault_mode|lock_vault|unlock_vaults|set_auto_enrich_mode)$/
 
 const snapshot = atom({ plugin: 'obsidian-router', key: 'snapshot' } as const, null)
 const busy = atom({ plugin: 'obsidian-router', key: 'busy' } as const, null)
@@ -34,6 +34,9 @@ const showAdd = atom({ plugin: 'obsidian-router', key: 'showAdd' } as const, fal
 // The "add a vault" grid's search and its order (A → Z, or Z → A).
 const addQuery = atom({ plugin: 'obsidian-router', key: 'addQuery' } as const, '')
 const addSort = atom({ plugin: 'obsidian-router', key: 'addSort' } as const, 'az' as 'az' | 'za')
+// The names picked in each column of "Ajouter un vault": the vaults to add at
+// the left, the secondaries to take out at the right.
+const addPick = atom({ plugin: 'obsidian-router', key: 'addPick' } as const, { left: [] as string[], right: [] as string[] })
 // Bumped at every open and close of the pane: the band reads it so that it is
 // drawn again; what the toggle says comes from isPanePlaced.
 const paneVersion = atom({ plugin: 'obsidian-router', key: 'paneVersion' } as const, 0)
@@ -68,6 +71,10 @@ const pendingConventions = atom({ plugin: 'obsidian-router', key: 'pendingConven
 const wireguard = atom({ plugin: 'obsidian-router', key: 'wireguard' } as const, null)
 // This workspace's hooks, read when the console is opened.
 const workspaceHooks = atom({ plugin: 'obsidian-router', key: 'workspaceHooks' } as const, null)
+// The Configuration tab is in sight: this workspace's hooks and settings.
+const showConfig = atom({ plugin: 'obsidian-router', key: 'showConfig' } as const, false)
+// The primary vault's conventions, as a dry run of install_conventions reports them.
+const primaryConventions = atom({ plugin: 'obsidian-router', key: 'primaryConventions' } as const, null)
 
 // ---- Texts ----------------------------------------------------------------
 // Every text the pane and the band show comes from locales/<code>.json in the
@@ -326,6 +333,8 @@ type ListVaults = {
   configPath?: string
   /** A session lock set by lock_vault: runtime only, not in the binding. */
   lockedTo?: string | null
+  /** The wiki's auto-enrichment mode in force for this session. */
+  autoEnrichMode?: string
   /** The router's own version, as it reports it. */
   routerBuild?: { version?: string } | null
   /** The binding entry as the config file holds it, read once (router v0.101.0+). */
@@ -396,6 +405,10 @@ const WRITE_TOOLS = [
   'confirm_workspace_binding',
   'set_secondary_vault_mode',
   'set_primary_vault_mode',
+  'set_auto_enrich_mode',
+  'lock_vault',
+  'unlock_vaults',
+  'install_conventions',
   'register_remote_vault',
   'unregister_vault',
 ]
@@ -722,6 +735,7 @@ function toSnapshot(data: ListVaults, fetchedAt: number): Snapshot {
     ...(b?.primaryMode ? { primaryMode: b.primaryMode } : {}),
     isLocked: b?.locked ?? false,
     lockedTo: data.lockedTo ?? null,
+    autoEnrichMode: data.autoEnrichMode ?? null,
     isImported: b?.confirmedVia === 'migration',
     secondaries: (b?.also ?? []).filter(name => !pausedNames.has(name)).map(name => ({ ...row(name), mode: modeOf(name) })),
     available,
@@ -1454,6 +1468,34 @@ async function setHook($: EngineInterface, name: string, isOn: boolean) {
   }
 }
 
+// The primary vault's conventions: every one of the router's library, installed
+// or not, as a dry run of install_conventions reports them (it writes nothing);
+// a retired one is left out. Read when the Configuration tab opens and after an
+// install. No primary, nothing to read.
+async function readConventions($: EngineInterface) {
+  const vault = (await read($, snapshot))?.primary?.name
+  if (!vault) {
+    await update($, primaryConventions, () => null)
+
+    return
+  }
+  try {
+    const answer = JSON.parse(await call($, 'install_conventions', { vault, ids: [], dryRun: true })) as {
+      detection?: { id?: string; installed?: boolean }[]
+      catalogue?: { id?: string; retired?: boolean }[]
+      vaultLanguages?: { languages?: string[] | null } | null
+    }
+    const retired = new Set((answer.catalogue ?? []).filter(c => c.retired).map(c => c.id))
+    const items = (answer.detection ?? [])
+      .filter((d): d is { id: string; installed?: boolean } => typeof d.id === 'string' && !retired.has(d.id))
+      .map(d => ({ id: d.id, installed: d.installed === true }))
+    await update($, primaryConventions, () => ({ vault, items, languages: answer.vaultLanguages?.languages ?? null }))
+  } catch (err) {
+    await update($, primaryConventions, () => null)
+    await update($, failure, () => t('config.conventions.readFailed', { error: message(err) }))
+  }
+}
+
 // Bumped by every registration sent: an older one finishing late leaves the
 // form alone.
 let submission = 0
@@ -1639,10 +1681,11 @@ async function openVault($: EngineInterface, row: VaultRow) {
 const REPO_URL = 'https://github.com/tboome33/obsidian-mcp-router'
 const LATEST_MANIFEST = 'https://raw.githubusercontent.com/tboome33/obsidian-mcp-router/main/.claude-plugin/plugin.json'
 // Obsidian's mark, in its purple, before the button that opens a local vault in
-// The administration's seven sections, in order, each with its mark for the
+// The administration's six sections — the router's own settings; this
+// workspace's are the Configuration tab — in order, each with its mark for the
 // settings page's side list: a grey line icon on the desktop, a glyph on the
 // terminal (WireGuard's glyph is a dot, coloured by its state when drawn).
-const ADMIN_SECTIONS = ['general', 'open', 'create', 'wireguard', 'register', 'unregister', 'hooks'] as const
+const ADMIN_SECTIONS = ['general', 'open', 'create', 'wireguard', 'register', 'unregister'] as const
 type AdminSectionName = (typeof ADMIN_SECTIONS)[number]
 const sectionIcon = (d: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="${d}" fill="none" stroke="#8c8c8c" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`
@@ -1653,8 +1696,6 @@ const SECTION_MARKS: Record<AdminSectionName, { svg: string; glyph: string }> = 
   wireguard: { svg: sectionIcon('M8 2l5 2v4c0 3-2.2 5-5 6-2.8-1-5-3-5-6V4l5-2zM5.8 8l1.6 1.6L10.5 6.5'), glyph: '●' },
   register: { svg: sectionIcon('M6.5 9.5l3-3M5 8L3.5 9.5a2.1 2.1 0 003 3L8 11M8 5l1.5-1.5a2.1 2.1 0 013 3L11 8'), glyph: '⊕' },
   unregister: { svg: sectionIcon('M8 2.5a5.5 5.5 0 110 11 5.5 5.5 0 010-11zM5.5 8h5'), glyph: '−' },
-  // A switch: each hook is one, on or off for this workspace.
-  hooks: { svg: sectionIcon('M5 5h6a3 3 0 010 6H5a3 3 0 010-6zM11 6.5a1.5 1.5 0 110 3 1.5 1.5 0 010-3z'), glyph: '↪' },
 }
 // Obsidian (a surface with no SVG element keeps 💎). From LobeHub's icons
 // (@lobehub/icons-static-svg 1.98.0, obsidian-color.svg, MIT).
@@ -1772,6 +1813,8 @@ type Installs = { user: string | null; project: string | null }
 // This session's project folder, from session.start: the list holds every
 // project's installs, and only this one's is what its update changed.
 let projectDir: string | null = null
+// The workspace's name, as the pane's header shows it: its folder's last part.
+const workspaceName = () => (projectDir ?? '').split(/[\\/]/).filter(Boolean).pop() ?? ''
 async function installedNow($: EngineInterface, plugin: string): Promise<Installs | null> {
   try {
     const listed = await runClaude($, ['plugin', 'list', '--json'])
@@ -2048,17 +2091,18 @@ async function togglePane($: EngineInterface) {
 // The band is drawn in this session: neither the panel nor the band is off.
 const isBandOn = () => isEnvKnown && !isOptedOut && !isBandOptedOut
 
-// The pane's menu: the vaults, the adding list, the console. Each key shows
-// its view and brings it into the window: the top, or the adding bar. The
-// console folded drops a key typed but not sent; opened, it reads WireGuard
-// and this workspace's hooks.
-type PaneView = 'vaults' | 'add' | 'admin'
+// The pane's menu: three tabs — the vaults in use, adding one, this
+// workspace's configuration — and the ⚙ console at the right, the router's own
+// settings. Each key shows its view and brings it into the window. The console
+// folded drops a key typed but not sent; opened, it reads WireGuard. The
+// Configuration tab, opened, reads this workspace's hooks.
+type PaneView = 'vaults' | 'add' | 'config' | 'admin'
 // The administration shown, unfolded on one of its sections: what a flow that
 // leads there (no primary yet → creating a vault, an update → the general) does.
 async function showAdminSection($: EngineInterface, section: string) {
   await update($, adminSection, () => section)
+  await update($, showConfig, () => false)
   await update($, showAdmin, () => true)
-  void readHooks($)
 }
 // Each press of the menu: a later one supersedes it, whose scroll then stands.
 let navGeneration = 0
@@ -2067,13 +2111,18 @@ async function showView($: EngineInterface, view: PaneView) {
   const generation = navGeneration
   await update($, navOpen, () => false)
   const wasAdmin = await read($, showAdmin)
+  const wasConfig = await read($, showConfig)
   await update($, showAdmin, () => view === 'admin')
+  await update($, showConfig, () => view === 'config')
   if (view !== 'admin') {
     await update($, showAdd, () => view === 'add')
   }
   if (view === 'admin' && !wasAdmin) {
     void checkWireguard($).catch(() => undefined)
+  }
+  if (view === 'config' && !wasConfig) {
     void readHooks($)
+    void readConventions($)
   }
   if (view !== 'admin' && wasAdmin) {
     await update($, adminForm, now => (now.apiKey ? { ...now, apiKey: '' } : now))
@@ -2321,6 +2370,7 @@ export const register: Register = on => {
     // typed elsewhere would otherwise hide rows it cannot bring back.
     const query = Input ? typed.trim().toLowerCase() : ''
     const isAddShown = await read($, showAdd)
+    const isConfigShown = await read($, showConfig)
     const Select = !isPhone && 'Select' in els ? els.Select : null
     const Svg = 'Svg' in els ? els.Svg : null
     // Read so that a change of language draws the pane again.
@@ -2463,7 +2513,7 @@ export const register: Register = on => {
     // view marked, a rule under it; the gear at the right opens the console. The copy pinned
     // at the first row the window shows (`sticky`) is the same line, its keys
     // under `sticky-`, on an opaque ground and no frame.
-    const view: PaneView = isAdminShown ? 'admin' : isAddShown ? 'add' : 'vaults'
+    const view: PaneView = isAdminShown ? 'admin' : isConfigShown ? 'config' : isAddShown ? 'add' : 'vaults'
     const menuItem = (prefix: string, id: PaneView, label: string) =>
       id === view ? (
         <Button key={`${prefix}nav-${id}`} label={label} variant="primary" onPress={() => void showView($, id)} />
@@ -2587,21 +2637,38 @@ export const register: Register = on => {
     // (seen on v0.116.1, a "╮" after "☰ Vaults").
     // Two tabs: the administration is no tab but a key at the right, the gear
     // beside GitHub's mark (v0.116.11); the console in sight opens no tab.
-    const menuLabels: [PaneView, string][] = [['vaults', t('nav.vaults')], ...(snap ? [['add', t('add.open')] as [PaneView, string]] : [])]
-    const foldLabels = [t('nav.vaults'), t('add.open')]
+    // Three tabs (Roland, from a sketch): the vaults in use, adding one, and
+    // this workspace's configuration. Nothing to add before the router is read.
+    const menuLabels: [PaneView, string][] = [
+      ['vaults', t('nav.vaults')],
+      ...(snap ? [['add', t('nav.add')] as [PaneView, string]] : []),
+      ['config', t('nav.config')],
+    ]
+    const foldLabels = [t('nav.vaults'), t('nav.add'), t('nav.config')]
     const menuColumns = e.props.bodyColumns ?? 60
     const version = upd?.installed ? `v${upd.installed}` : ''
     // The version, the badge, the gear and GitHub's mark, with their gaps.
     const endCells = Math.max(cells(version), 10) + 2 + cells(t('update.badge')) + 2 + (Mark ? 3 : 2) + 2 + (Mark ? 3 : cells(t('footer.github')) + 1)
-    const isBurger = foldLabels.reduce((sum, label) => sum + cells(label) + 4 + 2 + 2, 0) + (Mark ? 3 : 0) + endCells > menuColumns
+    const isBurger = foldLabels.reduce((sum, label) => sum + cells(label) + 4 + 2 + 2, 0) + (Mark ? 6 : 0) + endCells > menuColumns
     const rule = (
       <Text dimColor wrap="truncate-end">
         {'─'.repeat(Math.max(1, menuColumns))}
       </Text>
     )
-    // A little larger than the keys' marks (16) and than it was (22): asked
-    // by Roland from a screenshot of v0.117.3.
-    const brand = Mark ? <Mark source={ROUTER_MARK} alt={markAlt(ROUTER_MARK)} width={26} height={26} /> : null
+    // As tall as the workspace's line and the tabs under it together (Roland,
+    // from a sketch): three rows.
+    const brand = Mark ? <Mark source={ROUTER_MARK} alt={markAlt(ROUTER_MARK)} width={44} height={44} /> : null
+    // The workspace the pane speaks for, on a line of its own above the tabs.
+    const workspaceLine = (prefix: string) => (
+      <Box key={`${prefix}nav-workspace`} flexDirection="row" gap={1} alignItems="center" height={1}>
+        <Text size="caption" dimColor>
+          {t('nav.workspace')}
+        </Text>
+        <Text size="caption" weight="semibold" wrap="truncate-end">
+          {workspaceName()}
+        </Text>
+      </Box>
+    )
     const repository = (prefix: string) =>
       iconKey(GITHUB_MARK, t('footer.github'), `${prefix}github`, () => void openUrl($, REPO_URL))
     // The gear: the console shown, or the vaults again while it is; drawn
@@ -2632,6 +2699,7 @@ export const register: Register = on => {
     const navMenu = (prefix: string) =>
       isBurger ? (
         <Box key={`${prefix}nav`} flexDirection="column">
+          {workspaceLine(prefix)}
           <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
             <Box flexDirection="row" gap={1} alignItems="center">
               {brand}
@@ -2663,19 +2731,24 @@ export const register: Register = on => {
         // before the tabs; every tab ends on it (v0.117.4), nothing paints
         // over it any more.
         <Box key={`${prefix}nav`} flexDirection="column">
-          <Box key={`${prefix}nav-rule`} position="absolute" top={2} left={0} right={0} height={1} overflow="hidden">
+          <Box key={`${prefix}nav-rule`} position="absolute" top={3} left={0} right={0} height={1} overflow="hidden">
             <Box position="absolute" top={0} left={-1} right={-1} height={2} borderStyle="single" borderColor="inactive" />
           </Box>
-          <Box flexDirection="row" justifyContent="space-between" alignItems="flex-start" gap={2}>
-            <Box flexDirection="row" gap={2} alignItems="flex-start">
-              {brand && (
-                <Box height={2} alignItems="center">
-                  {brand}
+          <Box flexDirection="row" gap={2} alignItems="flex-start">
+            {brand && (
+              <Box key={`${prefix}nav-brand`} height={3} alignItems="center" justifyContent="center" flexShrink={0}>
+                {brand}
+              </Box>
+            )}
+            <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+              {workspaceLine(prefix)}
+              <Box flexDirection="row" justifyContent="space-between" alignItems="flex-start" gap={2}>
+                <Box flexDirection="row" gap={2} alignItems="flex-start">
+                  {menuLabels.map(([id, label]) => menuTab(prefix, id, label))}
                 </Box>
-              )}
-              {menuLabels.map(([id, label]) => menuTab(prefix, id, label))}
+                {menuEnd(prefix)}
+              </Box>
             </Box>
-            {menuEnd(prefix)}
           </Box>
         </Box>
       )
@@ -2840,12 +2913,8 @@ export const register: Register = on => {
           removable.length === 0 ? t('unregister.noteNone') : removable.length === 1 ? t('unregister.noteOne') : t('unregister.noteMany', { count: removable.length }),
         ),
       ],
-      // How many are on here, the ones wired machine-wide counted.
-      hooks: hooks
-        ? [headNote('note-hooks', t('hooks.note', { on: hooks.optIn.filter(h => h.enabled || h.global).length, total: hooks.optIn.length }))]
-        : [],
     }
-    // Two layouts for the same seven sections. Wide enough (a desktop pane): a
+    // Two layouts for the same six sections. Wide enough (a desktop pane): a
     // settings page, as ChatGPT's or Perplexity's — the sections listed down
     // a side column (an icon, the name, the one shown on a grey ground), the
     // shown section's title, its state line and its settings in a rounded
@@ -2977,7 +3046,6 @@ export const register: Register = on => {
       wireguard: t('wg.title'),
       register: t('register.title'),
       unregister: t('unregister.title'),
-      hooks: t('hooks.title'),
     }
     const adminNav = (
       <Box key="admin-nav" flexDirection="column" width={navWidth} flexShrink={0}>
@@ -3003,6 +3071,64 @@ export const register: Register = on => {
           )
         })}
       </Box>
+    )
+    // This workspace's hooks: the three read-only ones always on, the others
+    // switched here (the Configuration tab).
+    const hooksBody = (
+    <Box key="admin-hooks-body" flexDirection="column" gap={1}>
+      {/* What the section is for, and its help: the guide of the hooks on GitHub. */}
+      <Box key="admin-hooks-head" flexDirection="row" justifyContent="space-between" alignItems="center" gap={2} flexWrap="wrap">
+        <Box flexShrink={1}>
+          <Text size="caption" dimColor>
+            {hooks ? t('hooks.intro', { workspace: hooks.workspace }) : t('hooks.reading')}
+          </Text>
+        </Box>
+        <Button key="hooks-help" label={t('hooks.help')} plain onPress={() => void openUrl($, HOOKS_HELP_URL)} />
+      </Box>
+      {hooks &&
+        settingRows('admin-hooks-rows', [
+          // The read-only ones: on everywhere, no switch.
+          ...hooks.alwaysOn.map(name =>
+            settingRow(
+              `hook-always-${name}`,
+              name,
+              <Text key={`hook-always-${name}-on`} size="caption" color="success">
+                {`✓ ${t('hooks.alwaysOnShort')}`}
+              </Text>,
+              t(`hook.${name}`),
+            ),
+          ),
+          // The others, off by default. One still wired machine-wide is
+          // said so, with no switch that would not hold.
+          ...hooks.optIn.map(hook =>
+            settingRow(
+              `hook-${hook.name}`,
+              hook.name,
+              hook.global ? (
+                <Text key={`hook-${hook.name}-global`} size="caption" color="warning">
+                  {t('hooks.globalShort')}
+                </Text>
+              ) : (
+                toggle<'on' | 'off'>(
+                  `hook-${hook.name}`,
+                  [
+                    { value: 'off', label: t('hooks.off') },
+                    { value: 'on', label: t('hooks.on') },
+                  ],
+                  hook.enabled ? 'on' : 'off',
+                  value => (value === 'on') !== hook.enabled && void setHook($, hook.name, value === 'on'),
+                )
+              ),
+              hook.global ? `${t(`hook.${hook.name}`)} ${t('hooks.global')}` : t(`hook.${hook.name}`),
+            ),
+          ),
+        ])}
+      {hooks && (
+        <Text size="caption" dimColor>
+          {t('hooks.whenApplied')}
+        </Text>
+      )}
+    </Box>
     )
     const adminSections = isAdminShown
       ? [
@@ -3378,64 +3504,6 @@ export const register: Register = on => {
               </Text>
             </Box>,
           ),
-          card(
-            'admin-hooks',
-            t('hooks.title'),
-            <Box key="admin-hooks-body" flexDirection="column" gap={1}>
-              {/* What the section is for, and its help: the guide of the hooks on GitHub. */}
-              <Box key="admin-hooks-head" flexDirection="row" justifyContent="space-between" alignItems="center" gap={2} flexWrap="wrap">
-                <Box flexShrink={1}>
-                  <Text size="caption" dimColor>
-                    {hooks ? t('hooks.intro', { workspace: hooks.workspace }) : t('hooks.reading')}
-                  </Text>
-                </Box>
-                <Button key="hooks-help" label={t('hooks.help')} plain onPress={() => void openUrl($, HOOKS_HELP_URL)} />
-              </Box>
-              {hooks &&
-                settingRows('admin-hooks-rows', [
-                  // The read-only ones: on everywhere, no switch.
-                  ...hooks.alwaysOn.map(name =>
-                    settingRow(
-                      `hook-always-${name}`,
-                      name,
-                      <Text key={`hook-always-${name}-on`} size="caption" color="success">
-                        {`✓ ${t('hooks.alwaysOnShort')}`}
-                      </Text>,
-                      t(`hook.${name}`),
-                    ),
-                  ),
-                  // The others, off by default. One still wired machine-wide is
-                  // said so, with no switch that would not hold.
-                  ...hooks.optIn.map(hook =>
-                    settingRow(
-                      `hook-${hook.name}`,
-                      hook.name,
-                      hook.global ? (
-                        <Text key={`hook-${hook.name}-global`} size="caption" color="warning">
-                          {t('hooks.globalShort')}
-                        </Text>
-                      ) : (
-                        toggle<'on' | 'off'>(
-                          `hook-${hook.name}`,
-                          [
-                            { value: 'off', label: t('hooks.off') },
-                            { value: 'on', label: t('hooks.on') },
-                          ],
-                          hook.enabled ? 'on' : 'off',
-                          value => (value === 'on') !== hook.enabled && void setHook($, hook.name, value === 'on'),
-                        )
-                      ),
-                      hook.global ? `${t(`hook.${hook.name}`)} ${t('hooks.global')}` : t(`hook.${hook.name}`),
-                    ),
-                  ),
-                ])}
-              {hooks && (
-                <Text size="caption" dimColor>
-                  {t('hooks.whenApplied')}
-                </Text>
-              )}
-            </Box>,
-          ),
         ]
       : []
     const admin = isSidebar ? (
@@ -3477,6 +3545,36 @@ export const register: Register = on => {
           {sticky}
         </Box>
       )
+    }
+    // The Configuration tab: this workspace's own settings, each a section.
+    const configPage = (extra: unknown[]) => (
+      <Box flexDirection="column" gap={1}>
+        {navMenu('')}
+        {working && (
+          <Text size="caption" color="warning">
+            {working}…
+          </Text>
+        )}
+        {problems}
+        <Box key="config-hooks" flexDirection="column" gap={1}>
+          <Box key="config-hooks-head" flexDirection="row" gap={2} alignItems="center" flexWrap="wrap">
+            {section(t('hooks.title'))}
+            {hooks && (
+              <Box key="config-hooks-note" flexDirection="row">
+                <Text size="caption" dimColor>
+                  {t('hooks.note', { on: hooks.optIn.filter(h => h.enabled || h.global).length, total: hooks.optIn.length })}
+                </Text>
+              </Box>
+            )}
+          </Box>
+          {hooksBody}
+        </Box>
+        {extra as never}
+        {sticky}
+      </Box>
+    )
+    if (isConfigShown && !snap) {
+      return configPage([])
     }
     if (!snap) {
       return (
@@ -4148,6 +4246,335 @@ export const register: Register = on => {
       </Box>
     )
 
+    // "Ajouter un vault": two columns — the vaults that can be added at the left,
+    // this workspace's secondaries at the right — and two arrows between them
+    // that move the names picked (Roland, from a sketch). A name is picked by a
+    // press on it; → binds the picked vaults as secondaries (read-only with a
+    // per-write yes, as any new secondary), ← takes the picked secondaries out.
+    // The primary and the rights stay on the tiles of "Vaults en cours". Wide
+    // enough, the three side by side; narrower, one under the other.
+    const pick = await read($, addPick)
+    const boundNames = allSecondaries.map(entry => entry.row.name)
+    const leftPicked = pick.left.filter(name => snap.available.some(v => v.name === name))
+    const rightPicked = pick.right.filter(name => boundNames.includes(name))
+    const togglePick = (side: 'left' | 'right', name: string) =>
+      void update($, addPick, now => ({
+        ...now,
+        [side]: now[side].includes(name) ? now[side].filter(n => n !== name) : [...now[side], name],
+      }))
+    const moveRight = () => {
+      const names = leftPicked
+      if (names.length === 0) {
+        return
+      }
+      void update($, addPick, now => ({ ...now, left: [] }))
+      void rebind(
+        $,
+        {
+          doing: tn('action.addMany.doing', names.length, { names: names.join(', ') }),
+          done: tn('action.addMany.done', names.length, { names: names.join(', ') }),
+        },
+        shown,
+        current => [...current, ...names.filter(n => !current.includes(n))],
+        {
+          shows: now => ({
+            ...now,
+            secondaries: [
+              ...now.secondaries,
+              ...now.available.filter(r => names.includes(r.name) && !now.secondaries.some(x => x.name === r.name)).map(r => ({ ...r, mode: 'soft' as const })),
+            ],
+            available: now.available.filter(r => !names.includes(r.name)),
+          }),
+        },
+      )
+    }
+    const moveLeft = () => {
+      const names = rightPicked
+      if (names.length === 0) {
+        return
+      }
+      void update($, addPick, now => ({ ...now, right: [] }))
+      void rebind(
+        $,
+        {
+          doing: tn('action.removeMany.doing', names.length, { names: names.join(', ') }),
+          done: tn('action.removeMany.done', names.length, { names: names.join(', ') }),
+        },
+        shown,
+        current => current.filter(n => !names.includes(n)),
+        {
+          shows: now => ({
+            ...now,
+            secondaries: now.secondaries.filter(r => !names.includes(r.name)),
+            paused: (now.paused ?? []).filter(r => !names.includes(r.name)),
+          }),
+        },
+      )
+    }
+    const placeShort = (v: VaultRow) => (isRemote(v) ? t('link.remoteShort') : t('link.localShort'))
+    const pickRow = (side: 'left' | 'right', v: VaultRow, isPicked: boolean, isDim = false) => (
+      <Box
+        key={`pick-${side}-row-${v.name}`}
+        flexDirection="row"
+        gap={1}
+        alignItems="center"
+        paddingX={1}
+        backgroundColor={isPicked ? 'diffAddedDimmed' : undefined}
+      >
+        {dot(v.online, isRemote(v))}
+        <Button
+          key={`pick-${side}-${v.name}`}
+          label={`${isPicked ? '☑' : '☐'} ${v.name}`}
+          plain
+          dimColor={isDim && !isPicked}
+          onPress={() => togglePick(side, v.name)}
+        />
+        <Text size="caption" dimColor>
+          {placeShort(v)}
+        </Text>
+      </Box>
+    )
+    const searchedAdd = Input ? addTyped.trim().toLowerCase() : ''
+    const leftRows = snap.available
+      .filter(v => !searchedAdd || v.name.toLowerCase().includes(searchedAdd))
+      .sort((x, y) => x.name.localeCompare(y.name, undefined, { sensitivity: 'base' }))
+    // Side by side, the two columns share the pane's width less the arrows'
+    // (five cells) and the two gaps; one under the other, each takes it all.
+    const isTransferWide = (e.props.bodyColumns ?? 60) >= 72
+    const transferWidth = isTransferWide ? Math.floor(((e.props.bodyColumns ?? 60) - 5 - 2) / 2) : undefined
+    const transferColumn = (key: string, title: string, rows: unknown[], empty: string, tools?: unknown) => (
+      <Box key={key} flexDirection="column" gap={1} width={transferWidth} flexShrink={1} borderStyle="round" borderColor="inactive" paddingX={1}>
+        <Text weight="semibold">{title}</Text>
+        {tools as never}
+        {rows.length === 0 ? (
+          <Text size="caption" dimColor>
+            {empty}
+          </Text>
+        ) : (
+          (rows as never)
+        )}
+      </Box>
+    )
+    const arrows = (
+      <Box
+        key="add-arrows"
+        flexDirection={isTransferWide ? 'column' : 'row'}
+        gap={1}
+        alignItems="center"
+        justifyContent="center"
+        flexShrink={0}
+      >
+        <Button
+          key="add-move-right"
+          label={t('add.moveRight')}
+          variant={leftPicked.length > 0 ? 'primary' : 'secondary'}
+          dimColor={leftPicked.length === 0}
+          onPress={moveRight}
+        />
+        <Button
+          key="add-move-left"
+          label={t('add.moveLeft')}
+          variant={rightPicked.length > 0 ? 'primary' : 'secondary'}
+          dimColor={rightPicked.length === 0}
+          onPress={moveLeft}
+        />
+      </Box>
+    )
+    const transfer = snap.primary ? (
+      <Box key="add-transfer" flexDirection="column" gap={1}>
+        <Box key="add-head" flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+          {section(t('add.title'))}
+          <Text size="caption" dimColor>
+            {t('add.transferHint')}
+          </Text>
+        </Box>
+        <Box key="add-columns" flexDirection={isTransferWide ? 'row' : 'column'} gap={1} alignItems={isTransferWide ? 'stretch' : undefined}>
+          {transferColumn(
+            'add-available',
+            t('add.columnAvailable', { count: snap.available.length }),
+            leftRows.map(v => pickRow('left', v, leftPicked.includes(v.name))),
+            searchedAdd ? t('add.noMatch') : t('add.none'),
+            Input ? (
+              <Box key="add-search-box" flexShrink={1}>
+                <Input
+                  key="add-search"
+                  placeholder={t('add.search')}
+                  value={addTyped}
+                  submitLabel={t('add.filter')}
+                  onInput={(value: string) => void update($, addQuery, () => value)}
+                  onSubmit={(value: string) => void update($, addQuery, () => value)}
+                />
+              </Box>
+            ) : null,
+          )}
+          {arrows}
+          {transferColumn(
+            'add-bound',
+            t('add.columnBound', { count: allSecondaries.length }),
+            allSecondaries.map(({ row, isPaused }) => pickRow('right', row, rightPicked.includes(row.name), isPaused)),
+            t('secondaries.none'),
+          )}
+        </Box>
+      </Box>
+    ) : (
+      adding
+    )
+    if (isAddShown && !isConfigShown) {
+      return (
+        <Box flexDirection="column" gap={1}>
+          {navMenu('')}
+          {statusLine}
+          {problems}
+          {transfer}
+          {sticky}
+        </Box>
+      )
+    }
+
+    if (isConfigShown) {
+      const configSection = (key: string, title: string, note: string | null, body: unknown) => (
+        <Box key={key} flexDirection="column" gap={1}>
+          <Box key={`${key}-head`} flexDirection="row" gap={2} alignItems="center" flexWrap="wrap">
+            {section(title)}
+            {note && (
+              <Text size="caption" dimColor>
+                {note}
+              </Text>
+            )}
+          </Box>
+          {body as never}
+        </Box>
+      )
+      // The wiki's auto-enrichment: how freely Claude saves to the vault. Set
+      // for this workspace (its .env); FullAuto is never written there, so the
+      // tab offers the three others and only tells FullAuto when it is in force.
+      const enrichModes = ['ClaudeAsk', 'Hybrid', 'off'] as const
+      const enrichNow = snap.autoEnrichMode ?? 'ClaudeAsk'
+      const enrich = configSection(
+        'config-enrich',
+        t('config.enrich.title'),
+        t(`config.enrich.${enrichNow === 'FullAuto' ? 'fullAuto' : enrichNow}`),
+        <Box key="config-enrich-body" flexDirection="column" gap={1}>
+          {toggle<string>(
+            'enrich',
+            enrichModes.map(mode => ({ value: mode, label: t(`config.enrich.label.${mode}`) })),
+            enrichNow,
+            mode =>
+              mode !== enrichNow &&
+              void act($, {
+                doing: t('action.enrich.doing', { mode: t(`config.enrich.label.${mode}`) }),
+                done: t('action.enrich.done', { mode: t(`config.enrich.label.${mode}`) }),
+                tool: 'set_auto_enrich_mode',
+                args: () => ({ mode, persist: true }),
+                shows: now => ({ ...now, autoEnrichMode: mode }),
+              }),
+          )}
+          <Text size="caption" dimColor>
+            {t('config.enrich.hint')}
+          </Text>
+        </Box>,
+      )
+      // The primary vault: its write rights, and whether the workspace reaches
+      // it alone.
+      const lockNow = snap.isLocked
+      const primarySettings = snap.primary
+        ? [
+            configSection(
+              'config-rights',
+              t('config.rights.title'),
+              snap.primary.name,
+              <Box key="config-rights-body" flexDirection="column" gap={1}>
+                {rightsOf(snap.primary, null)}
+                <Text size="caption" dimColor>
+                  {t('config.rights.hint')}
+                </Text>
+              </Box>,
+            ),
+            configSection(
+              'config-lock',
+              t('config.lock.title'),
+              null,
+              <Box key="config-lock-body" flexDirection="column" gap={1}>
+                {toggle<'all' | 'primary'>(
+                  'lock',
+                  [
+                    { value: 'all', label: t('config.lock.all') },
+                    { value: 'primary', label: t('config.lock.primary', { vault: snap.primary.name }) },
+                  ],
+                  lockNow ? 'primary' : 'all',
+                  value =>
+                    (value === 'primary') !== lockNow &&
+                    void act($, {
+                      doing: value === 'primary' ? t('action.lock.doing') : t('action.unlock.doing'),
+                      done: value === 'primary' ? t('action.lock.done', { vault: snap.primary?.name ?? '' }) : t('action.unlock.done'),
+                      tool: value === 'primary' ? 'lock_vault' : 'unlock_vaults',
+                      args: () => (value === 'primary' ? { vault: snap.primary?.name ?? '', persist: true } : { persist: true }),
+                      shows: now => ({ ...now, isLocked: value === 'primary' }),
+                    }),
+                )}
+                <Text size="caption" dimColor>
+                  {t('config.lock.hint')}
+                </Text>
+              </Box>,
+            ),
+          ]
+        : []
+      // The primary vault's conventions: installed ones ticked, the others with
+      // their own Install key. "languages" carries the vault's own value: it is
+      // set with /obsidian-router:conventions, which asks for it.
+      const conv = await read($, primaryConventions)
+      const convShown = conv && snap.primary && conv.vault === snap.primary.name ? conv : null
+      const conventionsSection = snap.primary
+        ? configSection(
+            'config-conventions',
+            t('config.conventions.title'),
+            convShown
+              ? t('config.conventions.note', { on: convShown.items.filter(c => c.installed).length, total: convShown.items.length, vault: snap.primary.name })
+              : null,
+            !convShown ? (
+              <Text key="config-conventions-reading" size="caption" dimColor>
+                {t('config.conventions.reading')}
+              </Text>
+            ) : (
+              settingRows(
+                'config-conventions-rows',
+                convShown.items.map(c =>
+                  settingRow(
+                    `conv-${c.id}`,
+                    c.id,
+                    c.installed ? (
+                      <Text key={`conv-${c.id}-on`} size="caption" color="success">
+                        {`✓ ${t('config.conventions.installed')}`}
+                      </Text>
+                    ) : c.id === 'languages' ? (
+                      <Text key={`conv-${c.id}-ask`} size="caption" dimColor>
+                        {t('config.conventions.languages')}
+                      </Text>
+                    ) : (
+                      <Button
+                        key={`conv-install-${c.id}`}
+                        label={t('config.conventions.install')}
+                        variant="secondary"
+                        onPress={() =>
+                          void act($, {
+                            doing: t('action.convention.doing', { id: c.id }),
+                            done: t('action.convention.done', { id: c.id }),
+                            tool: 'install_conventions',
+                            args: () => ({ vault: convShown.vault, ids: [c.id] }),
+                          }).then(() => readConventions($))
+                        }
+                      />
+                    ),
+                  ),
+                ),
+              )
+            ),
+          )
+        : null
+
+      return configPage([enrich, ...primarySettings, ...(conventionsSection ? [conventionsSection] : [])])
+    }
+
     return (
       <Box flexDirection="column" gap={1}>
         {navMenu('')}
@@ -4182,7 +4609,7 @@ export const register: Register = on => {
         )}
         {primary}
         {secondaries}
-        {adding}
+        {!snap.primary && adding}
         {sticky}
       </Box>
     )

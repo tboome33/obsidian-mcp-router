@@ -10,6 +10,30 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### The pane in three tabs, the workspace on top
+
+Asked by Roland, from a sketch: "Hooks de ce workspace" is not a router setting, and the vaults to
+add do not belong under the vaults in use.
+
+- **"Workspace : <name>"** on a line above the tabs; the router's mark at the left, as tall as that
+  line and the tabs together.
+- **Three tabs**: **Vaults en cours** (the primary and the secondaries; no vault to add under them
+  any more, save the choice of a primary while there is none), **Ajouter un vault** and
+  **Configuration**. The ⚙ gear stays at the right: the router's own settings, in six sections.
+- **Ajouter un vault**: two columns — the vaults that can be added at the left, with a search,
+  this workspace's secondaries at the right — and two arrows between them: tick names, → binds
+  them as secondaries, ← takes the ticked secondaries out. Side by side when the pane is wide
+  enough, one under the other otherwise. The Locaux / Distants tabs, the sort and the add tiles
+  are gone.
+- **Configuration**: this workspace's settings — its hooks (moved out of the console), the wiki's
+  enrichment mode (Ask / Hybrid / Off, kept for the workspace; FullAuto is never set from a
+  project), the primary vault's rights, the reachable vaults (all, or the primary only: the lock,
+  kept for the workspace) and the primary vault's conventions (read with a dry run of
+  `install_conventions`, each missing one with its Install key; `languages` is installed with
+  `/obsidian-router:conventions`, which asks for the language).
+- The panel's write permissions now name `set_auto_enrich_mode`, `lock_vault`, `unlock_vaults` and
+  `install_conventions` too, the tools the Configuration tab calls.
+
 ### A guide to the hooks, and its link in the panel
 
 - **`docs/features/14-guide-des-hooks.md`**: the help for the hooks section, in the
