@@ -10,6 +10,18 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### A guide to the hooks, and its link in the panel
+
+- **`docs/features/14-guide-des-hooks.md`**: the help for the hooks section, in the
+  `docs/features` tree. The eleven hooks at a glance (when each fires, what it does in one line,
+  whether it reads, writes, blocks or goes on the network) and a diagram of when they fire; the
+  three always on, then the eight to switch on per project — for each, what it is for, when to
+  switch it on, what it does concretely and the variable that turns it off everywhere; how to
+  switch one on, and what "installé globalement" means.
+- **"? Aide sur les hooks"** in the hooks section of the administration opens that guide on
+  GitHub.
+- `docs/features/README.md` lists the guide, and counts eleven hooks, not nine.
+
 ## [0.117.5] — 2026-10-26 — the tabs end on the rule, the open one bold and purple; the tile's rule in one row; the legend lights the tiles, one way; the opt-in hooks
 
 Asked by Roland from a screenshot of v0.117.3 and a mockup over it:

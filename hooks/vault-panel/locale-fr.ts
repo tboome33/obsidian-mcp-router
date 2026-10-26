@@ -298,5 +298,6 @@ export const FR: Record<string, string> = {
   "hook.check-router-update": "Une fois par jour, vérifie sur GitHub si une version plus récente du router existe.",
   "hooks.note": "{on} sur {total} activés",
   "hooks.alwaysOnShort": "toujours actif",
-  "hooks.globalShort": "installé globalement"
+  "hooks.globalShort": "installé globalement",
+  "hooks.help": "? Aide sur les hooks"
 }

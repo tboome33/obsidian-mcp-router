@@ -329,5 +329,6 @@
   "hook.check-router-update": "Once a day, checks GitHub for a newer router version.",
   "hooks.note": "{on} of {total} on",
   "hooks.alwaysOnShort": "always on",
-  "hooks.globalShort": "installed machine-wide"
+  "hooks.globalShort": "installed machine-wide",
+  "hooks.help": "? Help on hooks"
 }
