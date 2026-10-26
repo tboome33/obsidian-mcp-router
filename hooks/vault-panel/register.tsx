@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { AdminForm, CreateForm, Secondary, SecondaryMode, Snapshot, Tab, VaultActivity, VaultRow, WireguardState } from '../../types'
+import type { AdminForm, CreateForm, Secondary, SecondaryMode, Snapshot, Tab, VaultActivity, VaultRow, WireguardState, WorkspaceHooks } from '../../types'
 import { FR } from './locale-fr'
 
 const PANE = 'vault-panel'
@@ -66,6 +66,8 @@ const createForm = atom({ plugin: 'obsidian-router', key: 'createForm' } as cons
 const bandPick = atom({ plugin: 'obsidian-router', key: 'bandPick' } as const, null)
 const pendingConventions = atom({ plugin: 'obsidian-router', key: 'pendingConventions' } as const, null)
 const wireguard = atom({ plugin: 'obsidian-router', key: 'wireguard' } as const, null)
+// This workspace's hooks, read when the console is opened.
+const workspaceHooks = atom({ plugin: 'obsidian-router', key: 'workspaceHooks' } as const, null)
 
 // ---- Texts ----------------------------------------------------------------
 // Every text the pane and the band show comes from locales/<code>.json in the
@@ -1392,6 +1394,63 @@ function readSoon($: EngineInterface) {
   $.clock.after(5_000, () => background($))
 }
 
+// ---- Hooks ------------------------------------------------------------------
+// The plugin runs its three read-only hooks everywhere; every other one runs
+// behind hooks/opt-in-gate.mjs, only in a workspace switched on here. The
+// choices live in the user's own workspace-hooks.json, beside the router's
+// config; scripts/workspace-hooks.mjs reads and writes it (a hooks module has
+// no Node of its own), for the session's folder.
+async function hooksCli($: EngineInterface, args: string[]): Promise<WorkspaceHooks> {
+  const root = pluginRoot($)
+  if (!root) {
+    throw new Error(t('hooks.noRoot'))
+  }
+  const cwd = await $.session.cwd()
+  const ran = await $.process.run(['node', `${root}/scripts/workspace-hooks.mjs`, ...args, '--workspace', cwd], {
+    timeoutMs: 10_000,
+  })
+  const answer = JSON.parse(ran.stdout.trim() || '{}') as Partial<WorkspaceHooks> & { error?: string }
+  if (ran.exitCode !== 0 || answer.error || !Array.isArray(answer.optIn) || !Array.isArray(answer.alwaysOn)) {
+    throw new Error(answer.error ?? (ran.stderr.trim() || t('error.launcherExit', { program: 'node', code: ran.exitCode })))
+  }
+
+  return { workspace: answer.workspace ?? cwd, alwaysOn: answer.alwaysOn, optIn: answer.optIn }
+}
+
+// A read in flight: the console, opened again meanwhile, does not start another.
+let isReadingHooks = false
+
+async function readHooks($: EngineInterface) {
+  if (isReadingHooks) {
+    return
+  }
+  isReadingHooks = true
+  try {
+    const found = await hooksCli($, ['status'])
+    await update($, workspaceHooks, () => found)
+  } catch (err) {
+    await update($, failure, () => t('hooks.readFailed', { error: message(err) }))
+  } finally {
+    isReadingHooks = false
+  }
+}
+
+// Shown switched at once; the answer (or a re-read, on a failure) is what stays.
+async function setHook($: EngineInterface, name: string, isOn: boolean) {
+  await update($, workspaceHooks, now =>
+    now ? { ...now, optIn: now.optIn.map(hook => (hook.name === name ? { ...hook, enabled: isOn } : hook)) } : now,
+  )
+  try {
+    const found = await hooksCli($, ['set', '--hook', name, isOn ? '--on' : '--off'])
+    await update($, workspaceHooks, () => found)
+    await update($, failure, () => null)
+    $.ui.toast(t(isOn ? 'hooks.toastOn' : 'hooks.toastOff', { name }))
+  } catch (err) {
+    await update($, failure, () => t('hooks.writeFailed', { name, error: message(err) }))
+    await readHooks($)
+  }
+}
+
 // Bumped by every registration sent: an older one finishing late leaves the
 // form alone.
 let submission = 0
@@ -1574,10 +1633,10 @@ async function openVault($: EngineInterface, row: VaultRow) {
 const REPO_URL = 'https://github.com/tboome33/obsidian-mcp-router'
 const LATEST_MANIFEST = 'https://raw.githubusercontent.com/tboome33/obsidian-mcp-router/main/.claude-plugin/plugin.json'
 // Obsidian's mark, in its purple, before the button that opens a local vault in
-// The administration's six sections, in order, each with its mark for the
+// The administration's seven sections, in order, each with its mark for the
 // settings page's side list: a grey line icon on the desktop, a glyph on the
 // terminal (WireGuard's glyph is a dot, coloured by its state when drawn).
-const ADMIN_SECTIONS = ['general', 'open', 'create', 'wireguard', 'register', 'unregister'] as const
+const ADMIN_SECTIONS = ['general', 'open', 'create', 'wireguard', 'register', 'unregister', 'hooks'] as const
 type AdminSectionName = (typeof ADMIN_SECTIONS)[number]
 const sectionIcon = (d: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="${d}" fill="none" stroke="#8c8c8c" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`
@@ -1588,6 +1647,8 @@ const SECTION_MARKS: Record<AdminSectionName, { svg: string; glyph: string }> = 
   wireguard: { svg: sectionIcon('M8 2l5 2v4c0 3-2.2 5-5 6-2.8-1-5-3-5-6V4l5-2zM5.8 8l1.6 1.6L10.5 6.5'), glyph: '●' },
   register: { svg: sectionIcon('M6.5 9.5l3-3M5 8L3.5 9.5a2.1 2.1 0 003 3L8 11M8 5l1.5-1.5a2.1 2.1 0 013 3L11 8'), glyph: '⊕' },
   unregister: { svg: sectionIcon('M8 2.5a5.5 5.5 0 110 11 5.5 5.5 0 010-11zM5.5 8h5'), glyph: '−' },
+  // A switch: each hook is one, on or off for this workspace.
+  hooks: { svg: sectionIcon('M5 5h6a3 3 0 010 6H5a3 3 0 010-6zM11 6.5a1.5 1.5 0 110 3 1.5 1.5 0 010-3z'), glyph: '↪' },
 }
 // Obsidian (a surface with no SVG element keeps 💎). From LobeHub's icons
 // (@lobehub/icons-static-svg 1.98.0, obsidian-color.svg, MIT).
@@ -1983,13 +2044,15 @@ const isBandOn = () => isEnvKnown && !isOptedOut && !isBandOptedOut
 
 // The pane's menu: the vaults, the adding list, the console. Each key shows
 // its view and brings it into the window: the top, or the adding bar. The
-// console folded drops a key typed but not sent; opened, it reads WireGuard.
+// console folded drops a key typed but not sent; opened, it reads WireGuard
+// and this workspace's hooks.
 type PaneView = 'vaults' | 'add' | 'admin'
 // The administration shown, unfolded on one of its sections: what a flow that
 // leads there (no primary yet → creating a vault, an update → the general) does.
 async function showAdminSection($: EngineInterface, section: string) {
   await update($, adminSection, () => section)
   await update($, showAdmin, () => true)
+  void readHooks($)
 }
 // Each press of the menu: a later one supersedes it, whose scroll then stands.
 let navGeneration = 0
@@ -2004,6 +2067,7 @@ async function showView($: EngineInterface, view: PaneView) {
   }
   if (view === 'admin' && !wasAdmin) {
     void checkWireguard($).catch(() => undefined)
+    void readHooks($)
   }
   if (view !== 'admin' && wasAdmin) {
     await update($, adminForm, now => (now.apiKey ? { ...now, apiKey: '' } : now))
@@ -2263,6 +2327,7 @@ export const register: Register = on => {
     const removing = await read($, confirmRemove)
     const picked = await read($, removePick)
     const wg = await read($, wireguard)
+    const hooks = await read($, workspaceHooks)
     const languages = isAdminShown ? await availableLanguages($) : []
     const upd = await read($, updateState)
     const creating = await read($, createForm)
@@ -2736,8 +2801,12 @@ export const register: Register = on => {
           removable.length === 0 ? t('unregister.noteNone') : removable.length === 1 ? t('unregister.noteOne') : t('unregister.noteMany', { count: removable.length }),
         ),
       ],
+      // How many are on here, the ones wired machine-wide counted.
+      hooks: hooks
+        ? [headNote('note-hooks', t('hooks.note', { on: hooks.optIn.filter(h => h.enabled || h.global).length, total: hooks.optIn.length }))]
+        : [],
     }
-    // Two layouts for the same six sections. Wide enough (a desktop pane): a
+    // Two layouts for the same seven sections. Wide enough (a desktop pane): a
     // settings page, as ChatGPT's or Perplexity's — the sections listed down
     // a side column (an icon, the name, the one shown on a grey ground), the
     // shown section's title, its state line and its settings in a rounded
@@ -2869,6 +2938,7 @@ export const register: Register = on => {
       wireguard: t('wg.title'),
       register: t('register.title'),
       unregister: t('unregister.title'),
+      hooks: t('hooks.title'),
     }
     const adminNav = (
       <Box key="admin-nav" flexDirection="column" width={navWidth} flexShrink={0}>
@@ -3267,6 +3337,58 @@ export const register: Register = on => {
               <Text size="caption" dimColor>
                 {t('unregister.hint')}
               </Text>
+            </Box>,
+          ),
+          card(
+            'admin-hooks',
+            t('hooks.title'),
+            <Box key="admin-hooks-body" flexDirection="column" gap={1}>
+              <Text size="caption" dimColor>
+                {hooks ? t('hooks.intro', { workspace: hooks.workspace }) : t('hooks.reading')}
+              </Text>
+              {hooks &&
+                settingRows('admin-hooks-rows', [
+                  // The read-only ones: on everywhere, no switch.
+                  ...hooks.alwaysOn.map(name =>
+                    settingRow(
+                      `hook-always-${name}`,
+                      name,
+                      <Text key={`hook-always-${name}-on`} size="caption" color="success">
+                        {`✓ ${t('hooks.alwaysOnShort')}`}
+                      </Text>,
+                      t(`hook.${name}`),
+                    ),
+                  ),
+                  // The others, off by default. One still wired machine-wide is
+                  // said so, with no switch that would not hold.
+                  ...hooks.optIn.map(hook =>
+                    settingRow(
+                      `hook-${hook.name}`,
+                      hook.name,
+                      hook.global ? (
+                        <Text key={`hook-${hook.name}-global`} size="caption" color="warning">
+                          {t('hooks.globalShort')}
+                        </Text>
+                      ) : (
+                        toggle<'on' | 'off'>(
+                          `hook-${hook.name}`,
+                          [
+                            { value: 'off', label: t('hooks.off') },
+                            { value: 'on', label: t('hooks.on') },
+                          ],
+                          hook.enabled ? 'on' : 'off',
+                          value => (value === 'on') !== hook.enabled && void setHook($, hook.name, value === 'on'),
+                        )
+                      ),
+                      hook.global ? `${t(`hook.${hook.name}`)} ${t('hooks.global')}` : t(`hook.${hook.name}`),
+                    ),
+                  ),
+                ])}
+              {hooks && (
+                <Text size="caption" dimColor>
+                  {t('hooks.whenApplied')}
+                </Text>
+              )}
             </Box>,
           ),
         ]
