@@ -73,8 +73,14 @@ const wireguard = atom({ plugin: 'obsidian-router', key: 'wireguard' } as const,
 const workspaceHooks = atom({ plugin: 'obsidian-router', key: 'workspaceHooks' } as const, null)
 // The Configuration tab is in sight: this workspace's hooks and settings.
 const showConfig = atom({ plugin: 'obsidian-router', key: 'showConfig' } as const, false)
-// The primary vault's conventions, as a dry run of install_conventions reports them.
+// The primary vault's conventions, as audit_vault_conventions reports them.
 const primaryConventions = atom({ plugin: 'obsidian-router', key: 'primaryConventions' } as const, null)
+// Why the Configuration tab's last read of the hooks, or of the conventions,
+// failed: said in that section, and cleared by the next read that succeeds.
+// Not `failure`, which only the next action clears and every tab shows: a
+// read that failed once stayed in red on every tab after the next one worked
+// (Roland, on the Hermès VM, v0.119.1).
+const readFailures = atom({ plugin: 'obsidian-router', key: 'readFailures' } as const, { hooks: null, conventions: null })
 
 // ---- Texts ----------------------------------------------------------------
 // Every text the pane and the band show comes from locales/<code>.json in the
@@ -1445,8 +1451,9 @@ async function readHooks($: EngineInterface) {
   try {
     const found = await hooksCli($, ['status'])
     await update($, workspaceHooks, () => found)
+    await update($, readFailures, now => ({ ...now, hooks: null }))
   } catch (err) {
-    await update($, failure, () => t('hooks.readFailed', { error: message(err) }))
+    await update($, readFailures, now => ({ ...now, hooks: t('hooks.readFailed', { error: message(err) }) }))
   } finally {
     isReadingHooks = false
   }
@@ -1469,9 +1476,16 @@ async function setHook($: EngineInterface, name: string, isOn: boolean) {
 }
 
 // The primary vault's conventions: every one of the router's library, installed
-// or not, as a dry run of install_conventions reports them (it writes nothing);
-// a retired one is left out. Read when the Configuration tab opens and after an
-// install. No primary, nothing to read.
+// or not; a retired one is left out. Read when the Configuration tab opens and
+// after an install. No primary, nothing to read.
+//
+// Read with audit_vault_conventions, a read-only tool: its `library` (router
+// 0.119.2) and the conventions of the file in force give the whole state. It
+// was a dry run of install_conventions, which writes nothing but is a write
+// tool, and Claude Code's auto mode refuses a write tool the pane calls on its
+// own, with no request of the model's behind it — even with its allow rule,
+// where list_vaults passed (Roland, on the Hermès VM, v0.119.1). A router
+// older than `library` is still read with the dry run.
 async function readConventions($: EngineInterface) {
   const vault = (await read($, snapshot))?.primary?.name
   if (!vault) {
@@ -1480,19 +1494,40 @@ async function readConventions($: EngineInterface) {
     return
   }
   try {
-    const answer = JSON.parse(await call($, 'install_conventions', { vault, ids: [], dryRun: true })) as {
-      detection?: { id?: string; installed?: boolean }[]
-      catalogue?: { id?: string; retired?: boolean }[]
-      vaultLanguages?: { languages?: string[] | null } | null
+    const audit = JSON.parse(await call($, 'audit_vault_conventions', { vault })) as {
+      library?: unknown
+      conventionsFile?: string | null
+      candidates?: { path?: string; conventions?: string[] }[]
+      languages?: string[] | null
     }
-    const retired = new Set((answer.catalogue ?? []).filter(c => c.retired).map(c => c.id))
-    const items = (answer.detection ?? [])
-      .filter((d): d is { id: string; installed?: boolean } => typeof d.id === 'string' && !retired.has(d.id))
-      .map(d => ({ id: d.id, installed: d.installed === true }))
-    await update($, primaryConventions, () => ({ vault, items, languages: answer.vaultLanguages?.languages ?? null }))
+    let state: { vault: string; items: { id: string; installed: boolean }[]; languages: string[] | null }
+    if (Array.isArray(audit.library)) {
+      const inForce = new Set((audit.candidates ?? []).find(c => c.path === audit.conventionsFile)?.conventions ?? [])
+      state = {
+        vault,
+        items: audit.library.filter((id): id is string => typeof id === 'string').map(id => ({ id, installed: inForce.has(id) })),
+        languages: audit.languages ?? null,
+      }
+    } else {
+      const answer = JSON.parse(await call($, 'install_conventions', { vault, ids: [], dryRun: true })) as {
+        detection?: { id?: string; installed?: boolean }[]
+        catalogue?: { id?: string; retired?: boolean }[]
+        vaultLanguages?: { languages?: string[] | null } | null
+      }
+      const retired = new Set((answer.catalogue ?? []).filter(c => c.retired).map(c => c.id))
+      state = {
+        vault,
+        items: (answer.detection ?? [])
+          .filter((d): d is { id: string; installed?: boolean } => typeof d.id === 'string' && !retired.has(d.id))
+          .map(d => ({ id: d.id, installed: d.installed === true })),
+        languages: answer.vaultLanguages?.languages ?? null,
+      }
+    }
+    await update($, primaryConventions, () => state)
+    await update($, readFailures, now => ({ ...now, conventions: null }))
   } catch (err) {
     await update($, primaryConventions, () => null)
-    await update($, failure, () => t('config.conventions.readFailed', { error: message(err) }))
+    await update($, readFailures, now => ({ ...now, conventions: t('config.conventions.readFailed', { error: message(err) }) }))
   }
 }
 
@@ -2248,8 +2283,13 @@ export const register: Register = on => {
           if (!isStartupCancelled && !isPaneOpen) {
             await openPane($, start)
           }
-          // No vault for this project yet: where to set one up.
-          if (start === generation && !(await read($, snapshot))?.primary) {
+          // No vault for this project yet: where to set one up. Only on a list
+          // read: a later read (`/vaults` typed while this one ran) makes this
+          // one drop its answer, and the snapshot it checked was still empty —
+          // the toast said "no vault" over a pane that showed the primary
+          // (Roland, on the Hermès VM, v0.119.1).
+          const read_ = await read($, snapshot)
+          if (start === generation && read_ && !read_.primary) {
             $.ui.toast(t('setup.toast'))
           }
 
@@ -2388,6 +2428,7 @@ export const register: Register = on => {
     const picked = await read($, removePick)
     const wg = await read($, wireguard)
     const hooks = await read($, workspaceHooks)
+    const readFailed = await read($, readFailures)
     const languages = isAdminShown ? await availableLanguages($) : []
     const upd = await read($, updateState)
     const creating = await read($, createForm)
@@ -3113,9 +3154,16 @@ export const register: Register = on => {
       {/* What the section is for, and its help: the guide of the hooks on GitHub. */}
       <Box key="admin-hooks-head" flexDirection="row" justifyContent="space-between" alignItems="center" gap={2} flexWrap="wrap">
         <Box flexShrink={1}>
-          <Text size="caption" dimColor>
-            {hooks ? t('hooks.intro', { workspace: hooks.workspace }) : t('hooks.reading')}
-          </Text>
+          {/* A failed read says why here, until the next read that works. */}
+          {readFailed.hooks ? (
+            <Text key="hooks-read-failed" size="caption" color="error">
+              {readFailed.hooks}
+            </Text>
+          ) : (
+            <Text size="caption" dimColor>
+              {hooks ? t('hooks.intro', { workspace: hooks.workspace }) : t('hooks.reading')}
+            </Text>
+          )}
         </Box>
         <Button key="hooks-help" label={t('hooks.help')} plain onPress={() => void openUrl($, HOOKS_HELP_URL)} />
       </Box>
@@ -4566,9 +4614,15 @@ export const register: Register = on => {
               ? t('config.conventions.note', { on: convShown.items.filter(c => c.installed).length, total: convShown.items.length, vault: snap.primary.name })
               : null,
             !convShown ? (
-              <Text key="config-conventions-reading" size="caption" dimColor>
-                {t('config.conventions.reading')}
-              </Text>
+              readFailed.conventions ? (
+                <Text key="config-conventions-failed" size="caption" color="error">
+                  {readFailed.conventions}
+                </Text>
+              ) : (
+                <Text key="config-conventions-reading" size="caption" dimColor>
+                  {t('config.conventions.reading')}
+                </Text>
+              )
             ) : (
               settingRows(
                 'config-conventions-rows',

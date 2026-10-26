@@ -27,7 +27,7 @@ import { checkWrittenPage } from '../helpers/write-time-page-checks.mjs';
 export const TOOL_DEFINITION = {
   name: 'audit_vault_conventions',
   description:
-    "READ-ONLY. Which conventions a vault is really under: the conventions file the router resolves (or the two it cannot choose between), the conventions it carries, the languages it declares (`languages`: e.g. [\"fr\",\"en\"], or null), a retired `bilingual` still to migrate, the recommended ones it lacks, which files are verbatim copies of the reference (template) vault's, and which CLAUDE.md.bak-* backups are the template's history rather than this vault's. Works on remote vaults (over REST). Each finding carries a repair step (a move_file with its ifMatch, or a conventions-skill install from the CURRENT snippet) to PROPOSE to the user — never apply one without their go-ahead. A backup that holds a convention the current file lacks is NOT evidence of a loss when the audit marks it inherited.",
+    "READ-ONLY. Which conventions a vault is really under: the conventions file the router resolves (or the two it cannot choose between), the conventions it carries, the languages it declares (`languages`: e.g. [\"fr\",\"en\"], or null), a retired `bilingual` still to migrate, the recommended ones it lacks, which files are verbatim copies of the reference (template) vault's, and which CLAUDE.md.bak-* backups are the template's history rather than this vault's. Works on remote vaults (over REST). Each finding carries a repair step (a move_file with its ifMatch, or a conventions-skill install from the CURRENT snippet) to PROPOSE to the user — never apply one without their go-ahead. A backup that holds a convention the current file lacks is NOT evidence of a loss when the audit marks it inherited. `library` lists the ids the router's own library offers (retired ones left out), so the result alone tells, convention by convention, which are installed and which could be.",
   inputSchema: {
     type: 'object',
     properties: {
@@ -132,6 +132,11 @@ export async function auditVaultConventionsTool(registry, args = {}, ctx = {}, d
   const audit = auditVaultConventions({ vault: vault.name, candidates, backups, referenceFingerprints, referenceBackups, catalogue });
   return {
     ...audit,
+    // The library's offered conventions, retired ones left out: with the file's
+    // own list it gives a picker the whole state, from a read-only tool — the
+    // vault panel read it with an install_conventions dry run, a write tool that
+    // Claude Code's auto mode refuses to a call the model did not ask for.
+    library: catalogue.filter((c) => !c.retired).map((c) => c.id),
     reference,
     ...(errors.length > 0 && { libraryErrors: errors }),
     note: 'Read-only. Each finding\'s repair is a step to propose to the user and apply only on their go-ahead — never automatically.',

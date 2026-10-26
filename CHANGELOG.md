@@ -10,6 +10,25 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### The panel reads without a write tool, its read errors leave, and the start's toast tells the truth
+
+Reported from the Hermès VM (v0.119.1, auto mode), by the session that set up the games.kiviri.fr
+vault.
+
+- **The conventions are read with `audit_vault_conventions`**, a read-only tool. The Configuration
+  tab read them with a dry run of `install_conventions`: it writes nothing, but it is a write tool,
+  and Claude Code's auto mode refused it to a call the panel made on its own — even with its
+  `permissions.allow` rule, where `list_vaults` passed. `audit_vault_conventions` now also returns
+  `library`, the ids the router's library offers (retired ones left out), so its answer alone gives
+  the whole state. A router without `library` is still read with the dry run.
+- **A failed read is said in its section, and goes**: a failed read of the hooks or of the
+  conventions went into the panel's red line, which only the next action cleared, on every tab —
+  it stayed after the next read worked. It is now said in its own section of the Configuration tab
+  and cleared by the next read that works.
+- **"Aucun vault pour ce projet" only on a list read**: `/vaults` typed while the start was reading
+  made the start's read drop its answer, and the toast, checking a list still empty, said there
+  was no vault — over a panel that then showed the primary.
+
 ## [0.119.1] — 2026-10-26 — the console's shown section framed and bold; the held gear in purple
 
 The ⚙ console's section list frames the shown section, its name bold, in place of a grey ground
