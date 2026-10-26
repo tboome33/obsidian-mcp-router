@@ -333,6 +333,63 @@ describe('session-auto-journal — workspace-bound mode', () => {
 
 // ---------------------------------------------------------------------------
 
+describe('session-auto-journal — the primary narrowed by the user', () => {
+  const dir = () => path.join(vaultDir, 'wiki-meta', 'Sessions');
+  const ls = () => (fs.existsSync(dir()) ? fs.readdirSync(dir()).sort() : []);
+
+  for (const mode of ['locked', 'soft']) {
+    test(`a ${mode} primary: the hook writes nothing into the vault, from the first event to the last`, () => {
+      const before = ls();
+      const binding = { vault: 'my-vault', primaryTier: { vault: 'my-vault', mode } };
+      for (const [event, extra] of [
+        ['SessionStart', {}],
+        ['UserPromptSubmit', { prompt: 'write something down' }],
+        ['PostToolUse', { toolName: 'Write', toolInput: { file_path: 'x.md' } }],
+        ['SessionEnd', {}],
+      ]) {
+        const r = runHook({ event, cwd: codeWorkspace, sessionId: `tier-${mode}`, binding, ...extra });
+        assert.equal(r.status, 0, r.stderr);
+      }
+      assert.deepEqual(ls(), before, 'nothing may be written into a vault the user narrowed');
+    });
+  }
+
+  test('a tier set MID-SESSION stops the next write; the journal already open is left as it is', () => {
+    const open = { vault: 'my-vault' };
+    runHook({ event: 'SessionStart', cwd: codeWorkspace, sessionId: 'tier-mid', binding: open });
+    const journal = fs.readdirSync(dir()).map((f) => path.join(dir(), f))[0];
+    const sizeBefore = fs.statSync(journal).size;
+    const locked = { vault: 'my-vault', primaryTier: { vault: 'my-vault', mode: 'locked' } };
+    runHook({ event: 'UserPromptSubmit', cwd: codeWorkspace, sessionId: 'tier-mid', prompt: 'after the lock', binding: locked });
+    runHook({ event: 'SessionEnd', cwd: codeWorkspace, sessionId: 'tier-mid', binding: locked });
+    assert.equal(fs.statSync(journal).size, sizeBefore, 'no line added after the user locked the primary');
+    // Lifted ("writable"), the next event writes again.
+    runHook({ event: 'UserPromptSubmit', cwd: codeWorkspace, sessionId: 'tier-mid', prompt: 'after the lift', binding: open });
+    assert.ok(fs.statSync(journal).size > sizeBefore);
+  });
+
+  test('a config that cannot be read stops a workspace-bound journal already open: no tier is not the same as no answer', () => {
+    runHook({ event: 'SessionStart', cwd: codeWorkspace, sessionId: 'tier-corrupt', binding: { vault: 'my-vault' } });
+    const journal = fs.readdirSync(dir()).map((f) => path.join(dir(), f))[0];
+    const sizeBefore = fs.statSync(journal).size;
+    fs.writeFileSync(configPath, '{ this is not json');
+    runHook({ event: 'UserPromptSubmit', cwd: codeWorkspace, sessionId: 'tier-corrupt', prompt: 'written while the config is unreadable' });
+    runHook({ event: 'SessionEnd', cwd: codeWorkspace, sessionId: 'tier-corrupt' });
+    assert.equal(fs.statSync(journal).size, sizeBefore, 'the journal waits until the config reads again');
+  });
+
+  test('a tier that names ANOTHER vault is stale and stops nothing; one that cannot be read stops everything', () => {
+    const stale = { vault: 'my-vault', primaryTier: { vault: 'old-primary', mode: 'locked' } };
+    runHook({ event: 'SessionStart', cwd: codeWorkspace, sessionId: 'tier-stale', binding: stale });
+    assert.ok(ls().length > 0, 'a tier of a former primary does not apply');
+    fs.rmSync(dir(), { recursive: true, force: true });
+    const unreadable = { vault: 'my-vault', primaryTier: {} };
+    const before = ls();
+    runHook({ event: 'SessionStart', cwd: codeWorkspace, sessionId: 'tier-unreadable', binding: unreadable });
+    assert.deepEqual(ls(), before, 'an unreadable restriction fails closed');
+  });
+});
+
 describe('session-auto-journal — skip conditions', () => {
   test('No vault association → silent skip (no file)', () => {
     const r = runHook({ event: 'SessionStart', cwd: plainCwd, sessionId: 'skip-1' });

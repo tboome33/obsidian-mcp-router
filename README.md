@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.19.0-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.116.8-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.117.3-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -37,7 +37,7 @@ What you get:
 | File management | `move_file` (also accepts `ifMatch`, checked against the source) |
 | Templater | `execute_template` |
 | Router state | `lock_vault`, `unlock_vaults`, `set_auto_enrich_mode` |
-| Workspace binding | `confirm_workspace_binding` (bind this workspace to a primary vault, add secondaries, refuse a proposal), `set_secondary_vault_mode` (a secondary's write tier: `locked` / `soft` / `writable`) |
+| Workspace binding | `confirm_workspace_binding` (bind this workspace to a primary vault, add secondaries, refuse a proposal), `set_secondary_vault_mode` (a secondary's write tier: `locked` / `soft` / `writable`), `set_primary_vault_mode` (the same three tiers for the PRIMARY, which is read-write unless the user narrows it) |
 | Vault provisioning | `plan_vault`, `provision_vault` — defaults-first vault-creation wizard engine; `register_remote_vault` records an already-running remote vault (URL + key) straight from a conversation, `unregister_vault` takes one out |
 | Conversion | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown`, plus `pdf_to_markdown_docling` (opt-in high-fidelity PDF via [Docling](https://github.com/docling-project/docling), MIT) — port of [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). Also `pptx_extract_assets` (a deck's embedded images to disk, per slide — no Python), `pdf_to_images` (render PDF pages to PNG the model can *see*) and `filter_relevant_blocks` (BM25 relevance filter over already-acquired markdown). |
 | Web/page metadata | `extract_page_metadata`, `propose_linked_sources`, `download_page_assets` |
@@ -249,7 +249,7 @@ Plus one Obsidian-specific reference skill (no slash command — knowledge surfa
 - `wiki-ingest` agent — fan out one source per agent, parallel
 - `wiki-lint` agent — read-only diagnostic in a separate context
 
-**Hooks** — **11 cross-platform Node hooks**. The split: installing the plugin activates exactly three of them (`hot-cache-load` + `decisions-recall` + `workspace-briefing`, declared in `hooks/hooks.json`); the other eight are switched on per workspace, from the vault panel's **Administration › Hooks de ce workspace** (off by default, declared in `hooks/hooks.json` behind `hooks/opt-in-gate.mjs`). Without the plugin, `node scripts/setup-vault.mjs --install-hooks` still wires them machine-wide. See [Which hooks the plugin turns on by itself](#which-hooks-the-plugin-turns-on-by-itself):
+**Hooks** — **11 cross-platform Node hooks**. The split: installing the plugin activates exactly three of them (`hot-cache-load` + `decisions-recall` + `workspace-briefing`, declared in `hooks/hooks.json`); the other eight are switched on per workspace, from the vault panel's administration (the ⚙ gear), section **Hooks de ce workspace** (off by default, declared in `hooks/hooks.json` behind `hooks/opt-in-gate.mjs`). Without the plugin, `node scripts/setup-vault.mjs --install-hooks` still wires them machine-wide. See [Which hooks the plugin turns on by itself](#which-hooks-the-plugin-turns-on-by-itself):
 - `session-auto-journal` — auto-journals each Claude session under `wiki-meta/Sessions/` + a 2-line recap to `wiki-meta/journal.md` (self-healing reconciliation)
 - `hot-cache-load` — loads `wiki-meta/hot.md` into context at SessionStart / PostCompact
 - `hot-cache-update-prompt` — deterministic guard: **blocks the turn** (exit 2) until `wiki-meta/hot.md` is refreshed when this session wrote a `wiki/` note (per-vault, transcript-scoped; opt-out `OBSIDIAN_ROUTER_NO_HOT_CACHE_GUARD`)
@@ -620,7 +620,9 @@ read-write in another:
 | `soft` *(default)* | refused unless the call carries `confirmSecondaryWrite: true`, which Claude may set only after you have said yes |
 | `writable` | goes through, no friction |
 
-The primary is always read-write. Record a tier with
+The primary is read-write — unless the user narrows it, per workspace, with the same three
+modes: `set_primary_vault_mode({ vault, mode })` (a primary nobody qualified stays read-write).
+Record a secondary's tier with
 `set_secondary_vault_mode({ vault, mode })`, or let the **`/bind-workspace`**
 wizard walk you through the whole thing — where we are, the primary, the
 secondaries, one tier question per secondary, then a table of what it recorded.
@@ -1393,7 +1395,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.19.0-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.116.8-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.117.3-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -1610,7 +1612,7 @@ Plus un skill de référence Obsidian (sans slash command — surfacé quand d'a
 - agent `wiki-ingest` — fan-out un agent par source, en parallèle
 - agent `wiki-lint` — diagnostic read-only dans un contexte isolé
 
-**Hooks** — **11 hooks Node cross-platform**. La répartition : installer le plugin active exactement trois d'entre eux (`hot-cache-load` + `decisions-recall` + `workspace-briefing`, déclarés dans `hooks/hooks.json`) ; les huit autres s'activent workspace par workspace, depuis la console du panneau des vaults, **Administration › Hooks de ce workspace** (désactivés par défaut, déclarés dans `hooks/hooks.json` derrière `hooks/opt-in-gate.mjs`). Sans le plugin, `node scripts/setup-vault.mjs --install-hooks` les câble encore pour toute la machine. Voir [Les hooks que le plugin active tout seul](#les-hooks-que-le-plugin-active-tout-seul) :
+**Hooks** — **11 hooks Node cross-platform**. La répartition : installer le plugin active exactement trois d'entre eux (`hot-cache-load` + `decisions-recall` + `workspace-briefing`, déclarés dans `hooks/hooks.json`) ; les huit autres s'activent workspace par workspace, depuis l'administration du panneau des vaults (la roue dentée ⚙), section **Hooks de ce workspace** (désactivés par défaut, déclarés dans `hooks/hooks.json` derrière `hooks/opt-in-gate.mjs`). Sans le plugin, `node scripts/setup-vault.mjs --install-hooks` les câble encore pour toute la machine. Voir [Les hooks que le plugin active tout seul](#les-hooks-que-le-plugin-active-tout-seul) :
 - `session-auto-journal` — journalise automatiquement chaque session Claude sous `wiki-meta/Sessions/` + un récap 2 lignes dans `wiki-meta/journal.md` (réconciliation auto-réparatrice)
 - `hot-cache-load` — charge `wiki-meta/hot.md` dans le contexte au SessionStart / PostCompact
 - `hot-cache-update-prompt` — garde déterministe : **bloque le tour** (exit 2) tant que `wiki-meta/hot.md` n'est pas rafraîchi quand la session a écrit une note `wiki/` (par vault, scopé au transcript ; opt-out `OBSIDIAN_ROUTER_NO_HOT_CACHE_GUARD`)
@@ -1899,7 +1901,9 @@ strict dans un projet et ouvert dans un autre :
 | `soft` *(défaut)* | refusée sauf si l'appel porte `confirmSecondaryWrite: true`, que Claude ne pose qu'après ton oui explicite |
 | `writable` | passe, sans friction |
 
-Le principal est toujours en lecture-écriture. On enregistre un palier avec
+Le principal est en lecture-écriture — sauf si l'utilisateur le restreint, par workspace, avec les
+mêmes trois modes : `set_primary_vault_mode({ vault, mode })` (un principal que personne n'a qualifié
+reste en lecture-écriture). On enregistre le palier d'un secondaire avec
 `set_secondary_vault_mode({ vault, mode })`, ou on laisse l'assistant
 **`/bind-workspace`** dérouler l'ensemble — où on en est, le principal, les
 secondaires, une question de palier par secondaire, puis un tableau de ce qui a

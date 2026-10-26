@@ -88,6 +88,8 @@ export type VaultActivity = { lastWriteAt?: string; recent?: { path: string; at:
 
 export type Snapshot = {
   primary: VaultRow | null
+  /** The primary's own write tier, when the router keeps one (v0.117.0+). */
+  primaryMode?: SecondaryMode
   /** The binding restricts the session to the primary. */
   isLocked: boolean
   /** A session lock from lock_vault: runtime only, never written to the binding. */
@@ -151,8 +153,8 @@ declare module 'claude-code' {
       removePick: string | null
       update: UpdateState | null
       createForm: CreateForm
-      /** The band's page: which run of secondaries its line shows, from 0. */
-      bandPage: number
+      /** The secondary picked in the band's menu, whose controls stand on the line; null: the first one. */
+      bandPick: string | null
       /** Conventions a new vault still waits for: its REST API was not up yet. */
       pendingConventions: { vault: string; ids: string[]; languages: string[] } | null
       /** WireGuard as last detected; null before the first read. */

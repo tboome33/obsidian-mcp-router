@@ -5796,7 +5796,7 @@ function maybeAutoInstallHooks({ quiet = false, noHooks = false } = {}) {
   if (isRouterPluginInstalled()) {
     if (!quiet) {
       info('Router hooks: the plugin runs its 3 read-only hooks everywhere; switch the others on per workspace');
-      console.log(c('gray', '   from the Vaults panel → Administration › Hooks de ce workspace (nothing written to settings.json).'));
+      console.log(c('gray', '   from the Vaults panel → ⚙ administration → Hooks de ce workspace (nothing written to settings.json).'));
     }
     return;
   }

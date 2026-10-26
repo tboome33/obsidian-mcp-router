@@ -327,6 +327,26 @@ function excludedByWhitelist(cfg, dirPath) {
  * slot itself (`resolveScaffold(vaultPath, 'journal', …)`) rather than infer
  * it from this field.
  */
+/**
+ * The write tier the user gave this workspace's PRIMARY (`set_primary_vault_mode`)
+ * as a hook must read it: `'locked'` or `'soft'`, or `null` for a primary nobody
+ * narrowed. A hook writes on its own, with no one to ask, so BOTH narrowed tiers
+ * stop it (the router's own `automaticWriteAllowed` does the same for a soft
+ * tier without a confirmation). Read from the config as it is NOW, so a tier set
+ * in the middle of a session stops the next write.
+ *
+ * @param {object|null} cfg the parsed router config
+ * @param {string} cwd
+ * @returns {'locked'|'soft'|null}
+ */
+export function hookWriteTier(cfg, cwd) {
+  const binding = cfg ? readBinding(cfg, cwd) : null;
+  const tier = binding && binding.primaryTier;
+  if (!tier || tier.vault !== binding.vault) return null;
+
+  return tier.mode === 'locked' || tier.mode === 'soft' ? tier.mode : null;
+}
+
 export function detectVaultContext(cwd, cfg) {
   // THE CONFIRMED BINDING IS CONSULTED BEFORE ANYTHING ELSE — even before
   // asking whether the cwd is itself a vault. Round 2 of the Codex review

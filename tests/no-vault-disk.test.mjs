@@ -665,6 +665,10 @@ describe('every tool is classified: exercised by the bench, or exempt with a rea
     // Covered by tests/set-secondary-vault-mode.test.mjs through injected
     // read/write seams, and end to end by tests/also-tier-write-gate-e2e.test.mjs.
     'set_secondary_vault_mode',
+    // v0.117.0 — its sibling for the PRIMARY: records the primary's write tier
+    // on the same binding record, in config.json only. Covered by
+    // tests/set-primary-vault-mode.test.mjs through injected read/write seams.
+    'set_primary_vault_mode',
     // Reads its snippet texts from the PACKAGE's own skills/ directory — not a
     // vault — and reaches the vault only through injected REST seams in
     // tests/install-conventions.test.mjs. This bench does not drive it.

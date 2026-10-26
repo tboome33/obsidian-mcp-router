@@ -18,7 +18,7 @@ const TRUTHY = new Set(['true', '1', 'yes', 'on'])
 // The router as /mcp lists it: shipped as a plugin, or declared by hand.
 const SERVERS = ['plugin:obsidian-router:router', 'obsidian-router']
 const ROUTER_TOOL =
-  /^mcp__(plugin_obsidian-router_router|obsidian-router)__(confirm_workspace_binding|set_secondary_vault_mode|lock_vault|unlock_vaults)$/
+  /^mcp__(plugin_obsidian-router_router|obsidian-router)__(confirm_workspace_binding|set_secondary_vault_mode|set_primary_vault_mode|lock_vault|unlock_vaults)$/
 
 const snapshot = atom({ plugin: 'obsidian-router', key: 'snapshot' } as const, null)
 const busy = atom({ plugin: 'obsidian-router', key: 'busy' } as const, null)
@@ -59,13 +59,14 @@ const removePick = atom({ plugin: 'obsidian-router', key: 'removePick' } as cons
 const updateState = atom({ plugin: 'obsidian-router', key: 'update' } as const, null)
 const EMPTY_CREATE: CreateForm = { name: '', path: '', mode: 'personal', conventions: [], languages: '', bind: true }
 const createForm = atom({ plugin: 'obsidian-router', key: 'createForm' } as const, EMPTY_CREATE)
-// The band's page: which run of secondaries its line shows, from the first
-// (0) on. A line too short for them all ends with "›+N" (a press turns the
-// page) and, past the first page, starts with "‹" (a press turns it back).
-const bandPage = atom({ plugin: 'obsidian-router', key: 'bandPage' } as const, 0)
+// The band's pick: the secondary whose controls stand on the line while the
+// line is too short for every secondary's slot (the menu then lists them
+// all, and a pick names one here); null, or a name no longer bound, is the
+// first in the binding's order.
+const bandPick = atom({ plugin: 'obsidian-router', key: 'bandPick' } as const, null)
 const pendingConventions = atom({ plugin: 'obsidian-router', key: 'pendingConventions' } as const, null)
 const wireguard = atom({ plugin: 'obsidian-router', key: 'wireguard' } as const, null)
-// This workspace's hooks, read when the console is drawn.
+// This workspace's hooks, read when the console is opened.
 const workspaceHooks = atom({ plugin: 'obsidian-router', key: 'workspaceHooks' } as const, null)
 
 // ---- Texts ----------------------------------------------------------------
@@ -181,6 +182,9 @@ const MODES: { mode: SecondaryMode; icon: string }[] = [
   { mode: 'writable', icon: '✏️' },
 ]
 const iconOf = (mode: SecondaryMode) => MODES.find(m => m.mode === mode)?.icon ?? '🔒'
+// The ground a legend item and the tiles' marks or radios of its kind take
+// while the pointer rests on any of them: the desktop's hover groups.
+const HOVER_GROUND = 'inactive'
 // The same tiers as marks, in the grey of the band's other marks: a graphical
 // surface draws them in place of the badges, so the band's line has one style.
 const LOCK_MARK =
@@ -192,16 +196,19 @@ const PEN_MARK =
 const markOf = (mode: SecondaryMode) => (mode === 'writable' ? PEN_MARK : mode === 'soft' ? HAND_MARK : LOCK_MARK)
 const modeLabel = (mode: SecondaryMode) => t(`mode.${mode}`)
 
-// What the band shows of the secondaries in `columns` cells: as many as fit
-// after the primary and the toggle, in binding order, the rest counted as
-// "›+N" (a page to turn). The line as the band draws it, cell by cell:
-// "Principal :", a gap, "●", a gap, the primary, a gap, a one-cell spacer, a
-// gap, "Secondaires :", "‹" and a gap past the first page, then per secondary
-// a gap, "·" (or "│") and a gap after the first, its name, a gap and its badge
-// (two cells); "›+N" after a gap; the toggle after a gap of two, with room
-// for its chrome. In the current language's words. Measured in
-// cells: the band also cuts any text that still runs over, so a misjudged
-// width costs a cut, never a second line.
+// What the band's line holds in `columns` cells. Its first form, when every
+// secondary's slot fits: "Principal :", a gap, "●", a gap, the primary, a gap,
+// a one-cell spacer, a gap, "Secondaires :", then per secondary a gap, its
+// frame (a cell each side, on the desktop; on the terminal "│" and a gap
+// after the first instead), its ▶ and a gap, its name, a gap and its badge
+// (two cells), a gap, "│" and its marks when it has any; the toggle after a
+// gap of two, with room for its chrome. Its second form, when they do not
+// all fit (asked from a small screen, v0.116.13: the line showed none and
+// an inert count): a menu of every secondary where the slots were, then the
+// slot of the one picked without its name; and, when even that runs over,
+// no headings and the toggle as its glyph. In the current language's words.
+// Measured in cells: the band also cuts any text that still runs over, so a
+// misjudged width costs a cut, never a second line.
 // A character's cells on a terminal line: two for the East Asian wide ranges
 // (CJK, Hangul, full-width forms) and the emoji planes, none for a joiner, a
 // variation selector or a combining mark, one otherwise.
@@ -221,80 +228,67 @@ const charCells = (code: number) =>
       ? 2
       : 1
 const cells = (text: string) => [...text].reduce((sum, char) => sum + charCells(char.codePointAt(0) ?? 0), 0)
-// The band's page keys, each an arrow with a count in it: "N▶" the
-// secondaries the line could not show after the page, "◀N" those before it;
-// a press turns the page. On a graphical surface the arrow is a black
-// pentagon with the count in white inside (asked from a mockup: the dim "‹"
-// and "›+N" of v0.116.0 could hardly be seen); the terminal draws the texts.
-function moreText(hidden: number) {
-  return hidden > 0 ? `${hidden}▶` : ''
+// The glyph the pane's toggle keeps when the line is compact: the one its
+// labels start with ("◧ Masquer le panneau").
+const PANE_GLYPH = '◧'
+// The cells the pane's toggle takes at the right: the gap of two before it,
+// its longer label and its chrome. (Compact, it is the glyph alone; nothing
+// is measured past that form, the last one.)
+function toggleCells() {
+  return 2 + Math.max(cells(t('band.show')), cells(t('band.hide'))) + 4
 }
-function backText(before: number) {
-  return before > 0 ? `◀${before}` : ''
+// The cells a secondary's slot takes, with the gap before it: its frame (a
+// cell each side, on a graphical surface) or, on the terminal, "│ " after
+// the first; its control (▶, dimmed while paused); a gap and its name when
+// it is named (the picked one is not: the menu names it); a gap and its badge
+// (two cells); then, when it has marks, a gap and the "│" before them (each
+// mark counted with its gap, in `mark`).
+function slotCells(name: string | null, mark: number, isFramed: boolean, isFirst: boolean) {
+  return 1 + (isFramed ? 2 : isFirst ? 0 : 2) + 1 + (name === null ? 0 : 1 + cells(name)) + 1 + 2 + (mark > 0 ? 2 + mark : 0)
 }
-// The cells a page key takes, with its gap. Drawn as a mark: the pentagon is
-// 18 + 7 px a digit, a cell being 7 px (a 14 px mark counts 2 cells and a
-// gap), so 3 cells and one a digit, and the gap. Drawn as its text ("◀N",
-// "N▶"): the arrow, the digits and the gap.
-function pageKeyCells(count: number, asMark: boolean) {
-  return (asMark ? 4 : 3) + String(count).length
-}
-function pageKeyWidth(count: number) {
-  return 18 + 7 * String(count).length
-}
-function pageKeyMark(direction: 'back' | 'more', count: number) {
-  const w = pageKeyWidth(count)
-  const shape = direction === 'back' ? `M7 0H${w}V16H7L0 8Z` : `M0 0H${w - 7}L${w} 8L${w - 7} 16H0Z`
-  const x = direction === 'back' ? (w + 7) / 2 : (w - 7) / 2
+// The line's fixed part with its words: "Principal :" and a gap, "● " and
+// the primary with its marks (`primaryMark`, their cells with their gaps) in
+// its frame when `isFramed` (the first form on a graphical surface; the
+// second form frames nothing), a gap, the spacer and a gap, "Secondaires :",
+// the toggle. (Compact, the headings are left out and the toggle is its
+// glyph: the last form, measured against nothing.)
+function baseCells(primary: string | null, primaryMark: number, isFramed: boolean) {
+  const frame = isFramed ? 2 : 0
 
-  // A thin light outline, so the shape stands out on a dark ground too.
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} 16"><path d="${shape}" fill="#1f1f1f" stroke="#ffffff" stroke-width="0.75"/><text x="${x}" y="8.5" font-family="system-ui, sans-serif" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle" dominant-baseline="central">${count}</text></svg>`
+  return cells(t('band.primary')) + 1 + frame + 2 + primaryMark + cells(primary ?? t('band.none')) + 1 + 1 + 1 + cells(t('band.secondaries')) + toggleCells()
 }
-// The secondaries the band's line shows from `start` on, in the binding's
-// order, each as its name, its marks, its badge and its ▶, a "·" between two
-// (a "│" on the terminal); `paused[i]` says which are paused (the ▶ the same
-// width either way). `marks[i]` (and `primaryMark`): the cells that name's
-// marks take beside it. Past the first page the line starts with "◀N" (the
-// key and its gap); what does not fit ends it as "N▶".
-function bandFit(primary: string | null, secondaries: string[], columns: number, paused: boolean[] = [], marks: number[] = [], primaryMark = 0, start = 0, keysAsMarks = false) {
-  void paused
-  const toggle = 2 + Math.max(cells(t('band.show')), cells(t('band.hide'))) + 4
-  // "Principal :", a gap, "● " and the name with its marks; two gaps and
-  // "Secondaires :"; the pane's toggle at the right.
-  const base =
-    cells(t('band.primary')) + 1 + 2 + primaryMark + cells(primary ?? t('band.none')) + 1 + 1 + 1 + cells(t('band.secondaries')) + toggle + (start > 0 ? pageKeyCells(start, keysAsMarks) : 0)
-  const rest = secondaries.slice(start)
-  // A gap, "· " after the first, the marks and the name, a gap and its badge,
-  // a gap and its control (▶, dimmed while paused).
-  const widths = rest.map((name, i) => 1 + (i > 0 ? 2 : 0) + (marks[start + i] ?? 0) + cells(name) + 1 + 2 + 1 + 1)
-  // The most secondaries that fit with the "N▶" their remainder needs. A
-  // page one turned to shows at least one, cut where it runs over: a page
-  // with nothing on it would be a page "N▶" leads nowhere from.
-  for (let shown = rest.length; shown > 0; shown -= 1) {
-    const hidden = rest.length - shown
-    const room = hidden > 0 ? pageKeyCells(hidden, keysAsMarks) : 0
-    const used = base + widths.slice(0, shown).reduce((a, b) => a + b, 0) + room
-    if (used <= columns) {
-      return { shown, hidden: rest.length - shown }
+// How many secondaries, in the binding's order, the line holds as full slots
+// after its fixed part — every one of them, or the line takes its second
+// form. `marks[i]` (and `primaryMark`): the cells that name's marks take
+// beside it. `isFramed`: a graphical surface, which frames each slot.
+function bandFit(primary: string | null, secondaries: string[], columns: number, marks: number[] = [], primaryMark = 0, isFramed = false) {
+  let used = baseCells(primary, primaryMark, isFramed)
+  let shown = 0
+  for (const [i, name] of secondaries.entries()) {
+    used += slotCells(name, marks[i] ?? 0, isFramed, i === 0)
+    if (used > columns) {
+      break
     }
+    shown += 1
   }
-  const shown = start > 0 && rest.length > 0 ? 1 : 0
 
-  return { shown, hidden: rest.length - shown }
+  return { shown, hidden: secondaries.length - shown }
 }
-// Where each page of the band's line starts: the first at 0, each next where
-// the one before stopped. A line too short for even one secondary has one
-// page, which shows none and counts them all.
-function bandPages(primary: string | null, secondaries: string[], columns: number, paused: boolean[], marks: number[], primaryMark: number, keysAsMarks = false) {
-  const starts = [0]
-  for (;;) {
-    const start = starts[starts.length - 1] ?? 0
-    const { shown } = bandFit(primary, secondaries, columns, paused, marks, primaryMark, start, keysAsMarks)
-    if (shown === 0 || start + shown >= secondaries.length) {
-      return starts
-    }
-    starts.push(start + shown)
-  }
+// The cells the menu takes in the line's second form: its longest row, the
+// chevron and its chrome.
+function menuCells(labels: string[]) {
+  return Math.max(0, ...labels.map(cells)) + 4
+}
+// Whether the line's second form runs over `columns` with its full labels:
+// the fixed part, a gap, then the menu (`menu`: its rows) and the picked slot
+// without its name — or, on a surface without the menu (`menu` null), the
+// dim count of the others ("+N") and the picked slot with its name. Nothing
+// is framed in that form, on any surface. The line is then compact (no
+// headings, the toggle as its glyph).
+function bandPickIsCompact(primary: string | null, primaryMark: number, menu: string[] | null, picked: { name: string; mark: number; others: number }, columns: number) {
+  const second = menu ? menuCells(menu) + slotCells(null, picked.mark, false, true) : cells(`+${picked.others}`) + slotCells(picked.name, picked.mark, false, true)
+
+  return baseCells(primary, primaryMark, false) + 1 + second > columns
 }
 
 type Binding = {
@@ -306,6 +300,8 @@ type Binding = {
   alsoWritable?: string[]
   /** The secondaries this project paused (router v0.107.0+): bound, unreachable. */
   alsoPaused?: string[]
+  /** The primary's own write tier (router v0.117.0+): absent from an older router. */
+  primaryMode?: SecondaryMode
 }
 
 // A `remoteVaults` entry on the loopback is a vault of this machine's own
@@ -395,7 +391,13 @@ let reading = 0
 // `$.mcp.call: no connected MCP tool …`, is a server not (yet) connected, which
 // the next server name or the next startup try may well reach.
 const REFUSED = /\$\.mcp\.call\([^()]*\) refused: (.*)$/s
-const WRITE_TOOLS = ['confirm_workspace_binding', 'set_secondary_vault_mode', 'register_remote_vault', 'unregister_vault']
+const WRITE_TOOLS = [
+  'confirm_workspace_binding',
+  'set_secondary_vault_mode',
+  'set_primary_vault_mode',
+  'register_remote_vault',
+  'unregister_vault',
+]
 
 class Refused extends Error {
   constructor(server: string, tool: string, reason: string) {
@@ -714,6 +716,9 @@ function toSnapshot(data: ListVaults, fetchedAt: number): Snapshot {
 
   return {
     primary: b ? row(b.vault) : null,
+    // Only a router that knows the primary's tier reports one: an older one
+    // leaves it out, and the panel then tells the rights without offering to set them.
+    ...(b?.primaryMode ? { primaryMode: b.primaryMode } : {}),
     isLocked: b?.locked ?? false,
     lockedTo: data.lockedTo ?? null,
     isImported: b?.confirmedVia === 'migration',
@@ -1412,7 +1417,7 @@ async function hooksCli($: EngineInterface, args: string[]): Promise<WorkspaceHo
   return { workspace: answer.workspace ?? cwd, alwaysOn: answer.alwaysOn, optIn: answer.optIn }
 }
 
-// A read in flight: the console, drawn again meanwhile, does not start another.
+// A read in flight: the console, opened again meanwhile, does not start another.
 let isReadingHooks = false
 
 async function readHooks($: EngineInterface) {
@@ -1587,6 +1592,8 @@ const markAlt = (source: string) =>
       ? 'Claude'
       : source === ROUTER_MARK
         ? 'obsidian-mcp-router'
+        : source === GEAR_MARK
+          ? t('nav.admin')
         : source === LOCK_MARK
           ? modeLabel('locked')
         : source === HAND_MARK
@@ -1626,6 +1633,23 @@ async function openVault($: EngineInterface, row: VaultRow) {
 const REPO_URL = 'https://github.com/tboome33/obsidian-mcp-router'
 const LATEST_MANIFEST = 'https://raw.githubusercontent.com/tboome33/obsidian-mcp-router/main/.claude-plugin/plugin.json'
 // Obsidian's mark, in its purple, before the button that opens a local vault in
+// The administration's seven sections, in order, each with its mark for the
+// settings page's side list: a grey line icon on the desktop, a glyph on the
+// terminal (WireGuard's glyph is a dot, coloured by its state when drawn).
+const ADMIN_SECTIONS = ['general', 'open', 'create', 'wireguard', 'register', 'unregister', 'hooks'] as const
+type AdminSectionName = (typeof ADMIN_SECTIONS)[number]
+const sectionIcon = (d: string) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="${d}" fill="none" stroke="#8c8c8c" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+const SECTION_MARKS: Record<AdminSectionName, { svg: string; glyph: string }> = {
+  general: { svg: sectionIcon('M2 4.5h12M2 8h12M2 11.5h12M5 3v3M11 6.5v3M7 10v3'), glyph: '⚙' },
+  open: { svg: sectionIcon('M6.5 3H3v10h10V9.5M9 3h4v4M13 3L7.5 8.5'), glyph: '↗' },
+  create: { svg: sectionIcon('M8 2.5a5.5 5.5 0 110 11 5.5 5.5 0 010-11zM8 5.5v5M5.5 8h5'), glyph: '+' },
+  wireguard: { svg: sectionIcon('M8 2l5 2v4c0 3-2.2 5-5 6-2.8-1-5-3-5-6V4l5-2zM5.8 8l1.6 1.6L10.5 6.5'), glyph: '●' },
+  register: { svg: sectionIcon('M6.5 9.5l3-3M5 8L3.5 9.5a2.1 2.1 0 003 3L8 11M8 5l1.5-1.5a2.1 2.1 0 013 3L11 8'), glyph: '⊕' },
+  unregister: { svg: sectionIcon('M8 2.5a5.5 5.5 0 110 11 5.5 5.5 0 010-11zM5.5 8h5'), glyph: '−' },
+  // A switch: each hook is one, on or off for this workspace.
+  hooks: { svg: sectionIcon('M5 5h6a3 3 0 010 6H5a3 3 0 010-6zM11 6.5a1.5 1.5 0 110 3 1.5 1.5 0 010-3z'), glyph: '↪' },
+}
 // Obsidian (a surface with no SVG element keeps 💎). From LobeHub's icons
 // (@lobehub/icons-static-svg 1.98.0, obsidian-color.svg, MIT).
 const OBSIDIAN_MARK =
@@ -1639,6 +1663,10 @@ const GLOBE_MARK =
 const CLAUDE_PANE_MARK =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z" fill="#D97757" fill-rule="nonzero"/></svg>'
 // The octicon "mark-github" (MIT), grey so it reads on a light and a dark pane.
+// The octicon "gear" (MIT), in the same grey: the key to the administration
+// console, at the menu's right beside GitHub's mark.
+const GEAR_MARK =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#6e7681" d="M8 0a8.2 8.2 0 0 1 .701.031C9.444.095 9.99.645 10.16 1.29l.288 1.107c.018.066.079.158.212.224.231.114.454.243.668.386.123.082.233.09.299.071l1.103-.303c.644-.176 1.392.021 1.82.63.27.385.506.792.704 1.218.315.675.111 1.422-.364 1.891l-.814.806c-.049.048-.098.147-.088.294.016.257.016.515 0 .772-.01.147.04.246.088.294l.814.806c.475.469.679 1.216.364 1.891a7.977 7.977 0 0 1-.704 1.217c-.428.61-1.176.807-1.82.63l-1.102-.302c-.067-.019-.177-.011-.3.071a5.909 5.909 0 0 1-.668.386c-.133.066-.194.158-.211.224l-.29 1.106c-.168.646-.715 1.196-1.458 1.26a8.006 8.006 0 0 1-1.402 0c-.743-.064-1.289-.614-1.458-1.26l-.289-1.106c-.018-.066-.079-.158-.212-.224a5.738 5.738 0 0 1-.668-.386c-.123-.082-.233-.09-.299-.071l-1.103.303c-.644.176-1.392-.021-1.82-.63a8.12 8.12 0 0 1-.704-1.218c-.315-.675-.111-1.422.363-1.891l.815-.806c.05-.048.098-.147.088-.294a6.214 6.214 0 0 1 0-.772c.01-.147-.038-.246-.088-.294l-.815-.806C.635 6.045.431 5.298.746 4.623a7.92 7.92 0 0 1 .704-1.217c.428-.61 1.176-.807 1.82-.63l1.102.302c.067.019.177.011.3-.071.214-.143.437-.272.668-.386.133-.066.194-.158.211-.224l.29-1.106C6.009.645 6.556.095 7.299.03 7.53.01 7.764 0 8 0Zm-.571 1.525c-.036.003-.108.036-.137.146l-.289 1.105c-.147.561-.549.967-.998 1.189-.173.086-.34.183-.5.29-.417.278-.97.423-1.529.27l-1.103-.303c-.109-.03-.175.016-.195.045-.22.312-.412.644-.573.99-.014.031-.021.11.059.19l.815.806c.411.406.562.957.53 1.456a4.709 4.709 0 0 0 0 .582c.032.499-.119 1.05-.53 1.456l-.815.806c-.081.08-.073.159-.059.19.162.346.353.677.573.989.02.03.085.076.195.046l1.102-.303c.56-.153 1.113-.008 1.53.27.161.107.328.204.501.29.447.222.85.629.997 1.189l.289 1.105c.029.109.101.143.137.146a6.6 6.6 0 0 0 1.142 0c.036-.003.108-.036.137-.146l.289-1.105c.147-.561.549-.967.998-1.189.173-.086.34-.183.5-.29.417-.278.97-.423 1.529-.27l1.103.303c.109.029.175-.016.195-.045.22-.313.411-.644.573-.99.014-.031.021-.11-.059-.19l-.815-.806c-.411-.406-.562-.957-.53-1.456a4.709 4.709 0 0 0 0-.582c-.032-.499.119-1.05.53-1.456l.815-.806c.081-.08.073-.159.059-.19a6.464 6.464 0 0 0-.573-.989c-.02-.03-.085-.076-.195-.046l-1.102.303c-.56.153-1.113.008-1.53-.27a4.44 4.44 0 0 0-.501-.29c-.447-.222-.85-.629-.997-1.189l-.289-1.105c-.029-.11-.101-.143-.137-.146a6.6 6.6 0 0 0-1.142 0ZM11 8a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM9.5 8a1.5 1.5 0 1 0-3.001.001A1.5 1.5 0 0 0 9.5 8Z"/></svg>'
 const GITHUB_MARK =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#6e7681" d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>'
 
@@ -2292,12 +2320,7 @@ export const register: Register = on => {
     // Read so that a change of language draws the pane again.
     const languageCode = await read($, language)
     const isAdminShown = await read($, showAdmin)
-    // A section kept from the six-section console opens where its content now
-    // lives: the ways to open a vault and WireGuard in Général, the removal in
-    // Enregistrer.
-    const keptSection = await read($, adminSection)
-    const openSection =
-      keptSection === 'open' || keptSection === 'wireguard' ? 'general' : keptSection === 'unregister' ? 'register' : keptSection
+    const openSection = await read($, adminSection)
     const isNavOpen = await read($, navOpen)
     const open = await read($, openers)
     const form = await read($, adminForm)
@@ -2430,8 +2453,8 @@ export const register: Register = on => {
       )
     }
     const statusLine = statusBar('')
-    // The menu at the top of the pane: Vaults, + Ajouter un vault, ⚙
-    // Administration, the one in view marked, a rule under it. The copy pinned
+    // The menu at the top of the pane: Vaults, + Ajouter un vault, the one in
+    // view marked, a rule under it; the gear at the right opens the console. The copy pinned
     // at the first row the window shows (`sticky`) is the same line, its keys
     // under `sticky-`, on an opaque ground and no frame.
     const view: PaneView = isAdminShown ? 'admin' : isAddShown ? 'add' : 'vaults'
@@ -2493,7 +2516,9 @@ export const register: Register = on => {
     const Mark = e.surface !== 'terminal' ? Svg : null
     // `pressed`: the key drawn held down (a grey ground; on the terminal, its
     // glyph lit instead of dim), for a control whose effect is still on.
-    const iconKey = (source: string, glyph: string, key: string, onPress: () => void, pressed = false) =>
+    // `scope`: the hover group the key joins (the legend's item of its kind):
+    // on the desktop, the pointer on any member lights them all.
+    const iconKey = (source: string, glyph: string, key: string, onPress: () => void, pressed = false, scope?: string) =>
       Mark ? (
         <Box
           key={`icon-${key}`}
@@ -2501,6 +2526,7 @@ export const register: Register = on => {
           alignItems="center"
           flexShrink={0}
           backgroundColor={pressed ? 'inactive' : undefined}
+          hover={scope ? { scope, backgroundColor: HOVER_GROUND } : undefined}
         >
           <Mark source={source} alt={markAlt(source)} width={16} height={16} />
           <Box position="absolute" top={0} left={0}>
@@ -2524,15 +2550,14 @@ export const register: Register = on => {
     // menu drawn wide and then folded left the frame of its first tab behind
     // on the terminal, whose painter does not clear a cell nothing draws on
     // (seen on v0.116.1, a "╮" after "☰ Vaults").
-    const menuLabels: [PaneView, string][] = [
-      ['vaults', t('nav.vaults')],
-      ...(snap ? [['add', t('add.open')] as [PaneView, string]] : []),
-      ['admin', t('nav.admin')],
-    ]
-    const foldLabels = [t('nav.vaults'), t('add.open'), t('nav.admin')]
+    // Two tabs: the administration is no tab but a key at the right, the gear
+    // beside GitHub's mark (v0.116.11); the console in sight opens no tab.
+    const menuLabels: [PaneView, string][] = [['vaults', t('nav.vaults')], ...(snap ? [['add', t('add.open')] as [PaneView, string]] : [])]
+    const foldLabels = [t('nav.vaults'), t('add.open')]
     const menuColumns = e.props.bodyColumns ?? 60
     const version = upd?.installed ? `v${upd.installed}` : ''
-    const endCells = Math.max(cells(version), 10) + 2 + cells(t('update.badge')) + 2 + (Mark ? 3 : cells(t('footer.github')) + 1)
+    // The version, the badge, the gear and GitHub's mark, with their gaps.
+    const endCells = Math.max(cells(version), 10) + 2 + cells(t('update.badge')) + 2 + (Mark ? 3 : 2) + 2 + (Mark ? 3 : cells(t('footer.github')) + 1)
     const isBurger = foldLabels.reduce((sum, label) => sum + cells(label) + 4 + 2 + 2, 0) + (Mark ? 3 : 0) + endCells > menuColumns
     const rule = (
       <Text dimColor wrap="truncate-end">
@@ -2542,6 +2567,10 @@ export const register: Register = on => {
     const brand = Mark ? <Mark source={ROUTER_MARK} alt={markAlt(ROUTER_MARK)} width={22} height={22} /> : null
     const repository = (prefix: string) =>
       iconKey(GITHUB_MARK, t('footer.github'), `${prefix}github`, () => void openUrl($, REPO_URL))
+    // The gear: the console shown, or the vaults again while it is; drawn
+    // held down while the console is in sight (no tab is open then).
+    const console_ = (prefix: string) =>
+      iconKey(GEAR_MARK, '⚙', `${prefix}nav-admin`, () => void showView($, isAdminShown ? 'vaults' : 'admin'), isAdminShown)
     // Two rows tall, as a closed tab is, so the version and the marks stand
     // level with the keys on the wide menu.
     const menuEnd = (prefix: string) => (
@@ -2559,6 +2588,7 @@ export const register: Register = on => {
             onPress={() => void update($, adminSection, () => 'general').then(() => showView($, 'admin'))}
           />
         )}
+        {console_(prefix)}
         {repository(prefix)}
       </Box>
     )
@@ -2570,12 +2600,15 @@ export const register: Register = on => {
               {brand}
               <Button
                 key={`${prefix}nav-burger`}
-                label={`☰ ${menuLabels.find(([id]) => id === view)?.[1] ?? ''}`}
+                label={`☰ ${menuLabels.find(([id]) => id === view)?.[1] ?? t('nav.admin')}`}
                 plain
                 onPress={() => void update($, navOpen, open => !open)}
               />
             </Box>
-            {repository(prefix)}
+            <Box key={`${prefix}nav-end`} flexDirection="row" gap={2} alignItems="center" flexShrink={0}>
+              {console_(prefix)}
+              {repository(prefix)}
+            </Box>
           </Box>
           {isNavOpen && (
             <Box key={`${prefix}nav-list`} flexDirection="column" paddingLeft={2}>
@@ -2608,36 +2641,60 @@ export const register: Register = on => {
           </Box>
         </Box>
       )
-    // What each mark does, under the menu: Obsidian's, Claude's, the planet —
-    // each while the console allows that way of opening a vault.
-    const legendItem = (key: string, source: string, glyph: string, text: string) => (
-      <Box key={key} flexDirection="row" gap={1} alignItems="center">
-        {Mark ? <Mark source={source} alt={markAlt(source)} width={14} height={14} /> : <Text>{glyph}</Text>}
+    // What each mark and each badge means, under the menu: one caption row in
+    // two groups, each a word and its items parted by "·" — "Ouvrir" and the
+    // marks that open a vault (Obsidian's, Claude's, the planet, each while
+    // the console allows that way), "Droits" and the three tiers' badges.
+    // Wide enough, the two stand on one line; in the side panel the second
+    // wraps under the first, a group kept whole — and a pane narrower than a
+    // group itself (70 and 74 cells in French, as the terminal counts them)
+    // wraps the group's items too, rather than cut them off at its edge
+    // (Codex, on the 50-column pane of the tests). Each item joins the hover
+    // group of its mark or tier, the tiles' with it: on the desktop the
+    // pointer on an item lights every tile's mark or radio of that kind, and
+    // the pointer on one of those lights the item.
+    const legendItem = (key: string, scope: string, mark: unknown, text: string) => (
+      <Box key={key} flexDirection="row" gap={1} alignItems="center" hover={{ scope, backgroundColor: HOVER_GROUND }}>
+        {mark as never}
         <Text size="caption" dimColor>
           {text}
         </Text>
       </Box>
     )
-    const legendItems = [
-      ...(open.obsidian ? [legendItem('legend-obsidian', OBSIDIAN_MARK, '💎', t('legend.obsidian'))] : []),
-      ...(open.claude ? [legendItem('legend-claude', CLAUDE_PANE_MARK, '✳', t('legend.claude'))] : []),
-      ...(open.browser ? [legendItem('legend-browser', GLOBE_MARK, '🌐', t('legend.browser'))] : []),
-    ]
-    const legend =
-      legendItems.length > 0 ? (
-        <Box key="legend" flexDirection="row" flexWrap="wrap" columnGap={2} alignItems="center">
-          {legendItems.flatMap((item, at) =>
+    const legendMark = (source: string, glyph: string) =>
+      Mark ? <Mark source={source} alt={markAlt(source)} width={14} height={14} /> : <Text>{glyph}</Text>
+    const legendGroup = (key: string, title: string, items: unknown[]) =>
+      items.length > 0 ? (
+        <Box key={key} flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+          <Text size="caption" weight="semibold">
+            {title}
+          </Text>
+          {items.flatMap((item, at) =>
             at === 0
               ? [item]
               : [
-                  <Text key={`legend-bar-${at}`} size="caption" dimColor>
-                    |
+                  <Text key={`${key}-dot-${at}`} size="caption" dimColor>
+                    ·
                   </Text>,
                   item,
                 ],
-          )}
+          ) as never}
         </Box>
       ) : null
+    const legend = (
+      <Box key="legend" flexDirection="row" flexWrap="wrap" columnGap={3} alignItems="center">
+        {legendGroup('legend-open', t('legend.open'), [
+          ...(open.obsidian ? [legendItem('legend-obsidian', 'open-obsidian', legendMark(OBSIDIAN_MARK, '💎'), t('legend.obsidian'))] : []),
+          ...(open.claude ? [legendItem('legend-claude', 'open-claude', legendMark(CLAUDE_PANE_MARK, '✳'), t('legend.claude'))] : []),
+          ...(open.browser ? [legendItem('legend-browser', 'open-browser', legendMark(GLOBE_MARK, '🌐'), t('legend.browser'))] : []),
+        ])}
+        {legendGroup(
+          'legend-rights',
+          t('legend.rights'),
+          MODES.map(m => legendItem(`legend-${m.mode}`, `tier-${m.mode}`, <Text>{m.icon}</Text>, t(`legend.${m.mode}`))),
+        )}
+      </Box>
+    )
     const sticky =
       scrolled > 0 ? (
         <Box key="sticky-bar" position="absolute" top={scrolled} left={0} right={0} flexDirection="column" backgroundColor="inverseText">
@@ -2645,27 +2702,6 @@ export const register: Register = on => {
         </Box>
       ) : null
 
-    // At the bottom: the administration console's fold (the version, the
-    // repository and the update badge are in the menu).
-    const footer = (
-      <Box key="pane-footer" flexDirection="row" justifyContent="flex-end" alignItems="center" gap={1} flexWrap="wrap">
-        <Button
-          key="toggle-admin"
-          label={isAdminShown ? t('footer.back') : t('footer.admin')}
-          variant="secondary"
-          onPress={() =>
-            void update($, showAdmin, shownNow => !shownNow).then(async () => {
-              if (await read($, showAdmin)) {
-                await Promise.all([checkWireguard($), readHooks($)])
-              } else {
-                // Folded: a key typed but not sent is dropped.
-                await update($, adminForm, now => (now.apiKey ? { ...now, apiKey: '' } : now))
-              }
-            })
-          }
-        />
-      </Box>
-    )
 
     const problems = (
       <Box flexDirection="column">
@@ -2718,9 +2754,7 @@ export const register: Register = on => {
               ? t('wg.absent')
               : t('wg.unknown')
     const removable = snap ? snap.available : []
-    // The console's four sections — general (language, plugin, WireGuard, the
-    // ways to open a vault), creating a vault, registering or removing an
-    // existing one, the hooks — as an accordion, one under the other, the whole
+    // The console's sections: an accordion, one under the other, the whole
     // width. Each has a header (a chevron, its title) that unfolds it and
     // folds the others; the open one's title lit, its body indented two
     // cells with a line of air above and below; a thin dim rule between two.
@@ -2748,24 +2782,91 @@ export const register: Register = on => {
         {text}
       </Text>
     )
+    const waysOn = [open.obsidian, open.browser, open.claude].filter(Boolean).length
     const headNotes: Record<string, unknown[]> = {
-      // Général holds WireGuard: its state closes the line, with its dot.
       general: [
         headNote('note-general', [languageName, upd?.installed ? `v${upd.installed}` : ''].filter(Boolean).join(' · ')),
         ...(upd?.isAvailable ? [headNote('note-update', t('update.badge'), 'claude')] : []),
+      ],
+      open: [headNote('note-open', t('admin.noteOpen', { on: waysOn, total: 3 }))],
+      create: [headNote('note-create', t('create.note'))],
+      wireguard: [
         headNote('note-wg-dot', '●', wg?.state === 'active' ? 'success' : wg?.state === 'inactive' || wg?.state === 'absent' ? 'warning' : undefined),
         headNote('note-wg', wgShort),
       ],
-      create: [headNote('note-create', t('create.note'))],
       register: [headNote('note-register', t('register.note'))],
+      unregister: [
+        headNote(
+          'note-unregister',
+          removable.length === 0 ? t('unregister.noteNone') : removable.length === 1 ? t('unregister.noteOne') : t('unregister.noteMany', { count: removable.length }),
+        ),
+      ],
+      // How many are on here, the ones wired machine-wide counted.
       hooks: hooks
         ? [headNote('note-hooks', t('hooks.note', { on: hooks.optIn.filter(h => h.enabled || h.global).length, total: hooks.optIn.length }))]
         : [],
     }
+    // Two layouts for the same seven sections. Wide enough (a desktop pane): a
+    // settings page, as ChatGPT's or Perplexity's — the sections listed down
+    // a side column (an icon, the name, the one shown on a grey ground), the
+    // shown section's title, its state line and its settings in a rounded
+    // card at the right. Narrower: the accordion, one section unfolded.
+    const navWidth = 26
+    const isSidebar = !isPhone && cardColumns >= 96
+    const shownSection: AdminSectionName = ADMIN_SECTIONS.find(n => n === openSection) ?? 'general'
+    // The card's inner width: the pane less the side column, the gap, the
+    // frame and its padding.
+    const pageColumns = Math.max(20, cardColumns - navWidth - 2 - 4)
+    // A setting as a row: its label (and a dim hint under it) at the left,
+    // its control at the right; a thin rule between two rows.
+    const rowRule = (key: string) => (
+      <Box key={`${key}-rule`} height={1} overflow="hidden">
+        <Text dimColor>{'─'.repeat(isSidebar ? pageColumns : Math.max(1, cardColumns - 2))}</Text>
+      </Box>
+    )
+    const settingRow = (key: string, label: unknown, control: unknown, hint?: string) => (
+      <Box key={key} flexDirection="row" justifyContent="space-between" alignItems="center" gap={2} flexWrap="wrap">
+        <Box key={`${key}-label`} flexDirection="column" flexShrink={1}>
+          {typeof label === 'string' ? <Text>{label}</Text> : (label as never)}
+          {hint && (
+            <Text size="caption" dimColor>
+              {hint}
+            </Text>
+          )}
+        </Box>
+        <Box key={`${key}-control`} flexDirection="row" flexWrap="wrap" gap={1} alignItems="center" flexShrink={0}>
+          {control as never}
+        </Box>
+      </Box>
+    )
+    const settingRows = (key: string, rows: unknown[]) => (
+      <Box key={key} flexDirection="column" gap={1}>
+        {rows.flatMap((row, i) => (i === 0 ? [row] : [rowRule(`${key}-${i}`), row])) as never}
+      </Box>
+    )
     const card = (key: string, title: string, body: unknown) => {
       const name = key.replace(/^admin-/, '')
       const isOpen = openSection === name
       const chevron = isOpen ? '▾' : '▸'
+      if (isSidebar) {
+        if (name !== shownSection) {
+          return null
+        }
+
+        return (
+          <Box key={key} flexDirection="column" gap={1}>
+            <Text size="heading" weight="semibold">
+              {title}
+            </Text>
+            <Box key={`admin-page-note`} flexDirection="row" gap={1} alignItems="center">
+              {(headNotes[name] ?? []) as never}
+            </Box>
+            <Box key={`${key}-panel`} flexDirection="column" gap={1} borderStyle="round" borderDimColor paddingX={1} paddingY={1}>
+              {body as never}
+            </Box>
+          </Box>
+        )
+      }
 
       return (
         <Box key={key} flexDirection="column">
@@ -2826,99 +2927,117 @@ export const register: Register = on => {
       </Box>
     )
     const isUpToDate = !!upd?.installed && !!upd.latest && !upd.isAvailable
-    const admin = (
-      <Box key="admin" flexDirection="column">
-        {isAdminShown && [
+    // The side list of the settings page: each section a row (its mark, its
+    // name), the shown one on a grey ground. The mark is an Svg beside the
+    // Button on the desktop (a Button may not hold one), a glyph inside it
+    // on the terminal.
+    const sectionTitles: Record<AdminSectionName, string> = {
+      general: t('admin.general'),
+      open: t('admin.open'),
+      create: t('create.title'),
+      wireguard: t('wg.title'),
+      register: t('register.title'),
+      unregister: t('unregister.title'),
+      hooks: t('hooks.title'),
+    }
+    const adminNav = (
+      <Box key="admin-nav" flexDirection="column" width={navWidth} flexShrink={0}>
+        {ADMIN_SECTIONS.map(name => {
+          const isShown = name === shownSection
+          const glyphColor =
+            name === 'wireguard' ? (wg?.state === 'active' ? 'success' : wg?.state === 'inactive' || wg?.state === 'absent' ? 'warning' : undefined) : undefined
+
+          return (
+            <Box key={`admin-nav-${name}`} flexDirection="row" gap={1} alignItems="center" paddingX={1} backgroundColor={isShown ? 'inactive' : undefined}>
+              {Mark && <Mark source={SECTION_MARKS[name].svg} alt={sectionTitles[name]} width={14} height={14} />}
+              <Button key={`admin-sec-${name}`} plain dimColor={!isShown} onPress={() => void update($, adminSection, () => name)}>
+                {!Mark && (
+                  <Text color={glyphColor} dimColor={!glyphColor && !isShown}>
+                    {SECTION_MARKS[name].glyph}{' '}
+                  </Text>
+                )}
+                <Text weight={isShown ? 'semibold' : undefined} dimColor={!isShown} wrap="truncate-end">
+                  {sectionTitles[name]}
+                </Text>
+              </Button>
+            </Box>
+          )
+        })}
+      </Box>
+    )
+    const adminSections = isAdminShown
+      ? [
           card(
             'admin-general',
             t('admin.general'),
-            <Box key="admin-general-body" flexDirection="column" gap={1}>
-            <Box key="admin-language" flexDirection="column">
-              <Text size="caption" dimColor>
-                {t('admin.language')}
-              </Text>
-              {Select ? (
-                <Select
-                  key="admin-language-select"
-                  options={languages.map(l => ({ value: l.code, label: l.name }))}
-                  value={languageCode}
-                  onSelect={(code: string) => void setLanguage($, code)}
-                />
-              ) : (
-                choice('admin-language-choice', languages.map(l => ({ value: l.code, label: l.name })), languageCode, code =>
-                  void setLanguage($, code),
-                )
-              )}
-            </Box>
-
-            <Box key="admin-update" flexDirection="column" gap={1}>
-              <Box key="admin-update-line" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
-                <Text size="caption" dimColor>
-                  {t('admin.plugin')}
-                </Text>
-                {upd?.installed && <Text>v{upd.installed}</Text>}
-                {isUpToDate && <Text color="success">●</Text>}
-                <Text size="caption" color={upd?.isAvailable ? 'warning' : undefined} dimColor={!upd?.isAvailable}>
-                  {!upd?.installed || !upd.latest
-                    ? t('update.unknown')
-                    : upd.isAvailable
-                      ? t('update.versions', { installed: upd.installed, latest: upd.latest })
-                      : t('admin.upToDate')}
-                </Text>
-                <Button key="update-check" label={t('update.check')} plain dimColor onPress={() => void checkUpdate($)} />
-              </Box>
-              {upd?.isAvailable && (
-                <Box key="admin-update-actions" flexDirection="row">
-                  <Button key="update-run" label={t('update.button')} variant="primary" onPress={() => void updatePlugin($)} />
-                </Box>
-              )}
-              {upd?.log && (
-                <Text size="caption" color={upd.log.startsWith(t('update.failed', { error: '' }).trim()) ? 'error' : 'success'}>
-                  {upd.log}
-                </Text>
-              )}
-            </Box>
-
-            <Box key="admin-wireguard" flexDirection="column" gap={1}>
-              <Text size="caption" dimColor>
-                {t('wg.title')}
-              </Text>
-                <Box key="admin-wireguard-line" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
-                  {wg?.state === 'active' && <Text color="success">●</Text>}
-                  <Text size="caption" color={wg?.state === 'active' ? undefined : wg?.state === 'checking' || !wg ? undefined : 'warning'} dimColor={!wg || wg.state === 'checking'}>
-                    {wgLine}
+            settingRows('admin-general-body', [
+              settingRow(
+                'admin-language',
+                t('admin.language'),
+                Select ? (
+                  <Select
+                    key="admin-language-select"
+                    options={languages.map(l => ({ value: l.code, label: l.name }))}
+                    value={languageCode}
+                    onSelect={(code: string) => void setLanguage($, code)}
+                  />
+                ) : (
+                  choice('admin-language-choice', languages.map(l => ({ value: l.code, label: l.name })), languageCode, code =>
+                    void setLanguage($, code),
+                  )
+                ),
+              ),
+              <Box key="admin-update" flexDirection="column" gap={1}>
+                {settingRow(
+                  'admin-update-line',
+                  t('admin.plugin'),
+                  [
+                    upd?.installed ? <Text key="update-installed">v{upd.installed}</Text> : null,
+                    isUpToDate ? (
+                      <Text key="update-dot" color="success">
+                        ●
+                      </Text>
+                    ) : null,
+                    <Text key="update-status" size="caption" color={upd?.isAvailable ? 'warning' : undefined} dimColor={!upd?.isAvailable}>
+                      {!upd?.installed || !upd.latest
+                        ? t('update.unknown')
+                        : upd.isAvailable
+                          ? t('update.versions', { installed: upd.installed, latest: upd.latest })
+                          : t('admin.upToDate')}
+                    </Text>,
+                    <Button key="update-check" label={t('update.check')} plain dimColor onPress={() => void checkUpdate($)} />,
+                    upd?.isAvailable ? (
+                      <Button key="update-run" label={t('update.button')} variant="primary" onPress={() => void updatePlugin($)} />
+                    ) : null,
+                  ],
+                )}
+                {upd?.log && (
+                  <Text size="caption" color={upd.log.startsWith(t('update.failed', { error: '' }).trim()) ? 'error' : 'success'}>
+                    {upd.log}
                   </Text>
-                  <Button key="wg-check" label={t('wg.check')} plain dimColor onPress={() => void checkWireguard($)} />
-                </Box>
-                <Box key="admin-wireguard-actions" flexDirection="row" flexWrap="wrap" gap={1}>
-                  {wg?.state === 'inactive' && (
-                    <Button key="wg-open" label={t('wg.openApp')} variant="primary" onPress={() => void openWireguard($)} />
-                  )}
-                  {wg?.state === 'absent' && (
-                    <Button key="wg-install" label={t('wg.install')} variant="primary" onPress={() => void openUrl($, WG_INSTALL_URL)} />
-                  )}
-                  <Button key="wg-guide" label={t('wg.guide')} plain onPress={() => void openUrl($, GUIDE_URL)} />
-                  <Button key="wg-prompt" label={t('wg.prompt')} plain onPress={() => void openUrl($, PROMPT_URL)} />
-                </Box>
-            </Box>
-
-            <Box key="admin-open" flexDirection="column" gap={1}>
-              <Text size="caption" dimColor>
-                {t('admin.open')}
-              </Text>
-              {(
+                )}
+              </Box>,
+            ]),
+          ),
+          card(
+            'admin-open',
+            t('admin.open'),
+            settingRows(
+              'admin-open-body',
+              (
                 [
                   ['obsidian', OBSIDIAN_MARK, '💎', t('admin.openObsidian')],
                   ['browser', GLOBE_MARK, '🌐', t('admin.openBrowser')],
                   ['claude', CLAUDE_PANE_MARK, '✳', t('admin.openClaude')],
                 ] as [keyof Openers, string, string, string][]
-              ).map(([way, source, glyph, label]) => (
-                <Box key={`admin-open-${way}`} flexDirection="column">
-                  <Box flexDirection="row" gap={1} alignItems="center">
+              ).map(([way, source, glyph, label]) =>
+                settingRow(
+                  `admin-open-${way}`,
+                  <Box key={`admin-open-${way}-name`} flexDirection="row" gap={1} alignItems="center" flexShrink={1}>
                     {Mark ? <Mark source={source} alt={markAlt(source)} width={14} height={14} /> : <Text>{glyph}</Text>}
-                    <Text size="caption">{label}</Text>
-                  </Box>
-                  {toggle(
+                    <Text>{label}</Text>
+                  </Box>,
+                  toggle(
                     `open-${way}`,
                     [
                       { value: 'on', label: t('admin.yes') },
@@ -2926,11 +3045,10 @@ export const register: Register = on => {
                     ],
                     open[way] ? 'on' : 'off',
                     value => void setOpener($, way, value === 'on'),
-                  )}
-                </Box>
-              ))}
-            </Box>
-            </Box>,
+                  ),
+                ),
+              ),
+            ),
           ),
           card(
             'admin-create',
@@ -3066,10 +3184,32 @@ export const register: Register = on => {
               ),
           ),
           card(
+            'admin-wireguard',
+            t('wg.title'),
+            <Box key="admin-wireguard-body" flexDirection="column" gap={1}>
+              <Box key="admin-wireguard-line" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+                {wg?.state === 'active' && <Text color="success">●</Text>}
+                <Text size="caption" color={wg?.state === 'active' ? undefined : wg?.state === 'checking' || !wg ? undefined : 'warning'} dimColor={!wg || wg.state === 'checking'}>
+                  {wgLine}
+                </Text>
+                <Button key="wg-check" label={t('wg.check')} plain dimColor onPress={() => void checkWireguard($)} />
+              </Box>
+              <Box key="admin-wireguard-actions" flexDirection="row" flexWrap="wrap" gap={1}>
+                {wg?.state === 'inactive' && (
+                  <Button key="wg-open" label={t('wg.openApp')} variant="primary" onPress={() => void openWireguard($)} />
+                )}
+                {wg?.state === 'absent' && (
+                  <Button key="wg-install" label={t('wg.install')} variant="primary" onPress={() => void openUrl($, WG_INSTALL_URL)} />
+                )}
+                <Button key="wg-guide" label={t('wg.guide')} plain onPress={() => void openUrl($, GUIDE_URL)} />
+                <Button key="wg-prompt" label={t('wg.prompt')} plain onPress={() => void openUrl($, PROMPT_URL)} />
+              </Box>
+            </Box>,
+          ),
+          card(
             'admin-register',
             t('register.title'),
-            <Box key="admin-register-body" flexDirection="column" gap={1}>
-              {!Input ? (
+            !Input ? (
                 <Text size="caption" dimColor>
                   {t('register.phone')}
                 </Text>
@@ -3132,71 +3272,71 @@ export const register: Register = on => {
                     <Button key="admin-register-submit" label={t('register.submit')} variant="primary" onPress={() => void registerVault($)} />
                   </Box>
                 </Box>
-              )}
-              <Box key="admin-unregister" flexDirection="column" gap={1}>
-                <Text size="caption" weight="semibold">
-                  {t('unregister.title')}
-                </Text>
-                {removable.length === 0 && (
-                  <Text size="caption" dimColor>
-                    {t('unregister.none')}
-                  </Text>
-                )}
-                {Select && removable.length > 0 && (
-                  <Box key="admin-remove" flexDirection="column" gap={1}>
-                    {removing ? (
-                      <Box key="admin-remove-ask" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
-                        <Text color="warning">{t('unregister.ask', { name: removing })}</Text>
-                        <Button key="admin-remove-confirm" label={t('unregister.confirm')} variant="primary" onPress={() => void unregisterVault($, removing)} />
-                        <Button key="admin-remove-cancel" label={t('unregister.cancel')} plain dimColor onPress={() => void update($, confirmRemove, () => null)} />
-                      </Box>
-                    ) : (
-                      <Box key="admin-remove-pick" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
-                        <Select
-                          key="admin-remove-select"
-                          options={removable.map(v => ({
-                            value: v.name,
-                            label: `${v.name} (${v.type === 'remote' ? t('place.remote') : t('place.local')})`,
-                          }))}
-                          value={picked && removable.some(v => v.name === picked) ? picked : removable[0]!.name}
-                          onSelect={(name: string) => void update($, removePick, () => name)}
-                        />
-                        <Button
-                          key="admin-remove-button"
-                          label={t('unregister.button')}
-                          onPress={() =>
-                            void update($, confirmRemove, () =>
-                              picked && removable.some(v => v.name === picked) ? picked : removable[0]!.name,
-                            )
-                          }
-                        />
-                      </Box>
-                    )}
-                  </Box>
-                )}
-                {!Select && removable.map(v => (
-                  <Box key={`rm-${v.name}`} flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={1}>
-                    <Box flexDirection="row" gap={1} flexShrink={1} alignItems="center">
-                      {dot(v.online, v.type === 'remote')}
-                      <Text wrap="truncate-end">{v.name}</Text>
-                      <Text size="caption" dimColor>
-                        {v.type === 'remote' ? t('place.remote') : t('place.local')}
-                      </Text>
-                    </Box>
-                    {removing === v.name ? (
-                      <Box key={`rm-confirm-${v.name}`} flexDirection="row" gap={1}>
-                        <Button key={`unregister-confirm-${v.name}`} label={t('unregister.confirm')} variant="primary" onPress={() => void unregisterVault($, v.name)} />
-                        <Button key={`unregister-cancel-${v.name}`} label={t('unregister.cancel')} plain dimColor onPress={() => void update($, confirmRemove, () => null)} />
-                      </Box>
-                    ) : (
-                      <Button key={`unregister-${v.name}`} label={t('unregister.button')} plain dimColor onPress={() => void update($, confirmRemove, () => v.name)} />
-                    )}
-                  </Box>
-                ))}
+              ),
+          ),
+          card(
+            'admin-unregister',
+            t('unregister.title'),
+            <Box key="admin-unregister-body" flexDirection="column" gap={1}>
+              {removable.length === 0 && (
                 <Text size="caption" dimColor>
-                  {t('unregister.hint')}
+                  {t('unregister.none')}
                 </Text>
-              </Box>
+              )}
+              {Select && removable.length > 0 && (
+                <Box key="admin-remove" flexDirection="column" gap={1}>
+                  {removing ? (
+                    <Box key="admin-remove-ask" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+                      <Text color="warning">{t('unregister.ask', { name: removing })}</Text>
+                      <Button key="admin-remove-confirm" label={t('unregister.confirm')} variant="primary" onPress={() => void unregisterVault($, removing)} />
+                      <Button key="admin-remove-cancel" label={t('unregister.cancel')} plain dimColor onPress={() => void update($, confirmRemove, () => null)} />
+                    </Box>
+                  ) : (
+                    <Box key="admin-remove-pick" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+                      <Select
+                        key="admin-remove-select"
+                        options={removable.map(v => ({
+                          value: v.name,
+                          label: `${v.name} (${v.type === 'remote' ? t('place.remote') : t('place.local')})`,
+                        }))}
+                        value={picked && removable.some(v => v.name === picked) ? picked : removable[0]!.name}
+                        onSelect={(name: string) => void update($, removePick, () => name)}
+                      />
+                      <Button
+                        key="admin-remove-button"
+                        label={t('unregister.button')}
+                        onPress={() =>
+                          void update($, confirmRemove, () =>
+                            picked && removable.some(v => v.name === picked) ? picked : removable[0]!.name,
+                          )
+                        }
+                      />
+                    </Box>
+                  )}
+                </Box>
+              )}
+              {!Select && removable.map(v => (
+                <Box key={`rm-${v.name}`} flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={1}>
+                  <Box flexDirection="row" gap={1} flexShrink={1} alignItems="center">
+                    {dot(v.online, v.type === 'remote')}
+                    <Text wrap="truncate-end">{v.name}</Text>
+                    <Text size="caption" dimColor>
+                      {v.type === 'remote' ? t('place.remote') : t('place.local')}
+                    </Text>
+                  </Box>
+                  {removing === v.name ? (
+                    <Box key={`rm-confirm-${v.name}`} flexDirection="row" gap={1}>
+                      <Button key={`unregister-confirm-${v.name}`} label={t('unregister.confirm')} variant="primary" onPress={() => void unregisterVault($, v.name)} />
+                      <Button key={`unregister-cancel-${v.name}`} label={t('unregister.cancel')} plain dimColor onPress={() => void update($, confirmRemove, () => null)} />
+                    </Box>
+                  ) : (
+                    <Button key={`unregister-${v.name}`} label={t('unregister.button')} plain dimColor onPress={() => void update($, confirmRemove, () => v.name)} />
+                  )}
+                </Box>
+              ))}
+              <Text size="caption" dimColor>
+                {t('unregister.hint')}
+              </Text>
             </Box>,
           ),
           card(
@@ -3206,38 +3346,28 @@ export const register: Register = on => {
               <Text size="caption" dimColor>
                 {hooks ? t('hooks.intro', { workspace: hooks.workspace }) : t('hooks.reading')}
               </Text>
-              {hooks && (
-                <Box key="admin-hooks-always" flexDirection="column">
-                  <Text size="caption" weight="semibold">
-                    {t('hooks.alwaysOn')}
-                  </Text>
-                  {hooks.alwaysOn.map(name => (
-                    <Box key={`hook-always-${name}`} flexDirection="row" gap={1}>
-                      <Text color="success">✓</Text>
-                      <Box flexDirection="column" flexShrink={1}>
-                        <Text>{name}</Text>
-                        <Text size="caption" dimColor>
-                          {t(`hook.${name}`)}
-                        </Text>
-                      </Box>
-                    </Box>
-                  ))}
-                </Box>
-              )}
-              {hooks && (
-                <Box key="admin-hooks-optin" flexDirection="column" gap={1}>
-                  <Text size="caption" weight="semibold">
-                    {t('hooks.optIn')}
-                  </Text>
-                  {hooks.optIn.map(hook => (
-                    <Box key={`hook-${hook.name}`} flexDirection="column">
-                      <Text weight={hook.enabled || hook.global ? 'semibold' : 'regular'}>{hook.name}</Text>
-                      <Text size="caption" dimColor>
-                        {t(`hook.${hook.name}`)}
-                      </Text>
-                      {hook.global ? (
-                        <Text size="caption" color="warning">
-                          {t('hooks.global')}
+              {hooks &&
+                settingRows('admin-hooks-rows', [
+                  // The read-only ones: on everywhere, no switch.
+                  ...hooks.alwaysOn.map(name =>
+                    settingRow(
+                      `hook-always-${name}`,
+                      name,
+                      <Text key={`hook-always-${name}-on`} size="caption" color="success">
+                        {`✓ ${t('hooks.alwaysOnShort')}`}
+                      </Text>,
+                      t(`hook.${name}`),
+                    ),
+                  ),
+                  // The others, off by default. One still wired machine-wide is
+                  // said so, with no switch that would not hold.
+                  ...hooks.optIn.map(hook =>
+                    settingRow(
+                      `hook-${hook.name}`,
+                      hook.name,
+                      hook.global ? (
+                        <Text key={`hook-${hook.name}-global`} size="caption" color="warning">
+                          {t('hooks.globalShort')}
                         </Text>
                       ) : (
                         toggle<'on' | 'off'>(
@@ -3249,22 +3379,35 @@ export const register: Register = on => {
                           hook.enabled ? 'on' : 'off',
                           value => (value === 'on') !== hook.enabled && void setHook($, hook.name, value === 'on'),
                         )
-                      )}
-                    </Box>
-                  ))}
-                  <Text size="caption" dimColor>
-                    {t('hooks.whenApplied')}
-                  </Text>
-                </Box>
+                      ),
+                      hook.global ? `${t(`hook.${hook.name}`)} ${t('hooks.global')}` : t(`hook.${hook.name}`),
+                    ),
+                  ),
+                ])}
+              {hooks && (
+                <Text size="caption" dimColor>
+                  {t('hooks.whenApplied')}
+                </Text>
               )}
             </Box>,
           ),
-        ]}
+        ]
+      : []
+    const admin = isSidebar ? (
+      <Box key="admin" flexDirection="row" gap={2} alignItems="flex-start">
+        {isAdminShown && adminNav}
+        <Box key="admin-page" flexDirection="column" flexGrow={1} flexShrink={1} minWidth={40}>
+          {adminSections as never}
+        </Box>
+      </Box>
+    ) : (
+      <Box key="admin" flexDirection="column">
+        {adminSections as never}
       </Box>
     )
 
     // The console open, it is the pane's whole content: the vaults wait behind
-    // "‹ Retour aux vaults" in the footer.
+    // the gear at the menu's right, which brings them back.
     if (isAdminShown) {
       // What the vaults view would say on top, said here too: the operation
       // under way, and every remote vault silent at once.
@@ -3286,7 +3429,6 @@ export const register: Register = on => {
           )}
           {problems}
           {admin}
-          {footer}
           {sticky}
         </Box>
       )
@@ -3297,7 +3439,6 @@ export const register: Register = on => {
           {navMenu('')}
           {statusLine}
           {problems}
-          {footer}
           {sticky}
         </Box>
       )
@@ -3319,12 +3460,12 @@ export const register: Register = on => {
       isRemote(row)
         ? row.uiUrl
           ? [
-              ...(open.browser ? [iconKey(GLOBE_MARK, '🌐', `web-${row.name}`, () => void openInBrowser($, row))] : []),
-              ...(open.claude ? [iconKey(CLAUDE_PANE_MARK, '✳', `ui-${row.name}`, () => void openUi($, row))] : []),
+              ...(open.browser ? [iconKey(GLOBE_MARK, '🌐', `web-${row.name}`, () => void openInBrowser($, row), false, 'open-browser')] : []),
+              ...(open.claude ? [iconKey(CLAUDE_PANE_MARK, '✳', `ui-${row.name}`, () => void openUi($, row), false, 'open-claude')] : []),
             ]
           : []
         : open.obsidian && row.path && row.isKnownToObsidian !== false
-          ? [iconKey(OBSIDIAN_MARK, '💎', `obsidian-${row.name}`, () => void openInObsidian($, row))]
+          ? [iconKey(OBSIDIAN_MARK, '💎', `obsidian-${row.name}`, () => void openInObsidian($, row), false, 'open-obsidian')]
           : []
     // What a vault's marks cannot say, on a line under its head: a remote one
     // that does not answer (its web UI may, so its marks stay), with a retry;
@@ -3411,10 +3552,10 @@ export const register: Register = on => {
       )
     }
     // The tiles' grid, from the pane's width. A bound vault's tile is as wide
-    // as its three fixed columns, and as many stand on a line as the pane
-    // holds — one in the narrow side panel, two on a full window, more on a
-    // wider screen; a pane narrower than one tile gets a tile as wide as the
-    // pane, its columns stacked. A tile to add fits up to four per line.
+    // as its head needs, and as many stand on a line as the pane holds — one
+    // in the narrow side panel, two on a full window, more on a wider screen;
+    // a pane narrower than one tile gets a tile as wide as the pane, the
+    // rights on a line of their own. A tile to add fits up to four per line.
     const columns = e.props.bodyColumns ?? 60
     const fit = (most: number, least: number) => {
       for (let n = most; n > 1; n -= 1) {
@@ -3426,20 +3567,21 @@ export const register: Register = on => {
 
       return Math.max(least, columns)
     }
-    // The columns' widths, cells, each a little over what it holds: the
-    // state's over its two keys; the rights' over their title and the longest
-    // option with its ring and badge; the files' over the update's title and
-    // date, and a path of some twenty cells — and the widest of the three,
-    // wider than the rights' by a cell at least, whatever the language. Each
-    // of the last two keeps a cell of air off the rule at its left.
-    const stateWidth = Math.max(cells(t('state.active')), cells(t('state.pause'))) + 2
-    const rightsWidth = Math.max(cells(t('mode.radioTitle')), ...MODES.map(m => cells(modeLabel(m.mode)) + 5)) + 1
-    const filesWidth = Math.max(cells(t('activity.title')) + 1, cells(stamp('2026-12-31T23:59:00.000Z')) + 1, 23, rightsWidth + 1)
-    // The frame and its padding (4), the two rules (2), the columns.
-    const threeColumnsWidth = 4 + stateWidth + 1 + rightsWidth + 1 + filesWidth
-    const isStacked = columns < threeColumnsWidth
-    // Stacked, the tile is as wide as the pane, however narrow.
-    const boundWidth = isStacked ? columns : threeColumnsWidth
+    // The rights in a tile's head, cells: their short title, then each radio
+    // after a gap — its ring, a gap, its badge counted as two cells (an
+    // emoji's, whatever `cells` makes of ✋).
+    const rightsWidth = cells(t('mode.headTitle')) + MODES.length * (1 + 4)
+    // A bound vault's tile, cells: its frame and padding (4); its head's left
+    // part — the dot (2), a gap, room for a name of twenty cells, then two
+    // marks of two cells each after a gap (a remote vault with a web UI has
+    // two); a gap; the rights; a gap and ✕. A longer name is cut; a wider
+    // pane holds more tiles, not wider ones.
+    const NAME_ROOM = 20
+    const tileWidth = 4 + 2 + 1 + NAME_ROOM + 2 * (1 + 2) + 1 + rightsWidth + 1 + 1
+    // Narrower than a tile, the pane gets one as wide as itself, the rights
+    // on their own line under the head.
+    const isStacked = columns < tileWidth
+    const boundWidth = isStacked ? columns : tileWidth
     // A tile to add holds less, but not so little that two squeeze in the side panel.
     const addWidth = fit(4, TILE_WIDTH + 4)
     // A horizontal rule across a tile's inside (its frame and padding taken
@@ -3452,15 +3594,18 @@ export const register: Register = on => {
         <Text dimColor>{'─'.repeat(Math.max(1, width - 4))}</Text>
       </Box>
     )
-    // A vault's tile: its state and name on top, with what acts on the tile
-    // as a whole on the right, a rule under them; then its lines, each
-    // wrapping inside it, and its body (a secondary's columns) on the full width.
+    // A vault's tile: its state, name and marks on top, with what acts on the
+    // tile as a whole on the right (a bound vault's rights among it), a rule
+    // under them; then its lines, each wrapping inside it, its body on the
+    // full width, and its foot at the bottom right. `headLine`: a second head
+    // row under the first, before the rule — the rights of a tile narrower
+    // than its head needs.
     const tile = (
       key: string,
       row: VaultRow,
       right: unknown,
       lines: unknown[],
-      opts: { width: number; isDim?: boolean; isHighlighted?: boolean; foot?: unknown; body?: unknown; marksInHead?: boolean },
+      opts: { width: number; isDim?: boolean; isHighlighted?: boolean; foot?: unknown; body?: unknown; marksInHead?: boolean; headLine?: unknown },
     ) => (
       <Box
         key={key}
@@ -3486,6 +3631,12 @@ export const register: Register = on => {
           </Box>
           {right as never}
         </Box>
+        {opts.headLine !== undefined && (
+          // Keyed before the tile's key, never after (see the foot).
+          <Box key={`rights-${key}`} flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+            {opts.headLine as never}
+          </Box>
+        )}
         {hrule(`hrule-${key}`, opts.width)}
         {lines.filter(line => !(Array.isArray(line) && line.length === 0)).map((line, i) => (
           <Box
@@ -3539,11 +3690,29 @@ export const register: Register = on => {
         })
       }
     }
-    // A secondary's state, as two keys one over the other: ▶ Actif and ❚❚
-    // Pause, the one in force on a tinted ground (green, soft red): a ground
-    // the desktop draws, where a native button keeps no colour of its own text.
+    // The primary's tier set from its radios, the same way: the router told,
+    // the tile drawn with the new tier at once (and drawn back if it refuses).
+    // A narrowing is the user's to ask for; the router refuses a stranger.
+    const setPrimaryMode = (row: VaultRow, value: string) => {
+      const next = MODES.find(m => m.mode === value)
+      if (next && next.mode !== snap.primaryMode) {
+        void act($, {
+          doing: t('action.mode.doing', { name: row.name, mode: modeLabel(next.mode).toLowerCase() }),
+          done: t('action.mode.done', { name: row.name, mode: modeLabel(next.mode).toLowerCase() }),
+          tool: 'set_primary_vault_mode',
+          args: () => ({ vault: row.name, mode: next.mode }),
+          shows: snap => ({ ...snap, primaryMode: next.mode }),
+        })
+      }
+    }
+    // A secondary's state, as two keys side by side at the tile's foot: ▶
+    // Actif and ❚❚ Pause, the one in force on a tinted ground (green, soft
+    // red): a ground the desktop draws, where a native button keeps no colour
+    // of its own text. One under the other where the two do not fit on a
+    // line (Codex: "▶ Active" and "❚❚ Pause" take 17 cells, a 20-column
+    // pane's tile holds 16).
     const stateSwitch = (s: Secondary, isPaused: boolean) => (
-      <Box key={`state-${s.name}`} flexDirection="column" alignItems="center">
+      <Box key={`state-${s.name}`} flexDirection="row" flexWrap="wrap" gap={1} alignItems="center" justifyContent="flex-end">
         <Box key={`state-on-${s.name}`} backgroundColor={isPaused ? undefined : 'diffAddedDimmed'}>
           <Button
             key={`resume-${s.name}`}
@@ -3572,109 +3741,80 @@ export const register: Register = on => {
         </Box>
       </Box>
     )
-    // The parting between two of a tile's columns, dim: side by side, a
-    // vertical rule of `rows` cells (the desktop draws no border on one side
-    // only); stacked, a horizontal rule across the tile.
-    // Keys: one word before the name, no word a prefix of another's ("cell",
-    // "front", "rule-N", "rulecell-N", "stack"), so that no vault's name can
-    // forge a sibling's key.
-    const divider = (key: string, rows: number) =>
-      isStacked ? (
-        hrule(`rule-${key}`, boundWidth)
-      ) : (
-        <Box key={`rule-${key}`} flexDirection="column" flexShrink={0} overflow="hidden">
-          {Array.from({ length: rows }, (_, i) => (
-            <Text key={`rulecell-${i}-${key}`} dimColor>
-              │
-            </Text>
-          ))}
-        </Box>
-      )
-    // A vault's write tier as three radio buttons under a bold title, title
-    // and options together at the left, the one in force marked ◉ and lit, the
-    // others ○ and dim. A secondary's are keys, a press sets its tier; the
-    // primary's are told, not set — the one it has (read-only while the
-    // session is locked, else writing without asking) marked, as text.
-    const tierMenu = (row: VaultRow, mode: SecondaryMode, setter: ((mode: SecondaryMode) => void) | null) => (
-      <Box key={`mode-${row.name}`} flexDirection="column" flexShrink={1} alignItems="flex-start">
+    // A vault's write tier as three radios in its head, each its ring and its
+    // badge alone (the legend under the menu says what each badge means)
+    // after a short title; the one in force ◉ and lit, the others ○ and dim.
+    // Keys where a press sets the tier (a secondary's, and the primary's on a
+    // router that keeps one for it); else told, as text — the primary of an
+    // older router: read-only while the session is locked, else writing
+    // without asking. Each radio's box joins its tier's hover group, the
+    // legend's item with it: on the desktop the pointer on one lights the
+    // other (the terminal has no hover). In a tile's head the row never
+    // shrinks (the tile is as wide as it needs); on its own line, in a pane
+    // narrower than a tile, it wraps between its title and its radios, and
+    // between radios, rather than run past the tile's edge (Codex: a
+    // 20-column pane holds 16 cells, the rights take 33).
+    // Keys: one word before the name, no word a prefix of another's ("mode",
+    // "tiers", "radio-<tier>", "tier-<tier>", "side", "rights"), so that no
+    // vault's name can forge a sibling's key.
+    const tierRadios = (row: VaultRow, mode: SecondaryMode, setter: ((mode: SecondaryMode) => void) | null) => (
+      <Box
+        key={`mode-${row.name}`}
+        flexDirection="row"
+        flexWrap={isStacked ? 'wrap' : undefined}
+        gap={1}
+        alignItems="center"
+        flexShrink={isStacked ? 1 : 0}
+      >
         <Text size="body" weight="semibold" wrap="truncate-end">
-          {t('mode.radioTitle')}
+          {t('mode.headTitle')}
         </Text>
-        <Box key={`tiers-${row.name}`} flexDirection="column" alignItems="flex-start">
+        <Box key={`tiers-${row.name}`} flexDirection="row" flexWrap={isStacked ? 'wrap' : undefined} gap={1} alignItems="center">
           {MODES.map(m => {
-            const label = `${mode === m.mode ? '◉' : '○'} ${m.icon} ${modeLabel(m.mode)}`
+            const label = `${mode === m.mode ? '◉' : '○'} ${m.icon}`
 
-            return setter ? (
-              <Button key={`tier-${m.mode}-${row.name}`} label={label} plain dimColor={mode !== m.mode} onPress={() => setter(m.mode)} />
-            ) : (
-              <Text key={`tier-${m.mode}-${row.name}`} dimColor={mode !== m.mode} wrap="truncate-end">
-                {label}
-              </Text>
+            return (
+              <Box key={`radio-${m.mode}-${row.name}`} hover={{ scope: `tier-${m.mode}`, backgroundColor: HOVER_GROUND }}>
+                {setter ? (
+                  <Button key={`tier-${m.mode}-${row.name}`} label={label} plain dimColor={mode !== m.mode} onPress={() => setter(m.mode)} />
+                ) : (
+                  <Text key={`tier-${m.mode}-${row.name}`} dimColor={mode !== m.mode}>
+                    {label}
+                  </Text>
+                )}
+              </Box>
             )
           })}
         </Box>
       </Box>
     )
-    // A bound vault's front: three columns of fixed widths, a rule between
-    // two. The first, centred: a secondary's state keys, then the marks that
-    // open the vault, one under the other (the primary has the marks alone);
-    // the second, at its left: its rights under their title; the third, at
-    // its left and the widest: its last update and its last files. Side by
-    // side, the rules run two cells taller than the tallest column, a line of
-    // air above and below; in a pane too narrow for the three, they stack with
-    // a rule between. `state`: a secondary's, with its switch; null for the primary.
-    const front = (row: VaultRow, state: { s: Secondary; isPaused: boolean } | null) => {
-      const stacked = marks(row)
-      const recent = activityOf(row)?.recent ?? []
-      // The rules' cells: the tallest column as counted in lines, plus one of
-      // air at each end. Stretched to the row and clipped, a rule is as tall as
-      // the row turns out on the surface, whatever a mark's height there.
-      const rows =
-        Math.max((state ? 2 : 0) + (stacked.length > 0 ? (state ? 1 : 0) + stacked.length : 0), 1 + MODES.length, 2 + recent.length) + 2
-      const mode: SecondaryMode = state ? state.s.mode : snap.isLocked ? 'locked' : 'writable'
-      const cell = (key: string, width: number, body: unknown, atLeft = false) => (
-        <Box
-          key={`cell-${key}-${row.name}`}
-          flexDirection="column"
-          alignItems={atLeft ? 'flex-start' : 'center'}
-          justifyContent="center"
-          gap={1}
-          width={isStacked ? undefined : width}
-          paddingY={1}
-          paddingLeft={atLeft ? 1 : 0}
-          flexShrink={0}
-          overflow="hidden"
-        >
-          {body as never}
+    // A bound vault's rights: a secondary's own tier, set from its radios;
+    // the primary's as the router reports it (v0.117.0+), set the same way —
+    // or, on an older router, told alone: read-only while the session is
+    // locked, else writing without asking.
+    const rightsOf = (row: VaultRow, secondary: Secondary | null) =>
+      secondary
+        ? tierRadios(row, secondary.mode, m => setMode(secondary, m))
+        : tierRadios(row, snap.primaryMode ?? (snap.isLocked ? 'locked' : 'writable'), snap.primaryMode ? m => setPrimaryMode(row, m) : null)
+    // The head's right part: the rights, where the head holds them (a pane at
+    // least a tile wide), then what acts on the tile as a whole — a
+    // secondary's ✕; the primary has nothing there.
+    const headRight = (row: VaultRow, parts: unknown[]) =>
+      parts.length > 0 ? (
+        <Box key={`side-${row.name}`} flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
+          {parts as never}
         </Box>
-      )
-
-      return (
-        <Box key={`front-${row.name}`} flexDirection={isStacked ? 'column' : 'row'} alignItems="stretch" justifyContent="flex-start">
-          {cell('state', stateWidth, [
-            ...(state ? [stateSwitch(state.s, state.isPaused)] : []),
-            ...(stacked.length > 0
-              ? [
-                  <Box key={`stack-${row.name}`} flexDirection="column" alignItems="center" flexShrink={0}>
-                    {stacked as never}
-                  </Box>,
-                ]
-              : []),
-          ])}
-          {divider(`1-${row.name}`, rows)}
-          {cell('rights', rightsWidth, tierMenu(row, mode, state ? m => setMode(state.s, m) : null), true)}
-          {divider(`2-${row.name}`, rows)}
-          {/* Stacked: the tile's inside (its frame and padding, 4) less the cell's own padding. */}
-          {cell('files', filesWidth, activityColumn(row, Math.max(1, isStacked ? boundWidth - 5 : filesWidth - 1)), true)}
-        </Box>
-      )
-    }
+      ) : null
+    // A bound vault's body, on the tile's full width: its last update and its
+    // last files, the paths cut to the tile's inside (its frame and padding, 4).
+    const body = (row: VaultRow) => activityColumn(row, Math.max(1, boundWidth - 4))
     // A secondary's tile, paused or not, in its place: ✕ removes it from the
-    // project, the links open it, the menu sets its tier, the switch pauses it.
-    const secondaryTile = (s: Secondary, isPaused: boolean) =>
-      tile(
-        `sec-${s.name}`,
-        s,
+    // project, the marks open it, the radios set its tier, the keys at its
+    // foot pause and resume it. Narrower than a tile, the pane puts the
+    // rights on their own line under the head.
+    const secondaryTile = (s: Secondary, isPaused: boolean) => {
+      const rights = rightsOf(s, s)
+      const remove = (
         <Button
           key={`remove-${s.name}`}
           plain
@@ -3695,10 +3835,17 @@ export const register: Register = on => {
           }
         >
           <Text weight="bold">✕</Text>
-        </Button>,
-        [notes(s)],
-        { width: boundWidth, isDim: isPaused, body: front(s, { s, isPaused }), marksInHead: false },
+        </Button>
       )
+
+      return tile(`sec-${s.name}`, s, headRight(s, isStacked ? [remove] : [rights, remove]), [notes(s)], {
+        width: boundWidth,
+        isDim: isPaused,
+        body: body(s),
+        foot: stateSwitch(s, isPaused),
+        headLine: isStacked ? rights : undefined,
+      })
+    }
 
     const primary = (
       <Box flexDirection="column" gap={1}>
@@ -3707,14 +3854,25 @@ export const register: Register = on => {
           tile(
             'primary-row',
             snap.primary,
-            <Box key="primary-badge" flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
-              <Text color="claude">●</Text>
-              <Text size="caption">{t('primary.badge')}</Text>
-            </Box>,
-            // The same front as a secondary's: its marks, its rights (told,
-            // not set), its last update and files.
+            headRight(snap.primary, isStacked ? [] : [rightsOf(snap.primary, null)]),
             [notes(snap.primary)],
-            { width: boundWidth, isHighlighted: true, body: front(snap.primary, null), marksInHead: false },
+            // The same shape as a secondary's: its marks in its head, its
+            // rights at the right, its last update and files on the full
+            // width; at its foot, where a secondary has its state keys, the
+            // badge that says it is the default — a primary is never paused
+            // and never removed.
+            {
+              width: boundWidth,
+              isHighlighted: true,
+              body: body(snap.primary),
+              headLine: isStacked ? rightsOf(snap.primary, null) : undefined,
+              foot: (
+                <Box key="primary-badge" flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
+                  <Text color="claude">●</Text>
+                  <Text size="caption">{t('primary.badge')}</Text>
+                </Box>
+              ),
+            },
           )
         ) : (
           <Box key="primary-none" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
@@ -3972,7 +4130,6 @@ export const register: Register = on => {
         {primary}
         {secondaries}
         {adding}
-        {footer}
         {sticky}
       </Box>
     )
@@ -3997,20 +4154,23 @@ export const register: Register = on => {
     // The terminal draws no SVG (its element draws nothing there): no mark is
     // drawn, and none is counted.
     const BandSvg = e.surface !== 'terminal' && 'Svg' in bandEls ? bandEls.Svg : null
-    // A graphical surface parts the vaults with a "·"; the terminal with a "│".
+    // In the line's first form a graphical surface frames each vault and the
+    // terminal parts two with a "│"; the second form frames nothing.
     const isChip = !!BandSvg
     const bandOpen = await read($, openers)
     // The cells a name's controls take beyond the name: Obsidian's mark (2 and
     // a gap) for a local vault; for a remote one the planet and Claude's mark
     // (a gap and 2 each), on the terminal 🌐 and ✳ (a gap and 2, a gap and 1).
-    const markCells = (row: VaultRow) => {
+    // On the terminal a named local vault has no mark (its name is the key
+    // that opens it); one the menu names instead (`isNamed` false) gets 💎.
+    const markCells = (row: VaultRow, isNamed = true) => {
       const target = openTarget(row)
 
       return !target
         ? 0
         : target === 'browser'
           ? (bandOpen.browser ? 3 : 0) + (bandOpen.claude ? (BandSvg ? 3 : 2) : 0)
-          : bandOpen.obsidian && BandSvg
+          : bandOpen.obsidian && (BandSvg || !isNamed)
             ? 3
             : 0
     }
@@ -4019,12 +4179,12 @@ export const register: Register = on => {
     await read($, paneVersion)
     await read($, language)
     const isShown = isPanePlaced
-    const page = await read($, bandPage)
+    const pick = await read($, bandPick)
     const names = snap.secondaries.map(s => s.name)
     const paused = snap.paused ?? []
     // Every secondary on the line, in the binding's order, paused or not: each
-    // with its own ▶ (pause) or ❚❚ (resume), right where it is named. A pause
-    // changes the control, never the place.
+    // with its own ▶ (pause) or dimmed ▶ (resume), right where it is named. A
+    // pause changes the control, never the place.
     const rank = (name: string) => {
       const at = (snap.order ?? []).indexOf(name)
 
@@ -4034,36 +4194,45 @@ export const register: Register = on => {
       ...snap.secondaries.map(row => ({ row, isPaused: false })),
       ...paused.map(row => ({ row, isPaused: true })),
     ].sort((x, y) => rank(x.row.name) - rank(y.row.name))
-    const pages = bandPages(
-      snap.primary?.name ?? null,
-      entries.map(entry => entry.row.name),
-      e.props.bodyColumns,
-      entries.map(entry => entry.isPaused),
-      entries.map(entry => markCells(entry.row)),
-      snap.primary ? markCells(snap.primary) : 0,
-      !!BandSvg,
-    )
-    // The page shown: the one kept, within the pages the width now allows.
-    const pageAt = Math.min(Math.max(0, page), pages.length - 1)
-    const start = pages[pageAt] ?? 0
+    const primaryName = snap.primary?.name ?? null
+    const primaryMark = snap.primary ? markCells(snap.primary) : 0
     const fit = bandFit(
-      snap.primary?.name ?? null,
+      primaryName,
       entries.map(entry => entry.row.name),
       e.props.bodyColumns,
-      entries.map(entry => entry.isPaused),
       entries.map(entry => markCells(entry.row)),
-      snap.primary ? markCells(snap.primary) : 0,
-      start,
+      primaryMark,
       !!BandSvg,
     )
-    const more = moreText(fit.hidden)
+    // The line's second form, when every slot does not fit: a menu of the
+    // secondaries, each row its state, its name and its tier as glyphs, and
+    // the picked one's controls beside it. The pick is the name kept, or the
+    // first bound when none is kept or the kept one is gone.
+    const isPick = fit.hidden > 0
+    const picked = entries.find(entry => entry.row.name === pick) ?? entries[0]
+    const menuLabel = (entry: { row: Secondary; isPaused: boolean }) => `${entry.isPaused ? '⏸' : '▶'} ${entry.row.name} ${iconOf(entry.row.mode)}`
+    // The menu's element; a surface without it shows the picked one's whole
+    // slot, named, and a dim count of the others. The mobile app's table has
+    // none (its type says so; the harness's does, drawn as a bare Box), so it
+    // is ruled out by name, as the pane rules it out for its own menus.
+    const BandSelect = e.surface !== 'mobile' && 'Select' in bandEls ? bandEls.Select : null
+    const isCompact =
+      isPick &&
+      !!picked &&
+      bandPickIsCompact(
+        primaryName,
+        primaryMark,
+        BandSelect ? entries.map(menuLabel) : null,
+        { name: picked.row.name, mark: markCells(picked.row, !BandSelect), others: entries.length - 1 },
+        e.props.bodyColumns,
+      )
     // The band's width and what fitted, in the trace (see `traceScroll`): what
     // `bandFit` counts, beside what a surface draws, sets the count right.
     const bandLine = JSON.stringify([
       e.surface,
       e.props.bodyColumns,
-      start,
       fit.shown,
+      isCompact,
       snap.primary?.name ?? '',
       entries.map(entry => [entry.row.name, entry.isPaused]),
     ])
@@ -4073,7 +4242,7 @@ export const register: Register = on => {
         kind: 'band',
         surface: e.surface,
         bodyColumns: e.props.bodyColumns,
-        start,
+        form: isPick ? (isCompact ? 'pick-compact' : 'pick') : 'line',
         shown: fit.shown,
         hidden: fit.hidden,
         names: entries.map(entry => entry.row.name),
@@ -4137,8 +4306,6 @@ export const register: Register = on => {
         </Box>
       )
     }
-    // This page's run of secondaries.
-    const onLine = entries.slice(start, start + fit.shown)
     // A secondary's control: ▶ on a green ground while it runs (a press pauses
     // it); while it is paused, the same ▶ dimmed on no ground, a key that
     // reads as off (a press resumes it). Asked for in place of a red ❚❚.
@@ -4152,6 +4319,43 @@ export const register: Register = on => {
           <Button key={`band-${list}pause-${row.name}`} label="▶" plain onPress={() => void setPaused($, row, true)} />
         </Box>
       )
+    // The primary's control, where a secondary has its ▶: the same ▶ on a
+    // green ground while the vault answers; dimmed, on a grey ground, while
+    // it does not (a local one closed, a remote one unreachable) or while
+    // nothing is known of it yet. The router pauses no primary, so a press
+    // restores rather than toggles: a local vault known to be closed is
+    // opened in Obsidian — by Obsidian's own id for its folder, or by the
+    // folder's name when the registry could not be read, and not at all when
+    // the registry is known not to list it: the tile's 💎 rule — while the
+    // console allows that way, as every other key of the band; then the
+    // router is read again — read
+    // again whatever the launch did, a failed one included; any other press
+    // reads it again. Asked by Roland in place of the orange dot of
+    // v0.116.13; the same cell (one, and its gap) in `baseCells`.
+    const mainState = (row: VaultRow) => {
+      const isUp = row.online === true
+
+      return (
+        <Box key="band-main-state" backgroundColor={isUp ? 'diffAddedDimmed' : 'inactive'}>
+          <Button
+            key="band-main-play"
+            label="▶"
+            plain
+            dimColor={!isUp}
+            onPress={() => {
+              if (row.online === false && row.type !== 'remote' && row.path && row.isKnownToObsidian !== false && bandOpen.obsidian) {
+                void openInObsidian($, row).then(
+                  () => background($),
+                  () => background($),
+                )
+              } else {
+                background($)
+              }
+            }}
+          />
+        </Box>
+      )
+    }
     const caption = (text: string) => (
       <Text size="caption" dimColor wrap="truncate-end">
         {text}
@@ -4163,15 +4367,24 @@ export const register: Register = on => {
         {text}
       </Text>
     )
-    // A vault's place on the line: after a "·" from the one before (a "│" on
-    // the terminal), the first after nothing. No frame: the line reads as the
-    // counters above it do.
-    const slot = (key: string, isFirst: boolean, children: unknown) => (
-      <Box key={key} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
-        {!isFirst && caption(isChip ? '·' : '│')}
-        {children as never}
-      </Box>
-    )
+    // A vault's place on the line. On the desktop (Roland's mockup of v0.116.12) each vault stands in its
+    // own thin round frame, the primary too, and nothing parts two: the frame
+    // is the separator. The terminal, where a frame would take three lines,
+    // keeps the "│" between two slots and no frame.
+    // In the line's second form nothing is framed (asked from a mockup of
+    // v0.117.1): the menu's own pill is the line's shape, the picked controls
+    // and the primary stand bare beside it.
+    const slot = (key: string, isFirst: boolean, children: unknown) =>
+      isChip && !isPick ? (
+        <Box key={key} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0} borderStyle="round" borderColor="inactive">
+          {children as never}
+        </Box>
+      ) : (
+        <Box key={key} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
+          {!isChip && !isFirst && caption('│')}
+          {children as never}
+        </Box>
+      )
     // Its tier: a mark on a graphical surface (the alt names it), the badge
     // on the terminal.
     const tier = (row: Secondary, isPaused: boolean, list = '') =>
@@ -4180,57 +4393,107 @@ export const register: Register = on => {
           <BandSvg source={markOf(row.mode)} alt={markAlt(markOf(row.mode))} width={14} height={14} />
         </Box>
       ) : (
-        <Text key={`band-${list}tier-${row.name}`} dimColor={isPaused} wrap="truncate-end">
-          {iconOf(row.mode)}
-        </Text>
-      )
-    const entry = (row: Secondary, isPaused: boolean, list = '') => [opener(row, row.name, isPaused, list), tier(row, isPaused, list), control(row, isPaused, list)]
-    // From the page shown (the kept one, brought within the pages), not the kept one itself.
-    const turnPage = (by: number) => void update($, bandPage, () => Math.min(Math.max(0, pageAt + by), pages.length - 1)).catch(() => undefined)
-    // A page key: the arrow with its count, drawn as a mark with a blank
-    // Button laid over it, as wide as the mark (see `iconKey`); its `alt` is
-    // the terminal's text, which the terminal draws as the key itself.
-    const pageKey = (key: string, direction: 'back' | 'more', count: number, onPress: () => void) => {
-      const text = direction === 'back' ? backText(count) : moreText(count)
-
-      return BandSvg ? (
-        <Box key={`icon-${key}`} flexDirection="row" alignItems="center" flexShrink={0}>
-          <BandSvg source={pageKeyMark(direction, count)} alt={text} width={pageKeyWidth(count)} height={16} />
-          <Box position="absolute" top={0} left={0}>
-            <Button key={key} label={' '.repeat(3 + String(count).length)} plain onPress={onPress} />
-          </Box>
+        <Box key={`band-${list}tier-${row.name}`} flexShrink={0}>
+          <Text dimColor={isPaused} wrap="truncate-end">
+            {iconOf(row.mode)}
+          </Text>
         </Box>
+      )
+    // A secondary's name on the line: the control that opens a local vault in
+    // Obsidian (as its mark after the bar does), a plain text for a remote one
+    // (its marks open it) or one that opens nowhere.
+    const secondaryName = (row: Secondary, isPaused: boolean, list = '') => {
+      const target = openTarget(row)
+
+      // A Box carries the key: the surfaces keep a Box's and a Button's, not a
+      // Text's (seen in the drawn trees).
+      return target === 'obsidian' && bandOpen.obsidian ? (
+        <Button key={`band-${list}open-${row.name}`} plain onPress={() => void openVault($, row)}>
+          <Text dimColor={isPaused} wrap="truncate-end">
+            {row.name}
+          </Text>
+        </Button>
       ) : (
-        <Button key={key} label={text} plain onPress={onPress} />
+        <Box key={`band-${list}${target ? 'name' : 'plain'}-${row.name}`} flexShrink={0}>
+          <Text dimColor={!target || isPaused} wrap="truncate-end">
+            {row.name}
+          </Text>
+        </Box>
       )
     }
+    // Where it opens, each mark its own control: Obsidian's for a local vault
+    // (on the terminal, only when the slot is not named — the name is the
+    // terminal's control; the menu's pick has 💎 instead), the planet and
+    // Claude's mark for a remote one.
+    const secondaryMarks = (row: Secondary, list = '', isNamed = true) => {
+      const target = openTarget(row)
+
+      return target === 'obsidian'
+        ? bandOpen.obsidian && (BandSvg || !isNamed)
+          ? [iconKey(OBSIDIAN_MARK, '💎', `band-${list}obsidian-${row.name}`, () => void openVault($, row))]
+          : []
+        : target === 'browser'
+          ? [
+              ...(bandOpen.browser ? [iconKey(GLOBE_MARK, '🌐', `band-${list}web-${row.name}`, () => void openInBrowser($, row))] : []),
+              ...(bandOpen.claude ? [iconKey(CLAUDE_PANE_MARK, '✳', `band-${list}ui-${row.name}`, () => void openUi($, row))] : []),
+            ]
+          : []
+    }
+    // A secondary's slot, in this order (asked from a screenshot of v0.116.9):
+    // its ▶, its name (unless the menu names it: `isNamed` false), its tier,
+    // then — when it opens somewhere — a dim "│" and the marks that open it.
+    const entry = (row: Secondary, isPaused: boolean, list = '', isNamed = true) => {
+      const marks = secondaryMarks(row, list, isNamed)
+      const bar = (
+        <Box key={`band-${list}bar-${row.name}`} flexShrink={0}>
+          <Text dimColor>│</Text>
+        </Box>
+      )
+
+      return [
+        control(row, isPaused, list),
+        ...(isNamed ? [secondaryName(row, isPaused, list)] : []),
+        tier(row, isPaused, list),
+        ...(marks.length > 0 ? [bar, ...marks] : []),
+      ]
+    }
+    // The menu of the line's second form: every secondary, in the binding's
+    // order, as "▶ name 🔒" (⏸ while paused); a pick puts that one's controls
+    // on the line. A surface without the element shows the picked one's whole
+    // slot and a dim count of the others: seen, if not reachable.
+    const menu = () =>
+      BandSelect ? (
+        <BandSelect
+          key="band-pick"
+          options={entries.map(entry => ({ value: entry.row.name, label: menuLabel(entry) }))}
+          value={picked?.row.name}
+          onSelect={(name: string) => void update($, bandPick, () => name).catch(() => undefined)}
+        />
+      ) : (
+        <Box key="band-count" flexShrink={0}>
+          <Text dimColor>{`+${entries.length - 1}`}</Text>
+        </Box>
+      )
     return (
       <Box flexDirection="column">
         <Box key="vault-band" flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={2}>
           <Box key="vault-band-names" flexDirection="row" flexWrap="nowrap" alignItems="center" columnGap={1} flexShrink={1} overflow="hidden">
-            {heading(t('band.primary'))}
+            {!isCompact && heading(t('band.primary'))}
             {snap.primary ? (
-              <Box key="band-main-row" flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
-                <Text color="claude">●</Text>
-                {opener(snap.primary, snap.primary.name, false, 'main-')}
-              </Box>
+              slot('band-main-row', true, [mainState(snap.primary), opener(snap.primary, snap.primary.name, false, 'main-')])
             ) : (
               <Text wrap="truncate-end">{t('band.none')}</Text>
             )}
             <Box width={1} />
-            {heading(t('band.secondaries'))}
+            {!isCompact && heading(t('band.secondaries'))}
             {names.length === 0 && paused.length === 0 && caption(t('band.none'))}
-            {start > 0 && pageKey('band-back', 'back', start, () => turnPage(-1))}
-            {onLine.map(({ row, isPaused }, i) => slot(`band-row-${row.name}`, i === 0, entry(row, isPaused)))}
-            {more && pages.length > 1 ? (
-              pageKey('band-more', 'more', fit.hidden, () => turnPage(1))
-            ) : (
-              more && <Text key="band-count" dimColor>{more}</Text>
-            )}
+            {isPick && picked
+              ? [menu(), slot(`band-row-${picked.row.name}`, true, entry(picked.row, picked.isPaused, '', !BandSelect))]
+              : entries.map(({ row, isPaused }, i) => slot(`band-row-${row.name}`, i === 0, entry(row, isPaused)))}
           </Box>
           <Button
             key="toggle-pane"
-            label={isShown ? t('band.hide') : t('band.show')}
+            label={isCompact ? PANE_GLYPH : isShown ? t('band.hide') : t('band.show')}
             plain
             dimColor
             onPress={() => void togglePane($)}

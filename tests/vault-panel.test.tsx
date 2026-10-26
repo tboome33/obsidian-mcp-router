@@ -379,6 +379,62 @@ test('a write the router refuses as stale says so plainly', async ($, on) => {
   await ui.unmount()
 })
 
+test("the primary's rights are keys where the router keeps a tier for it: a press sets it, the tile follows at once", async ($, on) => {
+  const list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, primaryMode: 'writable' } }
+  const state = { list }
+  const calls = wire(on, state)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // The three tiers, as keys, the one in force marked: on the primary as on a secondary.
+  const label = async (mode: string) => String((await ui.find({ type: 'Button', key: `tier-${mode}-main` }))?.props?.label)
+  expect(await label('writable')).toMatch(/^◉/)
+  expect(await label('locked')).toMatch(/^○/)
+  expect(await label('soft')).toMatch(/^○/)
+  // The router now answers with the tier it recorded, as the real one does.
+  state.list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, primaryMode: 'locked' } }
+  await ui.press({ key: 'tier-locked-main' })
+  expect(calls.find(c => c.tool === 'set_primary_vault_mode')?.args).toEqual({ vault: 'main', mode: 'locked' })
+  expect(calls.some(c => c.tool === 'set_secondary_vault_mode')).toBe(false)
+  expect(await label('locked')).toMatch(/^◉/)
+  expect(await label('writable')).toMatch(/^○/)
+  // The key already in force asks the router for nothing.
+  const before = calls.filter(c => c.tool === 'set_primary_vault_mode').length
+  await ui.press({ key: 'tier-locked-main' })
+  expect(calls.filter(c => c.tool === 'set_primary_vault_mode').length).toBe(before)
+  await ui.unmount()
+})
+
+test("the primary's tier read from the router is the one drawn; a router that keeps none leaves the rights told, not set", async ($, on) => {
+  const list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, primaryMode: 'soft' } }
+  wire(on, { list })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(String((await ui.find({ type: 'Button', key: 'tier-soft-main' }))?.props?.label)).toMatch(/^◉/)
+  await ui.unmount()
+})
+
+test("an older router, which reports no tier for the primary, gets its rights told as text, with no key to press", async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Button', key: 'tier-locked-main' })).toBeFalsy()
+  expect(await ui.find({ type: 'Button', key: 'tier-writable-main' })).toBeFalsy()
+  const texts = nodesOf(await ui.drawn()).filter(n => n.type === 'Text').map(textOf)
+  expect(texts).toContain('◉ ✏️')
+  await ui.unmount()
+})
+
+test("a primary tier the router refuses is drawn back, with its error", async ($, on) => {
+  const list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, primaryMode: 'writable' } }
+  wire(on, { list, refuse: 'set_primary_vault_mode' })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'tier-locked-main' })
+  expect(await ui.find({ type: 'Text', text: /binding changed meanwhile/ })).toBeTruthy()
+  expect(String((await ui.find({ type: 'Button', key: 'tier-writable-main' }))?.props?.label)).toMatch(/^◉/)
+  await ui.unmount()
+})
+
 test('a refused change keeps its error on screen after the read-back', async ($, on) => {
   wire(on, { list: LIST, refuse: 'set_secondary_vault_mode' })
   await begin($)
@@ -1130,7 +1186,7 @@ test('every tier is three radio buttons under a title, the one in force marked',
   // docs is read-only (locked), notes write-on-request.
   for (const [name, mode] of [['docs', 'locked'], ['notes', 'soft']] as const) {
     const box = nodes.find(n => keyOf(n) === `mode-${name}`)
-    expect(nodesOf(box as never).some(n => n.type === 'Text' && textOf(n) === 'Droits lecture/écriture :')).toBe(true)
+    expect(nodesOf(box as never).some(n => n.type === 'Text' && textOf(n) === 'lecture/écriture :')).toBe(true)
     const radios = nodesOf(box as never).filter(n => n.type === 'Button')
     expect(radios.map(n => keyOf(n))).toEqual(['locked', 'soft', 'writable'].map(m => `tier-${m}-${name}`))
     expect(radios.filter(n => String(n.props?.label).startsWith('◉')).map(n => keyOf(n))).toEqual([`tier-${mode}-${name}`])
@@ -1142,7 +1198,7 @@ test('every tier is three radio buttons under a title, the one in force marked',
 // What the pane and /vaults must name when Claude Code's permissions refuse
 // the read: the rules to add, under the server the call went to.
 const READ_RULES =
-  /permissions\.allow.*mcp__plugin_obsidian-router_router__list_vaults\. Pour ses liens 🌐 et 🪟 : mcp__plugin_obsidian-router_router__list_files, mcp__plugin_obsidian-router_router__get_view_link\. Pour que ses clics changent la liaison : mcp__plugin_obsidian-router_router__confirm_workspace_binding, mcp__plugin_obsidian-router_router__set_secondary_vault_mode, mcp__plugin_obsidian-router_router__register_remote_vault, mcp__plugin_obsidian-router_router__unregister_vault — ces règles laissent aussi le modèle/s
+  /permissions\.allow.*mcp__plugin_obsidian-router_router__list_vaults\. Pour ses liens 🌐 et 🪟 : mcp__plugin_obsidian-router_router__list_files, mcp__plugin_obsidian-router_router__get_view_link\. Pour que ses clics changent la liaison : mcp__plugin_obsidian-router_router__confirm_workspace_binding, mcp__plugin_obsidian-router_router__set_secondary_vault_mode, mcp__plugin_obsidian-router_router__set_primary_vault_mode, mcp__plugin_obsidian-router_router__register_remote_vault, mcp__plugin_obsidian-router_router__unregister_vault — ces règles laissent aussi le modèle/s
 
 test('a read refused by auto mode names the permissions to add, never "router injoignable"', async ($, on) => {
   wire(on, { list: LIST, blocked: ['list_vaults'] })
@@ -1256,7 +1312,7 @@ test('a click refused by auto mode says nothing changed and names the two write 
   expect(
     await ui.find({
       type: 'Text',
-      text: /rien n'a été changé.*mcp__plugin_obsidian-router_router__confirm_workspace_binding, mcp__plugin_obsidian-router_router__set_secondary_vault_mode, mcp__plugin_obsidian-router_router__register_remote_vault, mcp__plugin_obsidian-router_router__unregister_vault — ces règles laissent aussi le modèle/s,
+      text: /rien n'a été changé.*mcp__plugin_obsidian-router_router__confirm_workspace_binding, mcp__plugin_obsidian-router_router__set_secondary_vault_mode, mcp__plugin_obsidian-router_router__set_primary_vault_mode, mcp__plugin_obsidian-router_router__register_remote_vault, mcp__plugin_obsidian-router_router__unregister_vault — ces règles laissent aussi le modèle/s,
     }),
   ).toBeTruthy()
   // Only the write rules: the read ones are not what this click needs.
@@ -1303,7 +1359,8 @@ test('a startup read refused by auto mode is not retried: no pane, one toast poi
 })
 
 // A drawn node, as ui.drawn() hands it back: what the layout tests walk.
-type Drawn = { type?: string; key?: string; props?: Record<string, unknown>; children?: unknown }
+// `hover` sits beside the props in a drawn tree, not among them.
+type Drawn = { type?: string; key?: string; props?: Record<string, unknown>; hover?: Record<string, unknown>; children?: unknown }
 const nodesOf = (tree: unknown): Drawn[] => {
   const out: Drawn[] = []
   const walk = (n: unknown) => {
@@ -1342,11 +1399,10 @@ test('the primary, the secondaries and the vaults to add are the same tile, in g
       const name = keyOf(tile)!.replace(/^(primary-row|sec-|av-)/, '') || 'main'
       const nameText = nodesOf(nodes.find(n => keyOf(n) === `${keyOf(tile)}-head`) as never).find(n => n.type === 'Text' && textOf(n) === name)
       expect(nameText?.props?.weight).toBe('semibold')
-      // A tile to add has its marks in its head, right of its name (a bound
-      // vault's stand in its first column instead); a rule under the head; its
-      // lines (when it has any) wrap inside it.
+      // Every tile has its marks in its head, right of its name; a rule under
+      // the head; its lines (when it has any) wrap inside it.
       const head = nodes.find(n => keyOf(n) === `${keyOf(tile)}-head`)
-      expect(nodesOf(head as never).some(n => keyOf(n) === `marks-${keyOf(tile)}`)).toBe(/^av-/.test(keyOf(tile) ?? ''))
+      expect(nodesOf(head as never).some(n => keyOf(n) === `marks-${keyOf(tile)}`)).toBe(true)
       const headAt = nodesOf(tile as never).findIndex(n => keyOf(n) === `${keyOf(tile)}-head`)
       const ruleAt = nodesOf(tile as never).findIndex(n => keyOf(n) === `hrule-${keyOf(tile)}`)
       expect(ruleAt).toBeGreaterThan(headAt)
@@ -1359,13 +1415,12 @@ test('the primary, the secondaries and the vaults to add are the same tile, in g
     for (const key of ['sec-tiles', 'av-tiles']) {
       expect(nodes.find(n => keyOf(n) === key)?.props?.flexWrap).toBe('wrap')
     }
-    // Every surface: the tier as three radio buttons, under its title — the primary's told, the two secondaries' set.
+    // Every surface: the tier as three radios in a row after their short title — the primary's told, the two secondaries' set.
     const modes = nodes.filter(n => /^mode-/.test(keyOf(n) ?? '') && n.type === 'Box')
     expect(modes.map(keyOf)).toEqual(['mode-main', 'mode-docs', 'mode-notes'])
     for (const m of modes) {
-      // A column that may shrink with its tile.
-      expect(m.props?.flexDirection).toBe('column')
-      expect(m.props?.flexShrink).toBe(1)
+      // On its own line (this pane, 50 wide, is narrower than a tile): a row that wraps and shrinks to the tile.
+      expect(m.props).toMatchObject({ flexDirection: 'row', flexWrap: 'wrap', flexShrink: 1 })
     }
     await ui.unmount()
   }
@@ -1453,12 +1508,11 @@ function engineBand(on: On) {
   })
 }
 
-// The band's texts: its Text nodes, and the alt of each mark (a page key is a
-// mark on the desktop, its alt the terminal's text for it).
+// The band's texts: its Text nodes (a name in the menu is no text of the line).
 const bandTexts = async (ui: { drawn(): Promise<unknown> }) =>
   nodesOf(await ui.drawn())
-    .filter(n => n.type === 'Text' || (n.type === 'Svg' && /^(◀\d+|\d+▶)$/.test(String(n.props?.alt ?? ''))))
-    .map(n => (n.type === 'Svg' ? String(n.props?.alt ?? '') : textOf(n)))
+    .filter(n => n.type === 'Text')
+    .map(n => textOf(n))
 
 test('the band shows the primary, each secondary with its write badge, and keeps the band under it', async ($, on) => {
   wire(on, { list: LIST })
@@ -1469,49 +1523,213 @@ test('the band shows the primary, each secondary with its write badge, and keeps
     const texts = await bandTexts(ui)
     expect(texts).toContain('main')
     // docs is read-only, notes writes on request: one badge each, in order, on
-    // the terminal, with a "│" between the two; the desktop draws the tiers as
-    // marks (named by their alt) and a "·" between the two. No frame anywhere.
+    // the terminal, with a "│" between the two and no frame; the desktop draws
+    // the tiers as marks (named by their alt), each vault in its own thin round
+    // frame (the primary too) and nothing between two — no "·", no "│".
     expect(texts.slice(texts.indexOf('docs'), texts.indexOf('notes') + (surface === 'terminal' ? 2 : 1))).toEqual(
-      surface === 'terminal' ? ['docs', '🔒', '│', 'notes', '✋'] : ['docs', '·', 'notes'],
+      surface === 'terminal' ? ['docs', '🔒', '│', 'notes', '✋'] : ['docs', 'notes'],
     )
     const nodes = nodesOf(await ui.drawn())
     const slots = nodes.filter(n => /^band-(main-)?row/.test(keyOf(n) ?? ''))
     expect(slots.map(n => keyOf(n))).toEqual(['band-main-row', 'band-row-docs', 'band-row-notes'])
-    expect(slots.some(n => n.props?.borderStyle)).toBe(false)
+    if (surface === 'desktop') {
+      expect(slots.map(n => [n.props?.borderStyle, n.props?.borderColor])).toEqual(Array.from({ length: 3 }, () => ['round', 'inactive']))
+      expect(texts.some(t => t === '·' || t === '│')).toBe(false)
+    } else {
+      expect(slots.some(n => n.props?.borderStyle)).toBe(false)
+    }
     if (surface === 'desktop') {
       const alts = nodes.filter(n => n.type === 'Svg').map(n => n.props?.alt)
       expect(alts).toContain('Lecture seule')
       expect(alts).toContain('Écriture sur accord')
-      // The primary after its orange dot.
-      expect(nodesOf(slots[0] as never).some(n => n.type === 'Text' && textOf(n) === '●' && n.props?.color === 'claude')).toBe(true)
     }
-    expect(texts.some(t => t.startsWith('›'))).toBe(false)
+    // The primary after its ▶ key, on a green ground while it answers (no orange dot any more).
+    const mainNodes = nodesOf(slots[0] as never)
+    expect(mainNodes.some(n => n.type === 'Text' && textOf(n) === '●')).toBe(false)
+    expect(mainNodes.find(n => keyOf(n) === 'band-main-state')?.props?.backgroundColor).toBe('diffAddedDimmed')
+    expect(mainNodes.find(n => keyOf(n) === 'band-main-play')?.props).toMatchObject({ label: '▶', plain: true, dimColor: false })
+    // (main, a remote vault with no web UI, is a plain name in the band — a Text, whose key a drawn tree drops.)
+    const mainNameAt = mainNodes.findIndex(n => n.type === 'Text' && textOf(n) === 'main')
+    expect(mainNameAt).toBeGreaterThan(-1)
+    expect(mainNodes.findIndex(n => keyOf(n) === 'band-main-state')).toBeGreaterThan(-1)
+    expect(mainNodes.findIndex(n => keyOf(n) === 'band-main-state')).toBeLessThan(mainNameAt)
+    // Both fit: the line's first form, no menu.
+    expect(nodes.some(n => n.type === 'Select')).toBe(false)
     expect(texts).toContain('engine band')
     await ui.unmount()
   }
 })
 
-test('a band too narrow for every secondary ends with "N▶": how many it left out', async ($, on) => {
+test("the band's primary ▶: dim on a grey ground while the vault does not answer — a press then opens a closed local one in Obsidian and reads the router again; both surfaces", async ($, on) => {
+  // Each launch with the router reads counted at that moment: the read must come after the launch.
+  const launched: { argv: readonly string[]; readsThen: number }[] = []
+  const closed = { ...LIST, vaults: LIST.vaults.map(v => (v.name === 'main' ? { ...v, type: 'local', online: false, path: 'C:\\VAULTS\\Main' } : v)) }
+  const calls = wire(on, { list: closed, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } } as Parameters<typeof wire>[1])
+  on('process.run', (_, e) => {
+    if (e.argv[0] !== 'powershell') {
+      launched.push({ argv: e.argv, readsThen: calls.filter(c => c.tool === 'list_vaults').length })
+    }
+
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  engineBand(on)
+  await begin($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 200 }, surface })
+    const nodes = nodesOf(await ui.drawn())
+    // The same key as a secondary's, where the orange dot was: grey ground, dim ▶.
+    expect(nodes.find(n => keyOf(n) === 'band-main-state')?.props?.backgroundColor).toBe('inactive')
+    expect(nodes.find(n => keyOf(n) === 'band-main-play')?.props).toMatchObject({ label: '▶', plain: true, dimColor: true })
+    expect(nodes.some(n => n.type === 'Text' && textOf(n) === '●')).toBe(false)
+    // A press: Obsidian at THIS vault (its folder's name; the router pauses no primary, so nothing to
+    // toggle), with no read of the router before the launch; then a fresh read.
+    const reads = calls.filter(c => c.tool === 'list_vaults').length
+    const opened = launched.length
+    await ui.press({ key: 'band-main-play' })
+    const launch = await eventually(async () => launched.slice(opened).find(l => l.argv.some(a => /^obsidian:/.test(a))))
+    expect(launch?.argv).toEqual(['cmd', '/c', 'start', '', 'obsidian://open?vault=Main'])
+    expect(launch?.readsThen).toBe(reads)
+    expect(await eventually(async () => (calls.filter(c => c.tool === 'list_vaults').length > reads ? true : undefined))).toBe(true)
+    await ui.unmount()
+  }
+})
+
+test("the band's primary ▶ opens a closed local vault by Obsidian's own id for its folder when the registry lists it (the test above: by the folder's name, the registry unreadable)", async ($, on) => {
+  const launched: (readonly string[])[] = []
+  const closed = { ...LIST, vaults: LIST.vaults.map(v => (v.name === 'main' ? { ...v, type: 'local', online: false, path: 'C:\\VAULTS\\Main' } : v)) }
+  wire(on, { list: closed, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } } as Parameters<typeof wire>[1])
+  obsidianKnows(on, ['C:\\VAULTS\\Main'])
+  on('process.run', (_, e) => {
+    if (e.argv[0] !== 'powershell') {
+      launched.push(e.argv)
+    }
+
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  engineBand(on)
+  await begin($)
+  const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 200 }, surface: 'desktop' })
+  await ui.press({ key: 'band-main-play' })
+  const launch = await eventually(async () => launched.find(argv => argv.some(a => /^obsidian:/.test(a))))
+  expect(launch).toEqual(['cmd', '/c', 'start', '', 'obsidian://open?vault=id0'])
+  await ui.unmount()
+})
+
+test("the band's primary ▶ launches nothing while the console keeps local vaults out of Obsidian: a press reads the router again, and that is all", async ($, on) => {
+  const stored: Record<string, unknown> = { openers: { obsidian: false, browser: true, claude: true } }
+  on('store.get', (_, e) => ({ value: stored[e.key] }))
+  const launched: (readonly string[])[] = []
+  const closed = { ...LIST, vaults: LIST.vaults.map(v => (v.name === 'main' ? { ...v, type: 'local', online: false, path: 'C:\\VAULTS\\Main' } : v)) }
+  const calls = wire(on, { list: closed, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } } as Parameters<typeof wire>[1])
+  on('process.run', (_, e) => {
+    if (e.argv[0] !== 'powershell') {
+      launched.push(e.argv)
+    }
+
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  engineBand(on)
+  await begin($)
+  const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 200 }, surface: 'desktop' })
+  expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'band-main-play')?.props?.dimColor).toBe(true)
+  const reads = calls.filter(c => c.tool === 'list_vaults').length
+  await ui.press({ key: 'band-main-play' })
+  expect(await eventually(async () => (calls.filter(c => c.tool === 'list_vaults').length > reads ? true : undefined))).toBe(true)
+  expect(launched.some(argv => argv.some(a => /^obsidian:/.test(a)))).toBe(false)
+  await ui.unmount()
+})
+
+test("the band's primary ▶ launches nothing for a closed local vault Obsidian does not know (its folder's name could open another): a press reads the router again", async ($, on) => {
+  const launched: (readonly string[])[] = []
+  const closed = { ...LIST, vaults: LIST.vaults.map(v => (v.name === 'main' ? { ...v, type: 'local', online: false, path: 'C:\\VAULTS\\Main' } : v)) }
+  const calls = wire(on, { list: closed, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } } as Parameters<typeof wire>[1])
+  // Obsidian's registry lists another folder: main is not in it.
+  obsidianKnows(on, ['C:\\VAULTS\\Other'])
+  on('process.run', (_, e) => {
+    if (e.argv[0] !== 'powershell') {
+      launched.push(e.argv)
+    }
+
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  engineBand(on)
+  await begin($)
+  const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 200 }, surface: 'desktop' })
+  expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'band-main-state')?.props?.backgroundColor).toBe('inactive')
+  const reads = calls.filter(c => c.tool === 'list_vaults').length
+  await ui.press({ key: 'band-main-play' })
+  expect(await eventually(async () => (calls.filter(c => c.tool === 'list_vaults').length > reads ? true : undefined))).toBe(true)
+  expect(launched.some(argv => argv.some(a => /^obsidian:/.test(a)))).toBe(false)
+  await ui.unmount()
+})
+
+test("the band's primary ▶ is grey and dim while nothing is known of the vault (no answer yet): a press reads the router again and launches nothing; green only on a vault that answers", async ($, on) => {
+  const launched: (readonly string[])[] = []
+  const unknown = { ...LIST, vaults: LIST.vaults.map(v => (v.name === 'main' ? { ...v, type: 'local', online: null, path: 'C:\\VAULTS\\Main' } : v)) }
+  const calls = wire(on, { list: unknown, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } } as Parameters<typeof wire>[1])
+  on('process.run', (_, e) => {
+    if (e.argv[0] !== 'powershell') {
+      launched.push(e.argv)
+    }
+
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  engineBand(on)
+  await begin($)
+  const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 200 }, surface: 'desktop' })
+  const nodes = nodesOf(await ui.drawn())
+  expect(nodes.find(n => keyOf(n) === 'band-main-state')?.props?.backgroundColor).toBe('inactive')
+  expect(nodes.find(n => keyOf(n) === 'band-main-play')?.props?.dimColor).toBe(true)
+  const reads = calls.filter(c => c.tool === 'list_vaults').length
+  await ui.press({ key: 'band-main-play' })
+  expect(await eventually(async () => (calls.filter(c => c.tool === 'list_vaults').length > reads ? true : undefined))).toBe(true)
+  expect(launched.some(argv => argv.some(a => /^obsidian:/.test(a)))).toBe(false)
+  await ui.unmount()
+})
+
+test("a band too narrow for every secondary shows a menu of them all, and the picked one's controls beside it", async ($, on) => {
   const names = ['alpha-vault', 'beta-vault', 'gamma-vault', 'delta-vault', 'epsilon-vault']
   const many = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: names } }
   wire(on, { list: many })
   engineBand(on)
   await begin($)
   const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 110 }, surface: 'desktop' })
+  const nodes = nodesOf(await ui.drawn())
   const texts = await bandTexts(ui)
-  const shown = names.filter(n => texts.includes(n))
-  expect(shown.length).toBeGreaterThan(0)
-  expect(shown.length).toBeLessThan(5)
-  // Binding order: the first ones are kept, the tail is counted.
-  expect(shown).toEqual(names.slice(0, shown.length))
-  expect(texts).toContain(`${5 - shown.length}▶`)
+  // No name on the line: the menu names them, in the binding's order, each
+  // with its state and its tier as glyphs; the first is picked.
+  expect(names.some(n => texts.includes(n))).toBe(false)
+  const menu = nodes.find(n => n.type === 'Select' && keyOf(n) === 'band-pick')
+  expect((menu?.props?.options as { value: string; label: string }[]).map(o => [o.value, o.label])).toEqual(names.map(n => [n, `▶ ${n} ✋`]))
+  expect(menu?.props?.value).toBe('alpha-vault')
+  // The picked one's controls, unframed: its ▶, its tier; no name, and no
+  // bar (it opens nowhere).
+  const rows = nodes.filter(n => /^band-row-/.test(keyOf(n) ?? ''))
+  expect(rows.map(n => keyOf(n))).toEqual(['band-row-alpha-vault'])
+  const slot = nodesOf(rows[0] as never)
+  expect(slot.some(n => keyOf(n) === 'band-pause-alpha-vault')).toBe(true)
+  expect(slot.some(n => keyOf(n) === 'band-tier-alpha-vault')).toBe(true)
+  expect(slot.some(n => /^band-(name|open|plain|bar)-/.test(keyOf(n) ?? ''))).toBe(false)
+  // Nothing framed in this form (the mockup over v0.117.1): neither the picked
+  // controls nor the primary — the menu's pill is the line's shape.
+  expect(rows[0]?.props?.borderStyle).toBeUndefined()
+  const main = nodes.find(n => keyOf(n) === 'band-main-row')
+  expect(main?.type).toBe('Box')
+  expect(main?.props?.borderStyle).toBeUndefined()
+  // The menu stands where the slots were, before the picked one.
+  const keys = nodes.map(n => keyOf(n)).filter((k): k is string => !!k)
+  expect(keys.indexOf('band-main-row')).toBeLessThan(keys.indexOf('band-pick'))
+  expect(keys.indexOf('band-pick')).toBeLessThan(keys.indexOf('band-row-alpha-vault'))
+  // Room for the words at this width: the headings and the toggle's label stay.
+  expect(texts).toContain('Secondaires :')
+  expect(nodes.find(n => n.type === 'Button' && keyOf(n) === 'toggle-pane')?.props?.label).toMatch(/^◧ (Masquer|Afficher) le panneau$/)
   await ui.unmount()
 
-  // Wide enough, all of them and no "›".
+  // Wide enough, all of them on the line and no menu.
   const wide = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 200 }, surface: 'desktop' })
   const all = await bandTexts(wide)
   expect(names.every(n => all.includes(n))).toBe(true)
-  expect(all.some(t => t.startsWith('›'))).toBe(false)
+  expect(nodesOf(await wide.drawn()).some(n => n.type === 'Select')).toBe(false)
   await wide.unmount()
 })
 
@@ -1571,11 +1789,8 @@ test('the tier radios show each tier with the badge the band uses', async ($, on
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const box = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'mode-docs')
-  expect(nodesOf(box as never).filter(n => n.type === 'Button').map(n => n.props?.label)).toEqual([
-    '◉ 🔒 Lecture seule',
-    '○ ✋ Écriture sur accord',
-    '○ ✏️ Écriture automatique',
-  ])
+  // The badge alone, after the ring: the legend under the menu carries the words.
+  expect(nodesOf(box as never).filter(n => n.type === 'Button').map(n => n.props?.label)).toEqual(['◉ 🔒', '○ ✋', '○ ✏️'])
   await ui.unmount()
 })
 
@@ -1627,55 +1842,68 @@ test('hiding the pane while the startup read is under way keeps it hidden', asyn
   await ui.unmount()
 })
 
-test('a band too narrow for even one secondary counts them all', async ($, on) => {
+test('a band too narrow for the menu with its words is compact: no headings, the toggle as "◧", the menu and the picked controls kept', async ($, on) => {
   wire(on, { list: LIST })
   engineBand(on)
   await begin($)
   const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 40 }, surface: 'desktop' })
   const texts = await bandTexts(ui)
+  const nodes = nodesOf(await ui.drawn())
+  expect(texts).not.toContain('Principal :')
+  expect(texts).not.toContain('Secondaires :')
   expect(texts.includes('docs') || texts.includes('notes')).toBe(false)
-  expect(texts).toContain('2▶')
-  // One page, none on it: the count is no key — there is no page to turn to.
-  expect(await ui.find({ key: 'band-more' })).toBeFalsy()
+  // The primary stays, with its dot; the menu and the first one's controls too.
+  expect(texts).toContain('main')
+  expect(nodes.find(n => n.type === 'Button' && keyOf(n) === 'toggle-pane')?.props?.label).toBe('◧')
+  expect(nodes.some(n => n.type === 'Select' && keyOf(n) === 'band-pick')).toBe(true)
+  expect(nodes.filter(n => /^band-row-/.test(keyOf(n) ?? '')).map(n => keyOf(n))).toEqual(['band-row-docs'])
+  expect(nodes.some(n => keyOf(n) === 'band-pause-docs')).toBe(true)
   await ui.unmount()
 })
 
-// The band's line, cell by cell, for main + docs + notes: "Principal : ● main",
-// spacer, "Secondaires :" and the toggle take 61; " docs 🔒 ▶" 10 more;
-// " · notes ✋ ▶" 13. At 75, docs would fit alone but not with "1▶" after it:
-// the counter's room is kept, so nothing is shown and both are counted. At
-// 84, both fit.
-test('the band keeps room for "N▶" before it shows a secondary', async ($, on) => {
+// The band's line, cell by cell, for main + docs + notes on the desktop:
+// "Principal : [● main]" (a frame, a cell each side), spacer, "Secondaires :"
+// and the toggle take 63; " [▶ docs 🔒]" 12 more; " [▶ notes ✋]" 13: both on
+// the line from 88, never one alone. Under 88, the menu's form — nothing
+// framed there: the fixed part 61, a gap, the menu ("▶ docs 🔒" and
+// "▶ notes ✋" are 9 cells; the chevron and its chrome 4) and the picked one's
+// controls (▶ 🔒, 5) — takes 80 with the words; under 80 the line is compact.
+test('the line holds every secondary or turns into the menu, which keeps its words down to a width', async ($, on) => {
   wire(on, { list: LIST })
   engineBand(on)
   await begin($)
-  const at = async (bodyColumns: number) => {
+  const shape = async (bodyColumns: number) => {
     const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns }, surface: 'desktop' })
+    const nodes = nodesOf(await ui.drawn())
     const texts = await bandTexts(ui)
     await ui.unmount()
 
-    return texts
+    return {
+      names: ['docs', 'notes'].filter(n => texts.includes(n)),
+      hasMenu: nodes.some(n => n.type === 'Select' && keyOf(n) === 'band-pick'),
+      hasWords: texts.includes('Secondaires :'),
+    }
   }
-  const firstShowing = async (name: string) => {
+  const firstWhere = async (holds: (s: { names: string[]; hasMenu: boolean; hasWords: boolean }) => boolean) => {
     for (let columns = 40; columns < 160; columns += 1) {
-      if ((await at(columns)).includes(name)) {
+      if (holds(await shape(columns))) {
         return columns
       }
     }
 
     return -1
   }
-  const docsAt = await firstShowing('docs')
-  const notesAt = await firstShowing('notes')
-  // Below docs' width, both are counted; at it, docs and "1▶".
-  expect(await at(docsAt - 1)).toContain('2▶')
-  expect(await at(docsAt)).toContain('1▶')
-  // notes, once it fits, takes the counter's room: no "›" any more.
-  expect((await at(notesAt)).some(t => /^\d+▶$/.test(t))).toBe(false)
-  // Neither opens anywhere (no folder, no web UI): no mark. notes' own width
-  // (gap, "· ", 5 cells, badge, control) less the counter it frees ("1▶", five cells with its gap).
-  expect(notesAt - docsAt).toBe(1 + 2 + 5 + 1 + 2 + 1 + 1 - 5)
-  expect([docsAt, notesAt]).toEqual([76, 84])
+  const wordsAt = await firstWhere(s => s.hasWords)
+  const lineAt = await firstWhere(s => s.names.length === 2)
+  expect([wordsAt, lineAt]).toEqual([80, 88])
+  expect(await shape(wordsAt - 1)).toEqual({ names: [], hasMenu: true, hasWords: false })
+  expect(await shape(wordsAt)).toEqual({ names: [], hasMenu: true, hasWords: true })
+  expect(await shape(lineAt - 1)).toEqual({ names: [], hasMenu: true, hasWords: true })
+  expect(await shape(lineAt)).toEqual({ names: ['docs', 'notes'], hasMenu: false, hasWords: true })
+  // The line's form costs the fixed part with the primary's frame and the two
+  // framed slots; the menu's, the fixed part bare, a gap, the menu and the
+  // picked controls bare: eight cells apart.
+  expect(lineAt - wordsAt).toBe(2 + 12 + 13 - (1 + 9 + 4 + 5))
 })
 
 test('the band counts a name\'s mark where it is drawn: on the desktop, for a vault that opens', async ($, on) => {
@@ -1699,15 +1927,24 @@ test('the band counts a name\'s mark where it is drawn: on the desktop, for a va
 
     return -1
   }
-  // The terminal draws no mark: a remote vault's 🌐 and ✳ keys (5 cells), a
-  // local one nothing. The desktop: notes (local) its Obsidian mark, 3 cells;
-  // extra (remote) the planet and Claude's mark, 6.
-  expect([await firstShowing('extra', 'terminal'), await firstShowing('notes', 'terminal')]).toEqual([81, 90])
-  expect([await firstShowing('extra', 'desktop'), await firstShowing('notes', 'desktop')]).toEqual([83, 94])
+  // The terminal draws no mark: a remote vault's 🌐 and ✳ keys (5 cells) and
+  // the "│" before them (2), a local one nothing. The desktop: notes (local)
+  // its bar and Obsidian mark, 5 cells; extra (remote) its bar, the planet and
+  // Claude's mark, 8.
+  // The line holds both or neither (under it, the menu names them): terminal
+  // 61 + extra (1 + 1 + 1 + 5 + 1 + 2 + 2 + 5 = 18) + notes (1 + 2 + 1 + 1 + 5
+  // + 1 + 2 = 13) = 92. The desktop frames the primary and each slot (two
+  // cells each, the "│ " before notes gone: +4), draws Claude's mark at 3
+  // cells not 2 (+1), notes' Obsidian mark and its bar (+5): 102.
+  expect([await firstShowing('extra', 'terminal'), await firstShowing('notes', 'terminal')]).toEqual([92, 92])
+  expect([await firstShowing('extra', 'desktop'), await firstShowing('notes', 'desktop')]).toEqual([102, 102])
 })
 
-// Two cells per CJK character: "資料庫一" is 8 cells, not 4. With main + two
-// such names the line needs 61 + 14 + 18 = 93; at 85 only the first fits.
+// Two cells per CJK character: "資料庫一" is 8 cells, not 4; "文書庫二三" 10,
+// not 5. On the terminal the fixed part is 61 ("Principal : ● main", spacer,
+// "Secondaires :", the toggle), the first slot 1 + 1 + 1 + 8 + 1 + 2 = 14,
+// the second 1 + 2 + 1 + 1 + 10 + 1 + 2 = 18: both on the line from 93 — nine
+// columns later than two Latin names of four and five letters would be (84).
 test('the band counts a wide character as two cells', async ($, on) => {
   const wide = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['資料庫一', '文書庫二三'] } }
   wire(on, { list: wide })
@@ -1720,20 +1957,16 @@ test('the band counts a wide character as two cells', async ($, on) => {
 
     return texts
   }
-  let first = -1
-  let second = -1
-  for (let columns = 40; columns < 160 && second === -1; columns += 1) {
-    const texts = await at(columns)
-    if (first === -1 && texts.includes('資料庫一')) {
-      first = columns
-    }
-    if (texts.includes('文書庫二三')) {
-      second = columns
+  let lineAt = -1
+  for (let columns = 40; columns < 160 && lineAt === -1; columns += 1) {
+    if ((await at(columns)).includes('文書庫二三')) {
+      lineAt = columns
     }
   }
-  expect(first).toBeGreaterThan(-1)
-  // "文書庫二三" is 10 cells, not 5: its entry less the counter it frees ("1▶" as the terminal draws it, four cells with its gap).
-  expect(second - first).toBe(1 + 2 + 10 + 1 + 2 + 1 + 1 - 4)
+  expect(lineAt).toBe(93)
+  // Never one of the two alone on the line.
+  expect((await at(92)).includes('資料庫一')).toBe(false)
+  expect(await at(93)).toEqual(expect.arrayContaining(['資料庫一', '文書庫二三']))
 })
 
 test('a pane the app draws on its own is told to the band', async ($, on) => {
@@ -1818,7 +2051,7 @@ test('OBSIDIAN_ROUTER_LANG=en draws the English file, French where it lacks a ke
 // are session state, so each is opened only if it is not open already.
 const openAdmin = async (ui: Mounted, section = 'register') => {
   if (!(await ui.find({ key: 'admin-general' }))) {
-    await ui.press({ key: 'toggle-admin' })
+    await ui.press({ key: 'nav-admin' })
   }
   if (!(await ui.find({ key: `admin-${section}-panel` }))) {
     await ui.press({ key: `admin-sec-${section}` })
@@ -1840,7 +2073,7 @@ test('the console lists the language files and switches the language', async ($,
   await pane.select({ key: 'admin-language-select', value: 'en' })
   // The console, in English, holds the pane; back to the vaults, they are in English too.
   expect(await pane.find({ type: 'Text', text: /^GENERAL$/ })).toBeTruthy()
-  await pane.press({ key: 'toggle-admin' })
+  await pane.press({ key: 'nav-admin' })
   expect(await pane.find({ type: 'Text', text: /^Primary$/ })).toBeTruthy()
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
   expect(await bandTexts(band)).toContain('Primary:')
@@ -1881,10 +2114,10 @@ test('WireGuard installed but off, remote vaults silent: the banner says so and 
   windowsWireguard(on, wg)
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdmin(ui, 'general')
+  await openAdmin(ui, 'wireguard')
   expect(await ui.find({ type: 'Text', text: /^installé, mais aucun tunnel actif/ })).toBeTruthy()
   // The banner is the vaults' own: back to them, it opens the client.
-  await ui.press({ key: 'toggle-admin' })
+  await ui.press({ key: 'nav-admin' })
   await ui.press({ key: 'tunnel-open' })
   expect(wg.launched).toContainEqual(['cmd', '/c', 'start', '', 'C:\\Program Files\\WireGuard\\wireguard.exe'])
   await ui.unmount()
@@ -1896,12 +2129,12 @@ test('WireGuard not installed: the console offers the client, the guide and the 
   windowsWireguard(on, wg)
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdmin(ui, 'general')
+  await openAdmin(ui, 'wireguard')
   expect(await ui.find({ type: 'Text', text: /^non installé/ })).toBeTruthy()
   // The header's line: the first sentence only, its dot in warning.
-  const wgNote = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'admin-sec-general-note') as never).filter(n => n.type === 'Text')
-  expect(wgNote.slice(-2).map(n => textOf(n))).toEqual(['●', 'non installé'])
-  expect(wgNote.at(-2)?.props?.color).toBe('warning')
+  const wgNote = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'admin-sec-wireguard-note') as never).filter(n => n.type === 'Text')
+  expect(wgNote.map(n => textOf(n))).toEqual(['●', 'non installé'])
+  expect(wgNote[0]?.props?.color).toBe('warning')
   await ui.press({ key: 'wg-install' })
   await ui.press({ key: 'wg-guide' })
   await ui.press({ key: 'wg-prompt' })
@@ -1958,7 +2191,7 @@ test('a remote vault needs WireGuard on; with it, its web UI port goes into the 
   expect(await ui.find({ type: 'Text', text: /^Active WireGuard pour enregistrer un vault distant/ })).toBeTruthy()
   // The tunnel comes up; checked again from the console's WireGuard section, then back to the form.
   wg.tunnels = ['wg0']
-  await openAdmin(ui, 'general')
+  await openAdmin(ui, 'wireguard')
   await ui.press({ key: 'wg-check' })
   expect(await ui.find({ type: 'Text', text: /^actif \(wg0\)$/ })).toBeTruthy()
   await openAdmin(ui, 'register')
@@ -1978,7 +2211,7 @@ test('removing a vault from the router: one menu, one button, a confirming secon
   const calls = wire(on, { list: LIST })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdmin(ui, 'register')
+  await openAdmin(ui, 'unregister')
   // Bound vaults cannot be removed: the menu lists only the registered, unbound ones.
   const menu = nodesOf(await ui.drawn()).find(n => n.type === 'Select' && keyOf(n) === 'admin-remove-select')
   const values = ((menu?.props?.options as { value: string }[] | undefined) ?? []).map(o => o.value)
@@ -2048,7 +2281,7 @@ test('a WireGuard read that fails is "unknown", and does not block a remote vaul
   }))
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdmin(ui, 'general')
+  await openAdmin(ui, 'wireguard')
   expect(await ui.find({ type: 'Text', text: /^état inconnu/ })).toBeTruthy()
   await openAdmin(ui, 'register')
   await ui.press({ key: 'admin-kind-remote' })
@@ -2066,8 +2299,8 @@ test('a key typed but not sent is dropped when the console is folded', async ($,
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await openAdmin(ui)
   await ui.input({ key: 'admin-apiKey', text: 'SECRET-1', kind: 'change' })
-  await ui.press({ key: 'toggle-admin' })
-  await ui.press({ key: 'toggle-admin' })
+  await ui.press({ key: 'nav-admin' })
+  await ui.press({ key: 'nav-admin' })
   const keyField = nodesOf(await ui.drawn()).find(n => n.type === 'Input' && keyOf(n) === 'admin-apiKey')
   expect(keyField?.props?.value).toBe('')
   await ui.unmount()
@@ -2131,12 +2364,12 @@ test('the menu holds the router mark, the version, the repository and, when GitH
   // The router's mark at the left, the version, the badge and GitHub's mark at the right.
   expect(nodesOf(menu as never).some(n => n.type === 'Svg' && n.props?.alt === 'obsidian-mcp-router')).toBe(true)
   const end = nodesOf(menu as never).find(n => keyOf(n) === 'nav-end')
-  expect(['update-badge', 'github'].every(key => nodesOf(end as never).some(n => keyOf(n) === key))).toBe(true)
+  expect(['update-badge', 'nav-admin', 'github'].every(key => nodesOf(end as never).some(n => keyOf(n) === key))).toBe(true)
   expect(nodesOf(end as never).some(n => n.type === 'Svg' && n.props?.alt === 'GitHub')).toBe(true)
-  // The footer keeps the console's fold alone.
-  const footer = nodes.find(n => keyOf(n) === 'pane-footer')
-  expect(nodesOf(footer as never).some(n => keyOf(n) === 'github')).toBe(false)
-  expect(nodesOf(footer as never).some(n => keyOf(n) === 'toggle-admin')).toBe(true)
+  // The gear (the console's key) just before GitHub's mark; no footer any more.
+  const endMarks = nodesOf(end as never).filter(n => n.type === 'Svg').map(n => n.props?.alt)
+  expect(endMarks.slice(-2)).toEqual(['Administration', 'GitHub'])
+  expect(nodes.some(n => keyOf(n) === 'pane-footer' || keyOf(n) === 'toggle-admin')).toBe(false)
   await ui.press({ key: 'github' })
   expect(launched).toContainEqual(['rundll32', 'url.dll,FileProtocolHandler', 'https://github.com/tboome33/obsidian-mcp-router'])
   // The badge unfolds the console, where the update is.
@@ -2276,9 +2509,9 @@ test('/vault-setup opens the pane on the console, where a vault is created with 
   await $.session.start(START)
   await $.command.run({ command: 'vault-setup', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  // The console holds the pane, the vaults behind "‹ Retour aux vaults".
+  // The console holds the pane, the gear held down; the vaults come back on its press.
   expect(await ui.find({ type: 'Button', key: 'create-submit' })).toBeTruthy()
-  expect(await ui.find({ type: 'Button', key: 'toggle-admin' })).toMatchObject({ props: { label: '‹ Retour aux vaults' } })
+  expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'icon-nav-admin')?.props?.backgroundColor).toBe('inactive')
   expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
   await ui.input({ key: 'create-name-field', text: 'Notes Pro', kind: 'change' })
   await ui.input({ key: 'create-path-field', text: 'C:\\VAULTS\\Notes Pro', kind: 'change' })
@@ -2445,101 +2678,118 @@ test("a router older than the pause is said, and sent nothing it would refuse", 
   await ui.unmount()
 })
 
-test('"›+N" turns the band\'s page: the next secondaries in place of the first; "‹" before the first shown turns it back', async ($, on) => {
+test('the menu picks which secondary stands on the line: its controls follow, and act through the router', async ($, on) => {
   const names = ['alpha-vault', 'beta-vault', 'gamma-vault', 'delta-vault', 'epsilon-vault']
-  const calls = wire(on, { list: { ...LIST, routerBuild: { version: '0.108.0' }, workspaceBinding: { ...LIST.workspaceBinding, also: names } } })
+  const calls = wire(on, {
+    list: { ...LIST, routerBuild: { version: '0.108.0' }, workspaceBinding: { ...LIST.workspaceBinding, also: names, alsoPaused: ['gamma-vault'] } },
+  })
   engineBand(on)
   await begin($)
   const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 100 }, surface: 'desktop' })
-  const line = async () => nodesOf(await band.drawn()).find(n => keyOf(n) === 'vault-band-names')
-  const shown = async () => {
-    const drawn = nodesOf(await band.drawn())
-
-    return names.filter(name => drawn.some(n => keyOf(n) === `band-row-${name}`))
-  }
-  const texts = async () => await bandTexts(band)
-  // The first page: the first names, no "◀N", then "N▶" for the rest; one line, no wrapping.
-  expect((await line())?.props?.flexWrap).toBe('nowrap')
-  const first = await shown()
-  expect(first.length).toBeGreaterThan(0)
-  expect(first.length).toBeLessThan(names.length)
-  expect(first).toEqual(names.slice(0, first.length))
-  expect(await band.find({ key: 'band-back' })).toBeFalsy()
-  expect(await texts()).toContain(`${names.length - first.length}▶`)
-  await band.press({ key: 'band-more' })
-  // The next page: the following names where the first were, "‹" before them.
-  const second = await shown()
-  expect(second.length).toBeGreaterThan(0)
-  expect(second).toEqual(names.slice(first.length, first.length + second.length))
-  expect(await band.find({ type: 'Button', key: 'band-back' })).toBeTruthy()
-  const nodes = nodesOf(await band.drawn())
-  const keys = nodes.map(n => keyOf(n)).filter((k): k is string => !!k)
-  expect(keys.length).toBe(new Set(keys).size)
-  expect(keys.indexOf('band-back')).toBeLessThan(keys.indexOf(`band-row-${second[0]}`))
-  // Nothing under the line: the band stays one line high.
-  expect(await band.find({ key: 'band-list' })).toBeFalsy()
-  // A control on the page acts as on the first.
-  await band.press({ key: `band-pause-${second[0]}` })
-  expect(calls.filter(c => c.tool === 'set_secondary_vault_mode').at(-1)?.args).toEqual({ vault: second[0], paused: true })
-  // To the end, then back to the first page.
-  for (let i = 0; i < names.length && (await band.find({ key: 'band-more' })); i += 1) {
-    await band.press({ key: 'band-more' })
-  }
-  expect((await shown()).at(-1)).toBe(names[names.length - 1])
-  expect((await texts()).some(text => /^\d+▶$/.test(text))).toBe(false)
-  for (let i = 0; i < names.length && (await band.find({ key: 'band-back' })); i += 1) {
-    await band.press({ key: 'band-back' })
-  }
-  expect(await shown()).toEqual(first)
-  await band.unmount()
-})
-
-test("a page kept from a wider band is brought back within the pages the width allows", async ($, on) => {
-  const names = ['alpha-vault', 'beta-vault', 'gamma-vault', 'delta-vault', 'epsilon-vault']
-  wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: names } } })
-  engineBand(on)
-  await begin($)
-  const narrow = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 95 }, surface: 'desktop' })
-  for (let i = 0; i < names.length && (await narrow.find({ key: 'band-more' })); i += 1) {
-    await narrow.press({ key: 'band-more' })
-  }
-  expect(await narrow.find({ key: 'band-back' })).toBeTruthy()
-  await narrow.unmount()
-  // Wider, two pages: the last page shown is the last the width allows, and
-  // one "‹" from it reaches the first — the turn counts from the page shown.
-  const wider = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 120 }, surface: 'desktop' })
-  expect(await wider.find({ key: 'band-back' })).toBeTruthy()
-  expect(await wider.find({ key: 'band-more' })).toBeFalsy()
-  await wider.press({ key: 'band-back' })
-  expect(await wider.find({ key: 'band-back' })).toBeFalsy()
-  expect((await bandTexts(wider))[0]).toBeDefined()
-  expect(nodesOf(await wider.drawn()).some(n => keyOf(n) === 'band-row-alpha-vault')).toBe(true)
-  await wider.unmount()
-  // Wide enough for all: one page, every name, no "‹" and no "›".
-  const wide = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 200 }, surface: 'desktop' })
-  const texts = await bandTexts(wide)
-  expect(names.every(n => texts.includes(n))).toBe(true)
-  expect(await wide.find({ key: 'band-back' })).toBeFalsy()
-  expect(await wide.find({ key: 'band-more' })).toBeFalsy()
-  await wide.unmount()
-})
-
-test('a page turned to shows at least one secondary, cut if too long: "N▶" leads nowhere empty', async ($, on) => {
-  // At 76 the first page holds docs alone; the next, with "◀1" before it, has
-  // no room for a whole name — it shows one anyway, cut, then the last.
-  wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'note', 'last'] } } })
-  engineBand(on)
-  await begin($)
-  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 76 }, surface: 'desktop' })
   const rows = async () => nodesOf(await band.drawn()).filter(n => /^band-row-/.test(keyOf(n) ?? '')).map(n => keyOf(n))
-  expect(await rows()).toEqual(['band-row-docs'])
-  await band.press({ key: 'band-more' })
-  expect(await rows()).toEqual(['band-row-note'])
-  expect(await band.find({ key: 'band-back' })).toBeTruthy()
-  await band.press({ key: 'band-more' })
-  expect(await rows()).toEqual(['band-row-last'])
-  expect(await band.find({ key: 'band-more' })).toBeFalsy()
+  const menu = async () => nodesOf(await band.drawn()).find(n => n.type === 'Select' && keyOf(n) === 'band-pick')
+  const labels = async () => ((await menu())?.props?.options as { label: string }[]).map(o => o.label)
+  // One line, nothing under it.
+  expect(nodesOf(await band.drawn()).find(n => keyOf(n) === 'vault-band-names')?.props?.flexWrap).toBe('nowrap')
+  expect(await band.find({ key: 'band-list' })).toBeFalsy()
+  // The first is picked; the paused one reads ⏸ in the menu, the others ▶.
+  expect(await rows()).toEqual(['band-row-alpha-vault'])
+  expect((await menu())?.props?.value).toBe('alpha-vault')
+  expect(await labels()).toEqual(['▶ alpha-vault ✋', '▶ beta-vault ✋', '⏸ gamma-vault ✋', '▶ delta-vault ✋', '▶ epsilon-vault ✋'])
+  // A pick: that one's controls on the line, the menu showing it.
+  await band.select({ key: 'band-pick', value: 'gamma-vault' })
+  expect(await rows()).toEqual(['band-row-gamma-vault'])
+  expect((await menu())?.props?.value).toBe('gamma-vault')
+  // Paused: its dimmed ▶; a press resumes it through the router.
+  expect(await band.find({ type: 'Button', key: 'band-resume-gamma-vault' })).toMatchObject({ props: { label: '▶', dimColor: true } })
+  await band.press({ key: 'band-resume-gamma-vault' })
+  expect(calls.filter(c => c.tool === 'set_secondary_vault_mode').at(-1)?.args).toEqual({ vault: 'gamma-vault', paused: false })
+  // Every key once.
+  const keys = nodesOf(await band.drawn()).map(n => keyOf(n)).filter((k): k is string => !!k)
+  expect(keys.length).toBe(new Set(keys).size)
   await band.unmount()
+})
+
+test('a pick is kept across redraws, changes nothing once every secondary fits, and falls back to the first when its vault is gone', async ($, on) => {
+  const names = ['alpha-vault', 'beta-vault', 'gamma-vault', 'delta-vault', 'epsilon-vault']
+  const state = { list: { ...LIST, routerBuild: { version: '0.108.0' }, workspaceBinding: { ...LIST.workspaceBinding, also: names } } as unknown }
+  wire(on, state)
+  engineBand(on)
+  await begin($)
+  const rowsOf = async (ui: { drawn(): Promise<unknown> }) => nodesOf(await ui.drawn()).filter(n => /^band-row-/.test(keyOf(n) ?? '')).map(n => keyOf(n))
+  const narrow = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 95 }, surface: 'desktop' })
+  await narrow.select({ key: 'band-pick', value: 'delta-vault' })
+  expect(await rowsOf(narrow)).toEqual(['band-row-delta-vault'])
+  await narrow.unmount()
+  // Wide enough for all: every slot, named, no menu — the pick changes nothing.
+  const wide = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 200 }, surface: 'desktop' })
+  const wideTexts = await bandTexts(wide)
+  expect(names.every(n => wideTexts.includes(n))).toBe(true)
+  expect(nodesOf(await wide.drawn()).some(n => n.type === 'Select')).toBe(false)
+  expect(await rowsOf(wide)).toEqual(names.map(n => `band-row-${n}`))
+  await wide.unmount()
+  // Narrow again: the pick kept.
+  const again = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 95 }, surface: 'desktop' })
+  expect(await rowsOf(again)).toEqual(['band-row-delta-vault'])
+  // Another session unbinds the picked vault; the next read (after a press)
+  // no longer lists it: the first stands, and the menu says so.
+  state.list = { ...LIST, routerBuild: { version: '0.108.0' }, workspaceBinding: { ...LIST.workspaceBinding, also: names.filter(n => n !== 'delta-vault') } }
+  await again.press({ key: 'band-pause-delta-vault' })
+  expect(await rowsOf(again)).toEqual(['band-row-alpha-vault'])
+  expect(nodesOf(await again.drawn()).find(n => n.type === 'Select' && keyOf(n) === 'band-pick')?.props?.value).toBe('alpha-vault')
+  await again.unmount()
+})
+
+// The second form on both surfaces, for main + docs + notes + extra. Nothing
+// framed in it: with the words it takes 80 cells on either surface (the fixed
+// part 61, a gap, the menu 13, the picked controls 5): at 85 both have their
+// words; at 60 both are compact.
+test("compact or not, the menu's form keeps the primary, the menu and the picked controls; the terminal has it unframed", async ($, on) => {
+  wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'notes', 'extra'] } } })
+  engineBand(on)
+  await begin($)
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const at = async (bodyColumns: number) => {
+      const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns }, surface })
+      const nodes = nodesOf(await ui.drawn())
+      const texts = await bandTexts(ui)
+      await ui.unmount()
+
+      return { nodes, texts }
+    }
+    const words = await at(85)
+    expect(words.texts).toContain('Principal :')
+    expect(words.texts).toContain('Secondaires :')
+    expect(words.nodes.some(n => n.type === 'Select' && keyOf(n) === 'band-pick')).toBe(true)
+    expect(words.nodes.find(n => n.type === 'Button' && keyOf(n) === 'toggle-pane')?.props?.label).toMatch(/^◧ (Masquer|Afficher) le panneau$/)
+    const compact = await at(60)
+    expect(compact.texts).not.toContain('Principal :')
+    expect(compact.texts).not.toContain('Secondaires :')
+    expect(compact.texts).toContain('main')
+    expect(compact.nodes.find(n => n.type === 'Button' && keyOf(n) === 'toggle-pane')?.props?.label).toBe('◧')
+    expect(compact.nodes.some(n => n.type === 'Select' && keyOf(n) === 'band-pick')).toBe(true)
+    const rows = compact.nodes.filter(n => /^band-row-/.test(keyOf(n) ?? ''))
+    expect(rows.map(n => keyOf(n))).toEqual(['band-row-docs'])
+    // The picked controls: ▶ then the tier, no name, no frame.
+    const slot = nodesOf(rows[0] as never).map(n => keyOf(n)).filter((k): k is string => !!k)
+    expect(slot.indexOf('band-pause-docs')).toBeGreaterThan(-1)
+    expect(slot.indexOf('band-pause-docs')).toBeLessThan(slot.indexOf('band-tier-docs'))
+    expect(slot.some(k => /^band-(name|open|plain)-/.test(k))).toBe(false)
+    // Unframed on both surfaces in this form, the primary too (framed on the
+    // desktop's line only when every slot fits).
+    expect(rows[0]?.props?.borderStyle).toBeUndefined()
+    for (const drawn of [compact, words]) {
+      const main = drawn.nodes.find(n => keyOf(n) === 'band-main-row')
+      expect(main?.type).toBe('Box')
+      expect(main?.props?.borderStyle).toBeUndefined()
+      const row = drawn.nodes.find(n => keyOf(n) === 'band-row-docs')
+      expect(row?.type).toBe('Box')
+      expect(row?.props?.borderStyle).toBeUndefined()
+    }
+    // No "│" on the line between the menu and the picked one; the primary's slot stands first.
+    expect(compact.texts.filter(t => t === '│')).toEqual([])
+    expect(compact.nodes.map(n => keyOf(n)).indexOf('band-main-row')).toBeLessThan(compact.nodes.map(n => keyOf(n)).indexOf('band-pick'))
+  }
 })
 
 test('a paused secondary keeps its place on the band: ▶ on green while it runs, ❚❚ on red while paused', async ($, on) => {
@@ -2568,13 +2818,18 @@ test('a paused secondary keeps its place on the band: ▶ on green while it runs
   expect(prop('band-state-notes', 'backgroundColor')).toBe('diffAddedDimmed')
   expect(at('band-pause-docs')).toBe(-1)
   expect(at('band-resume-notes')).toBe(-1)
-  // A remote vault: its name, then the planet (the default browser) and Claude's
-  // mark (Claude's browser), each a control: a blank Button laid over the mark.
-  // Every mark says what it shows; the name opens nothing; no "↗" any more.
-  const box = nodesOf(nodes.find(n => keyOf(n) === 'band-box-extra') as never)
-  expect(box.filter(n => n.type === 'Svg').map(n => n.props?.alt)).toEqual(['Navigateur', 'Claude'])
-  expect(box.findIndex(n => keyOf(n) === 'band-name-extra')).toBeLessThan(box.findIndex(n => keyOf(n) === 'band-web-extra'))
-  expect(box.findIndex(n => keyOf(n) === 'band-web-extra')).toBeLessThan(box.findIndex(n => keyOf(n) === 'band-ui-extra'))
+  // A remote vault: its ▶, its name, its tier, a bar, then the planet (the
+  // default browser) and Claude's mark (Claude's browser), each a control: a
+  // blank Button laid over the mark. Every mark says what it shows; the name
+  // opens nothing; no "↗" any more.
+  const box = nodesOf(nodes.find(n => keyOf(n) === 'band-row-extra') as never)
+  expect(box.filter(n => n.type === 'Svg').map(n => n.props?.alt)).toEqual(['Écriture sur accord', 'Navigateur', 'Claude'])
+  const order = ['band-pause-extra', 'band-name-extra', 'band-tier-extra', 'band-bar-extra', 'band-web-extra', 'band-ui-extra'].map(key => box.findIndex(n => keyOf(n) === key))
+  expect(order.every(i => i > -1)).toBe(true)
+  expect(order).toEqual([...order].sort((a, b) => a - b))
+  const bar = nodesOf(box.find(n => keyOf(n) === 'band-bar-extra') as never).find(n => n.type === 'Text')
+  expect(textOf(bar as never)).toBe('│')
+  expect(bar?.props?.dimColor).toBe(true)
   for (const key of ['band-web-extra', 'band-ui-extra']) {
     expect(prop(`icon-${key}`, 'flexDirection')).toBe('row')
     const over = nodesOf(nodes.find(n => keyOf(n) === `icon-${key}`) as never).find(n => n.props?.position === 'absolute')
@@ -2594,8 +2849,8 @@ test('■ and ▶ stand on the band\'s line, by each secondary: a press pauses o
   engineBand(on)
   await begin($)
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  // Nothing hidden at this width: no chip, every control on the line.
-  expect(await band.find({ type: 'Button', key: 'band-more' })).toBeFalsy()
+  // Nothing hidden at this width: no menu, every control on the line.
+  expect(nodesOf(await band.drawn()).some(n => n.type === 'Select')).toBe(false)
   await band.press({ key: 'band-pause-docs' })
   expect(calls.filter(c => c.tool === 'set_secondary_vault_mode').at(-1)?.args).toEqual({ vault: 'docs', paused: true })
   await band.press({ key: 'band-resume-notes' })
@@ -2731,10 +2986,8 @@ test('a remote vault that does not answer says so on its tile, with a retry that
   await ui.unmount()
 })
 
-// Four sections: Général holds the language, the plugin, WireGuard and the ways
-// to open a vault; Enregistrer ends with removing a vault from the router.
-const ADMIN_SECTIONS = ['general', 'create', 'register', 'hooks'] as const
-const ADMIN_TITLES = ['Général', 'Créer un vault Obsidian', 'Enregistrer un vault existant', 'Hooks de ce workspace']
+const ADMIN_SECTIONS = ['general', 'open', 'create', 'wireguard', 'register', 'unregister', 'hooks'] as const
+const ADMIN_TITLES = ['Général', 'Ouverture des vaults', 'Créer un vault Obsidian', 'WireGuard', 'Enregistrer un vault', 'Retirer un vault du router', 'Hooks de ce workspace']
 
 // The accordion as drawn: each section's header in order, and which one is unfolded.
 const accordionOf = (tree: unknown) => {
@@ -2746,14 +2999,14 @@ const accordionOf = (tree: unknown) => {
 }
 
 for (const surface of ['terminal', 'desktop'] as const) {
-  test(`the console is an accordion on the ${surface}: four headers in order, Général unfolded first, one section open at a time`, async ($, on) => {
+  test(`the console is an accordion on the ${surface}: seven headers in order, Général unfolded first, one section open at a time`, async ($, on) => {
     wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
     windowsWireguard(on, { isInstalled: true, tunnels: ['wg0'], launched: [] })
     await begin($)
     const ui = await $.ui.mount({ ...PANE, surface })
-    await ui.press({ key: 'toggle-admin' })
+    await ui.press({ key: 'nav-admin' })
     expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
-    // Four headers, in order, each with its title; Général open, the others folded, their bodies not drawn.
+    // Seven headers, in order, each with its title; Général open, the others folded, their bodies not drawn.
     const first = await ui.drawn()
     expect(accordionOf(first)).toEqual({ headers: [...ADMIN_SECTIONS], open: ['general'] })
     const nodes = nodesOf(first)
@@ -2770,12 +3023,14 @@ for (const surface of ['terminal', 'desktop'] as const) {
         .filter(n => n.type === 'Text')
         .map(n => textOf(n))
         .join(' ')
-    // Général holds WireGuard: its state closes the line, with its dot.
-    expect(noteOf(first, 'general')).toBe('Français ● actif (wg0)')
+    expect(noteOf(first, 'general')).toBe('Français')
+    expect(noteOf(first, 'open')).toBe('3 sur 3')
     expect(noteOf(first, 'create')).toBe('un vault neuf, ses conventions')
-    expect(nodesOf(nodesOf(first).find(n => keyOf(n) === 'admin-sec-general-note') as never).find(n => n.type === 'Text' && textOf(n) === '●')?.props?.color).toBe('success')
+    expect(noteOf(first, 'wireguard')).toBe('● actif (wg0)')
+    expect(nodesOf(nodesOf(first).find(n => keyOf(n) === 'admin-sec-wireguard-note') as never).find(n => n.type === 'Text')?.props?.color).toBe('success')
     expect(nodesOf(first).filter(n => String(keyOf(n)).endsWith('-note')).every(n => nodesOf(n as never).filter(t => t.type === 'Text').every(t => t.props?.wrap === 'truncate-end'))).toBe(true)
     expect(noteOf(first, 'register')).toBe('local ou distant')
+    expect(noteOf(first, 'unregister')).toBe('2 retirables')
     expect(nodes.some(n => keyOf(n) === 'admin-language-select')).toBe(true)
     expect(nodes.some(n => keyOf(n) === 'create-submit')).toBe(false)
     expect(nodes.some(n => keyOf(n) === 'admin-register-submit')).toBe(false)
@@ -2786,7 +3041,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
       return parts.find(p => ['▸', '▾'].includes(p))
     })
-    expect(chevrons).toEqual(['▾', '▸', '▸', '▸'])
+    expect(chevrons).toEqual(['▾', '▸', '▸', '▸', '▸', '▸', '▸'])
     // A press on another header unfolds it and folds Général; its body is indented, with air above and below.
     await ui.press({ key: 'admin-sec-create' })
     const second = await ui.drawn()
@@ -2798,14 +3053,14 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.press({ key: 'admin-sec-create' })
     expect(accordionOf(await ui.drawn())).toEqual({ headers: [...ADMIN_SECTIONS], open: [] })
     // The section kept across a redraw: the console folded and unfolded, the pane mounted again.
-    await ui.press({ key: 'admin-sec-register' })
-    await ui.press({ key: 'toggle-admin' })
+    await ui.press({ key: 'admin-sec-unregister' })
+    await ui.press({ key: 'nav-admin' })
     expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeTruthy()
-    await ui.press({ key: 'toggle-admin' })
-    expect(accordionOf(await ui.drawn()).open).toEqual(['register'])
+    await ui.press({ key: 'nav-admin' })
+    expect(accordionOf(await ui.drawn()).open).toEqual(['unregister'])
     await ui.unmount()
     const again = await $.ui.mount({ ...PANE, surface })
-    expect(accordionOf(await again.drawn()).open).toEqual(['register'])
+    expect(accordionOf(await again.drawn()).open).toEqual(['unregister'])
     await again.unmount()
     // A narrow pane: the headers keep their titles, no line at the right.
     const narrow = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 36 }, surface })
@@ -2823,9 +3078,9 @@ test('a flow that leads to the console unfolds its section: no primary → Crée
   await begin($)
   const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   // Another section was left open earlier in the session.
-  await ui.press({ key: 'toggle-admin' })
-  await ui.press({ key: 'admin-sec-register' })
-  await ui.press({ key: 'toggle-admin' })
+  await ui.press({ key: 'nav-admin' })
+  await ui.press({ key: 'admin-sec-wireguard' })
+  await ui.press({ key: 'nav-admin' })
   await ui.press({ key: 'primary-setup' })
   expect(accordionOf(await ui.drawn()).open).toEqual(['create'])
   expect(await ui.find({ type: 'Button', key: 'create-submit' })).toBeTruthy()
@@ -2837,13 +3092,80 @@ test('a flow that leads to the console unfolds its section: no primary → Crée
   await ui.unmount()
 })
 
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`wide, the console is a settings page on the ${surface}: the sections listed at the left, the shown one's title, state and card at the right`, async ($, on) => {
+    wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+    windowsWireguard(on, { isInstalled: true, tunnels: ['wg0'], launched: [] })
+    await begin($)
+    const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 130 }, surface })
+    await ui.press({ key: 'nav-admin' })
+    const tree = await ui.drawn()
+    const nodes = nodesOf(tree)
+    // A row: the side list, then the page; no accordion header, no rule under a section.
+    expect(nodes.find(n => keyOf(n) === 'admin')?.props?.flexDirection).toBe('row')
+    expect(nodes.find(n => keyOf(n) === 'admin-nav')?.props).toMatchObject({ width: 26, flexShrink: 0 })
+    expect(nodes.some(n => String(keyOf(n)).endsWith('-head') && String(keyOf(n)).startsWith('admin-'))).toBe(false)
+    expect(nodes.some(n => /^admin-(general|open|create|wireguard|register|unregister)-rule$/.test(String(keyOf(n))))).toBe(false)
+    // The seven sections in order in the side list, each a Button; Général shown, on a grey ground, the others dim.
+    expect(accordionOf(tree)).toEqual({ headers: [...ADMIN_SECTIONS], open: ['general'] })
+    for (const [i, name] of ADMIN_SECTIONS.entries()) {
+      const row = nodes.find(n => keyOf(n) === `admin-nav-${name}`)
+      expect(row?.props?.backgroundColor).toBe(name === 'general' ? 'inactive' : undefined)
+      const button = nodesOf(row as never).find(n => n.type === 'Button' && keyOf(n) === `admin-sec-${name}`)
+      expect(button?.props?.dimColor).toBe(name !== 'general')
+      expect(nodesOf(button as never).some(n => n.type === 'Text' && textOf(n) === ADMIN_TITLES[i])).toBe(true)
+      // Its mark: an Svg beside the Button on the desktop, a glyph inside it on the terminal.
+      if (surface === 'desktop') {
+        // A direct child of the row, before the Button; never inside the Button, which may not hold one.
+        const children = (row?.children as Drawn[] | undefined) ?? []
+        expect(children.findIndex(n => n.type === 'Svg' && n.props?.alt === ADMIN_TITLES[i])).toBe(0)
+        expect(nodesOf(button as never).some(n => n.type === 'Svg')).toBe(false)
+      } else {
+        expect(nodesOf(button as never).some(n => n.type === 'Text' && ['⚙', '↗', '+', '●', '⊕', '−', '↪'].includes(textOf(n).trim()))).toBe(true)
+      }
+    }
+    // The page: the title, the state line, the settings in a rounded card.
+    const page = nodes.find(n => keyOf(n) === 'admin-general')
+    expect(nodesOf(page as never).some(n => n.type === 'Text' && n.props?.size === 'heading' && textOf(n) === 'Général')).toBe(true)
+    expect(nodesOf(nodes.find(n => keyOf(n) === 'admin-page-note') as never).some(n => n.type === 'Text' && textOf(n) === 'Français')).toBe(true)
+    expect(nodes.find(n => keyOf(n) === 'admin-general-panel')?.props).toMatchObject({ borderStyle: 'round', borderDimColor: true })
+    // Its settings as rows: the label at the left, the control at the right, a rule between two.
+    const langRow = nodes.find(n => keyOf(n) === 'admin-language')
+    expect(langRow?.props?.justifyContent).toBe('space-between')
+    expect(nodesOf(nodes.find(n => keyOf(n) === 'admin-language-label') as never).some(n => n.type === 'Text' && textOf(n) === 'Langue')).toBe(true)
+    expect(nodesOf(nodes.find(n => keyOf(n) === 'admin-language-control') as never).some(n => keyOf(n) === 'admin-language-select' || keyOf(n) === 'admin-language-choice')).toBe(true)
+    expect(nodes.find(n => keyOf(n) === 'admin-general-body-1-rule')?.props).toMatchObject({ height: 1, overflow: 'hidden' })
+    // Another section: a press in the list shows it in place of the first; a second press keeps it shown.
+    await ui.press({ key: 'admin-sec-open' })
+    expect(accordionOf(await ui.drawn()).open).toEqual(['open'])
+    await ui.press({ key: 'admin-sec-open' })
+    const second = await ui.drawn()
+    expect(accordionOf(second).open).toEqual(['open'])
+    for (const way of ['obsidian', 'browser', 'claude']) {
+      const row = nodesOf(second).find(n => keyOf(n) === `admin-open-${way}`)
+      expect(row?.props?.justifyContent).toBe('space-between')
+      expect(nodesOf(row as never).some(n => keyOf(n) === `open-${way}-on`)).toBe(true)
+    }
+    // Narrowed under 96 columns, the same session falls back to the accordion, the shown section open.
+    await ui.unmount()
+    const narrow = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80 }, surface })
+    const narrowTree = await narrow.drawn()
+    expect(nodesOf(narrowTree).find(n => keyOf(n) === 'admin')?.props?.flexDirection).toBe('column')
+    expect(accordionOf(narrowTree).open).toEqual(['open'])
+    expect(nodesOf(narrowTree).some(n => keyOf(n) === 'admin-open-head')).toBe(true)
+    await narrow.unmount()
+  })
+}
+
 test('the console holds the pane while open: its sections one under the other, the full width, a rule between two; wiki types and conventions counter', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
-  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 130 }, surface: 'desktop' })
-  expect(await ui.find({ type: 'Button', key: 'toggle-admin' })).toMatchObject({ props: { label: '⚙ Administration ›', variant: 'secondary' } })
-  await ui.press({ key: 'toggle-admin' })
-  // The vaults hidden, the four sections drawn in one column, no frame, a rule under each.
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80 }, surface: 'desktop' })
+  // The gear, up while the vaults show; a press holds it down and opens the console.
+  expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'icon-nav-admin')?.props?.backgroundColor).toBeUndefined()
+  await ui.press({ key: 'nav-admin' })
+  expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'icon-nav-admin')?.props?.backgroundColor).toBe('inactive')
+  // The vaults hidden, the seven sections drawn in one column, no frame, a rule under each.
   expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
   const nodes = nodesOf(await ui.drawn())
   expect(nodes.find(n => keyOf(n) === 'admin')?.props?.flexDirection).toBe('column')
@@ -2854,7 +3176,7 @@ test('the console holds the pane while open: its sections one under the other, t
     const ruleBox = nodes.find(n => keyOf(n) === `admin-${name}-rule`)
     expect(ruleBox?.props).toMatchObject({ height: 1, overflow: 'hidden' })
     const rule = nodesOf(ruleBox as never).find(n => n.type === 'Text')
-    expect(textOf(rule as Drawn)).toBe('─'.repeat(130))
+    expect(textOf(rule as Drawn)).toBe('─'.repeat(80))
     expect(rule?.props?.dimColor).toBe(true)
     expect(rule?.props?.wrap).toBeUndefined()
     // The open header on a subtle ground, the folded ones on none.
@@ -2872,7 +3194,7 @@ test('the console holds the pane while open: its sections one under the other, t
   await ui.press({ key: 'conventions-none' })
   expect(await ui.find({ type: 'Text', text: /^0 sur \d+$/ })).toBeTruthy()
   // Back to the vaults.
-  await ui.press({ key: 'toggle-admin' })
+  await ui.press({ key: 'nav-admin' })
   expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeTruthy()
   await ui.unmount()
 })
@@ -2881,7 +3203,7 @@ test('the console says what the vaults view would: every remote vault silent, an
   wire(on, { list: SILENT_REMOTES })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await ui.press({ key: 'toggle-admin' })
+  await ui.press({ key: 'nav-admin' })
   expect(nodesOf(await ui.drawn()).some(n => n.type === 'Text' && textOf(n) === "WireGuard semble inactif : les vaults distants ne sont pas disponibles.")).toBe(true)
   await ui.unmount()
 })
@@ -2897,9 +3219,13 @@ test("on the band, a local vault's name has Obsidian's mark, and a remote one's 
   await begin($)
   const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 160 }, surface: 'desktop' })
   const nodes = nodesOf(await band.drawn())
-  const local = nodesOf(nodes.find(n => keyOf(n) === 'band-box-notes') as never).filter(n => n.type === 'Svg')
-  expect(local.map(n => n.props?.alt)).toEqual(['Obsidian'])
+  const row = nodesOf(nodes.find(n => keyOf(n) === 'band-row-notes') as never)
+  const local = row.filter(n => n.type === 'Svg' && n.props?.alt === 'Obsidian')
+  expect(local.length).toBe(1)
   expect(String(local[0]?.props?.source)).toContain('#A88BFA')
+  // After the bar, last in its slot: the name, the tier, "│", the mark.
+  expect(row.findIndex(n => keyOf(n) === 'band-bar-notes')).toBeLessThan(row.findIndex(n => keyOf(n) === 'band-obsidian-notes'))
+  expect(row.findIndex(n => keyOf(n) === 'band-tier-notes')).toBeLessThan(row.findIndex(n => keyOf(n) === 'band-bar-notes'))
   // The mark opens it in Obsidian, as its name does.
   expect(await band.find({ type: 'Button', key: 'band-obsidian-notes' })).toBeTruthy()
   expect(await band.find({ type: 'Button', key: 'band-open-notes' })).toBeTruthy()
@@ -2928,12 +3254,17 @@ test('the menu stays at the top while the pane scrolls: a copy, no frame, over t
   wire(on, { list: LIST })
   await begin($)
   for (const surface of ['terminal', 'desktop'] as const) {
-    // At the top: the menu in the flow — Vaults (in view), + Ajouter un vault, ⚙ Administration — and no copy.
+    // At the top: the menu in the flow — Vaults (in view), + Ajouter un vault; the gear at the right — and no copy.
     const top = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface })
-    const items = ['nav-vaults', 'nav-add', 'nav-admin']
+    const items = ['nav-vaults', 'nav-add']
     const at = nodesOf(await top.drawn())
-    // The key in view is a bold text in the text's colour, two blanks each side (no pill); the others plain labels, dim.
-    expect(items.map(key => at.find(n => keyOf(n) === key)?.props?.label)).toEqual(['  Vaults  ', '+ Ajouter un vault', '⚙ Administration'])
+    // The key in view is a bold text in the text's colour, two blanks each side (no pill); the other a plain label, dim.
+    expect(items.map(key => at.find(n => keyOf(n) === key)?.props?.label)).toEqual(['  Vaults  ', '+ Ajouter un vault'])
+    // The gear: a blank key over its mark on the desktop, the glyph on the terminal; in the end group, before GitHub.
+    const gear = at.find(n => keyOf(n) === 'nav-admin')
+    expect(gear?.props?.label).toBe(surface === 'terminal' ? '⚙' : '  ')
+    const endKeys = nodesOf(at.find(n => keyOf(n) === 'nav-end') as never).filter(n => n.type === 'Button').map(keyOf)
+    expect(endKeys.slice(-2)).toEqual(['nav-admin', 'github'])
     const inView = at.find(n => keyOf(n) === 'nav-vaults')
     expect(inView?.props?.plain).toBe(true)
     expect(inView?.props?.variant).toBeUndefined()
@@ -2958,7 +3289,7 @@ test('the menu stays at the top while the pane scrolls: a copy, no frame, over t
   }
 })
 
-test('the menu switches the view: + Ajouter un vault opens the list, ⚙ Administration the console, Vaults back', async ($, on) => {
+test('the menu switches the view: + Ajouter un vault opens the list, the gear the console (and back), Vaults back', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface: 'desktop' })
@@ -2974,9 +3305,17 @@ test('the menu switches the view: + Ajouter un vault opens the list, ⚙ Adminis
   expect(await inView('nav-vaults')).toBe(false)
   await ui.press({ key: 'nav-admin' })
   expect(await ui.find({ key: 'admin-general' })).toBeTruthy()
-  expect(await inView('nav-admin')).toBe(true)
-  // The console holds the pane, the menu still on top of it.
+  // The console in sight: no tab open, the gear held down.
+  expect(await inView('nav-add')).toBe(false)
+  expect(await inView('nav-vaults')).toBe(false)
+  expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'icon-nav-admin')?.props?.backgroundColor).toBe('inactive')
+  // The console holds the pane, the menu still on top of it; the gear again brings the vaults back.
   expect(await ui.find({ type: 'Button', key: 'nav-vaults' })).toBeTruthy()
+  await ui.press({ key: 'nav-admin' })
+  expect(await ui.find({ key: 'admin-general' })).toBeFalsy()
+  expect(await inView('nav-vaults')).toBe(true)
+  await ui.press({ key: 'nav-admin' })
+  expect(await ui.find({ key: 'admin-general' })).toBeTruthy()
   await ui.press({ key: 'nav-vaults' })
   expect(await ui.find({ key: 'admin-general' })).toBeFalsy()
   expect(await ui.find({ type: 'Button', key: 'tab-tous' })).toBeFalsy()
@@ -3016,11 +3355,11 @@ test('a secondary named "primary" collides with nothing on the band: the primary
   await band.unmount()
 })
 
-test("on the band's line, a local vault has Obsidian's mark before its name, a remote one the planet and Claude's mark after; a paused one its dimmed ▶", async ($, on) => {
+test("on the band's line, a secondary reads ▶, name, tier, a bar, then the marks that open it: Obsidian's for a local one, the planet and Claude's for a remote one; a paused one its dimmed ▶", async ($, on) => {
   const list = {
     ...LIST,
     routerBuild: { version: '0.108.0' },
-    workspaceBinding: { ...LIST.workspaceBinding, also: ['notes', 'extra'], alsoPaused: ['extra'] },
+    workspaceBinding: { ...LIST.workspaceBinding, also: ['notes', 'extra', 'docs'], alsoPaused: ['extra'] },
     vaults: [...LIST.vaults.filter(v => v.name !== 'notes'), { name: 'notes', type: 'local', online: true, path: 'C:\\VAULTS\\Notes' }],
   }
   wire(on, { list })
@@ -3029,12 +3368,42 @@ test("on the band's line, a local vault has Obsidian's mark before its name, a r
   const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 160 }, surface: 'desktop' })
   const nodes = nodesOf(await band.drawn())
   const keys = nodes.map(n => keyOf(n)).filter((k): k is string => !!k)
-  expect(keys.indexOf('band-obsidian-notes')).toBeLessThan(keys.indexOf('band-open-notes'))
-  expect(keys.indexOf('band-name-extra')).toBeLessThan(keys.indexOf('band-web-extra'))
-  expect(keys.indexOf('band-web-extra')).toBeLessThan(keys.indexOf('band-ui-extra'))
+  const inOrder = (...wanted: string[]) => {
+    const at = wanted.map(key => keys.indexOf(key))
+    expect(at.every(i => i > -1)).toBe(true)
+    expect(at).toEqual([...at].sort((a, b) => a - b))
+  }
+  // The local one: its ▶ first, its name (a control that opens it), its tier,
+  // the bar, Obsidian's mark last (the other control that opens it).
+  inOrder('band-pause-notes', 'band-open-notes', 'band-tier-notes', 'band-bar-notes', 'band-obsidian-notes')
+  // The remote one, paused: its dimmed ▶, its name (a text), its tier, the bar, the planet, Claude's mark.
+  inOrder('band-resume-extra', 'band-name-extra', 'band-tier-extra', 'band-bar-extra', 'band-web-extra', 'band-ui-extra')
   expect(nodes.find(n => keyOf(n) === 'band-resume-extra')?.props).toMatchObject({ label: '▶', dimColor: true })
   expect(keys.length).toBe(new Set(keys).size)
+  // Every bar is dim and reads "│"; a vault that opens nowhere has none.
+  for (const name of ['notes', 'extra']) {
+    const bar = nodesOf(nodes.find(n => keyOf(n) === `band-bar-${name}`) as never).find(n => n.type === 'Text')
+    expect(bar?.props?.dimColor).toBe(true)
+    expect(textOf(bar as never)).toBe('│')
+  }
+  // docs opens nowhere (no folder, no web UI): on the line, ▶ then its name then its tier, no bar, no mark.
+  inOrder('band-pause-docs', 'band-plain-docs', 'band-tier-docs')
+  expect(keys).toContain('band-row-docs')
+  expect(keys).not.toContain('band-bar-docs')
+  expect(keys.some(key => /^band-(obsidian|web|ui)-docs$/.test(key))).toBe(false)
   await band.unmount()
+  // The terminal: the same order; a local vault has no mark there (its name
+  // is the control), so no bar either; a remote one keeps its bar before 🌐 and ✳.
+  const term = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 160 }, surface: 'terminal' })
+  const termKeys = nodesOf(await term.drawn()).map(n => keyOf(n)).filter((k): k is string => !!k)
+  expect(termKeys).not.toContain('band-bar-notes')
+  expect(termKeys).not.toContain('band-obsidian-notes')
+  const termAt = ['band-resume-extra', 'band-name-extra', 'band-tier-extra', 'band-bar-extra', 'band-web-extra', 'band-ui-extra'].map(key => termKeys.indexOf(key))
+  expect(termAt.every(i => i > -1)).toBe(true)
+  expect(termAt).toEqual([...termAt].sort((a, b) => a - b))
+  expect(termKeys.indexOf('band-pause-notes')).toBeLessThan(termKeys.indexOf('band-open-notes'))
+  expect(termKeys.indexOf('band-open-notes')).toBeLessThan(termKeys.indexOf('band-tier-notes'))
+  await term.unmount()
 })
 
 test('a pane too narrow for the menu folds it into "☰" and the view in sight; a press unfolds it', async ($, on) => {
@@ -3051,28 +3420,71 @@ test('a pane too narrow for the menu folds it into "☰" and the view in sight; 
   expect(await ui.find({ type: 'Button', key: 'tab-tous' })).toBeTruthy()
   expect(await ui.find({ type: 'Button', key: 'nav-add' })).toBeFalsy()
   expect((await ui.find({ type: 'Button', key: 'nav-burger' }))?.props?.label).toBe('☰ + Ajouter un vault')
+  // Folded too, the gear stays at the right; the console in sight names itself on the fold.
+  expect(await ui.find({ type: 'Button', key: 'nav-admin' })).toBeTruthy()
+  await ui.press({ key: 'nav-admin' })
+  expect((await ui.find({ type: 'Button', key: 'nav-burger' }))?.props?.label).toBe('☰ Administration')
   await ui.unmount()
-  // Wide enough: the three on one line, no "☰".
+  // Wide enough: the two on one line, no "☰"; the gear there in both cases.
   const wide = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface: 'desktop' })
   expect(await wide.find({ type: 'Button', key: 'nav-burger' })).toBeFalsy()
+  expect(await wide.find({ type: 'Button', key: 'nav-add' })).toBeTruthy()
   expect(await wide.find({ type: 'Button', key: 'nav-admin' })).toBeTruthy()
   await wide.unmount()
 })
 
-test('under the menu, a legend says what each mark does', async ($, on) => {
+test('under the menu, a legend says what each mark and each badge means: one wrapping row in two groups, "Ouvrir" and "Droits", each a bold word and its items parted by "·", never cut; each item in the hover group its tiles\' marks or radios join', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
+  const texts = (n: Drawn | undefined) => nodesOf(n as never).filter(x => x.type === 'Text').map(textOf)
+  const boxes = (n: Drawn | undefined) => childrenOf(n).filter(x => x.type === 'Box')
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    const nodes = nodesOf(await ui.drawn())
+    const legend = nodes.find(n => keyOf(n) === 'legend')
+    // One row that wraps between its two groups; a group wraps inside only once the pane is narrower than
+    // the group itself (so it never runs past the pane's edge), and shrinks to the pane then.
+    expect(legend?.props).toMatchObject({ flexDirection: 'row', flexWrap: 'wrap', columnGap: 3 })
+    const groups = childrenOf(legend)
+    expect(groups.map(keyOf)).toEqual(['legend-open', 'legend-rights'])
+    for (const group of groups) {
+      expect(group.props).toMatchObject({ flexDirection: 'row', flexWrap: 'wrap', gap: 1 })
+      expect(group.props?.flexShrink).toBeUndefined()
+    }
+    // The first group: "Ouvrir :", bold, then Obsidian's, Claude's and the planet's items — a drawn mark
+    // beside each word on the desktop, a glyph on the terminal — parted by "·".
+    expect(texts(groups[0])).toEqual(
+      surface === 'terminal'
+        ? ['Ouvrir :', '💎', 'Obsidian', '·', '✳', 'navigateur interne', '·', '🌐', 'navigateur par défaut']
+        : ['Ouvrir :', 'Obsidian', '·', 'navigateur interne', '·', 'navigateur par défaut'],
+    )
+    expect(nodesOf(groups[0] as never).find(n => n.type === 'Text' && textOf(n) === 'Ouvrir :')?.props?.weight).toBe('semibold')
+    expect(boxes(groups[0]).map(keyOf)).toEqual(['legend-obsidian', 'legend-claude', 'legend-browser'])
+    expect(nodesOf(groups[0] as never).filter(n => n.type === 'Svg').map(n => n.props?.alt)).toEqual(surface === 'terminal' ? [] : ['Obsidian', 'Claude', 'Navigateur'])
+    // The second: "Droits :" and the three tiers' badges — the same badges as the tiles' radios — with their words.
+    expect(texts(groups[1])).toEqual(['Droits :', '🔒', 'lecture seule', '·', '✋', 'écriture sur accord', '·', '✏️', 'écriture automatique'])
+    expect(nodesOf(groups[1] as never).find(n => n.type === 'Text' && textOf(n) === 'Droits :')?.props?.weight).toBe('semibold')
+    expect(boxes(groups[1]).map(keyOf)).toEqual(['legend-locked', 'legend-soft', 'legend-writable'])
+    // Each item joins the hover group of its mark or tier, on a grey ground while any member is under the pointer.
+    expect(boxes(groups[0]).map(n => n.hover)).toEqual(['open-obsidian', 'open-claude', 'open-browser'].map(scope => ({ scope, backgroundColor: 'inactive' })))
+    expect(boxes(groups[1]).map(n => n.hover)).toEqual(['tier-locked', 'tier-soft', 'tier-writable'].map(scope => ({ scope, backgroundColor: 'inactive' })))
+    // The legend comes right under the menu; nothing of the old wording is left.
+    expect(nodes.findIndex(n => keyOf(n) === 'nav')).toBeLessThan(nodes.findIndex(n => keyOf(n) === 'legend'))
+    expect(nodes.some(n => n.type === 'Text' && /ouvre dans|Distant :|Local :|Droits lecture/.test(textOf(n)))).toBe(false)
+    await ui.unmount()
+  }
+  // The tiles' marks join the same groups on the desktop: the planet's box "open-browser", Claude's "open-claude",
+  // Obsidian's "open-obsidian" — the legend's item lights with them. The terminal, with no hover, draws glyph keys.
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  const nodes = nodesOf(await ui.drawn())
-  const legend = nodes.find(n => keyOf(n) === 'legend')
-  const texts = nodesOf(legend as never).filter(n => n.type === 'Text').map(textOf)
-  expect(texts).toEqual(expect.arrayContaining(['Local : ouvre dans Obsidian', 'Distant : ouvre dans le navigateur interne', 'Distant : ouvre dans le navigateur par défaut']))
-  expect(nodesOf(legend as never).filter(n => n.type === 'Svg').map(n => n.props?.alt)).toEqual(['Obsidian', 'Claude', 'Navigateur'])
-  // The legend comes right under the menu.
-  expect(nodes.findIndex(n => keyOf(n) === 'nav')).toBeLessThan(nodes.findIndex(n => keyOf(n) === 'legend'))
   await openAdd(ui)
   await ui.press({ key: 'tab-distants' })
-  expect(await ui.find({ type: 'Button', key: 'web-extra' })).toBeTruthy()
+  const nodes = nodesOf(await ui.drawn())
+  expect(nodes.find(n => keyOf(n) === 'icon-web-extra')?.hover).toEqual({ scope: 'open-browser', backgroundColor: 'inactive' })
+  expect(nodes.find(n => keyOf(n) === 'icon-ui-extra')?.hover).toEqual({ scope: 'open-claude', backgroundColor: 'inactive' })
+  // (Obsidian's: in the last-files test below, where a local vault has a path.)
+  // The gear at the menu's right joins no group.
+  expect(nodes.some(n => keyOf(n) === 'icon-nav-admin')).toBe(true)
+  expect(nodes.find(n => keyOf(n) === 'icon-nav-admin')?.hover).toBeUndefined()
   // Marks alone in the tiles: no "Distant · navigateur", no "Dans Claude".
   expect(await ui.find({ type: 'Text', text: /Distant · navigateur|Dans Claude/ })).toBeFalsy()
   await ui.unmount()
@@ -3092,12 +3504,14 @@ test('the console turns each way of opening a vault on or off: its mark, its leg
   await begin($)
   const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   await ui.press({ key: 'nav-admin' })
-  await openAdmin(ui, 'general')
+  await ui.press({ key: 'admin-sec-open' })
   const card = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'admin-open')
   expect(['obsidian', 'browser', 'claude'].every(way => nodesOf(card as never).some(n => keyOf(n) === `open-${way}-on`))).toBe(true)
   // The default browser off: no planet in the tiles, the legend or the band.
   await ui.press({ key: 'open-browser-off' })
   expect(stored.openers).toEqual({ obsidian: true, browser: false, claude: true })
+  // The section's state line follows (under the page's title, in a wide pane).
+  expect(nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'admin-page-note') as never).some(n => n.type === 'Text' && textOf(n) === '2 sur 3')).toBe(true)
   await ui.press({ key: 'nav-vaults' })
   expect(await ui.find({ type: 'Button', key: 'web-extra' })).toBeFalsy()
   expect(await ui.find({ type: 'Button', key: 'ui-extra' })).toBeTruthy()
@@ -3126,7 +3540,7 @@ test('folded into "☰", the menu keeps the router mark at the left and GitHub a
 const childrenOf = (n: Drawn | undefined): Drawn[] =>
   ((Array.isArray(n?.children) ? n.children : [n?.children]) as unknown[]).flat().filter(Boolean) as Drawn[]
 
-test("a tile to add keeps its marks in its head, right of its name; a secondary's head holds its dot, its name and ✕, and nothing else", async ($, on) => {
+test("a secondary's tile, in a pane at least a tile wide: its head holds its dot, bold name and marks at the left, the rights' short title, three badge-only radios and ✕ at the right; a rule; its last update and files on the full width; ▶ Actif and ❚❚ Pause at its foot — both surfaces", async ($, on) => {
   const list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'extra'] } }
   wire(on, { list })
   await begin($)
@@ -3137,110 +3551,90 @@ test("a tile to add keeps its marks in its head, right of its name; a secondary'
     // A tile to add keeps its marks' box in its head, after its name.
     const addHead = nodesOf(nodes.find(n => keyOf(n) === 'av-closed-head') as never)
     expect(addHead.some(n => keyOf(n) === 'marks-av-closed')).toBe(true)
-    // A secondary's head: at the left its dot and its bold name; at the far right ✕, a bold one; no mark between.
     const tile = nodes.find(n => keyOf(n) === 'sec-extra')
     expect(tile?.props?.borderStyle).toBe('single')
+    // The tile is as wide as its head needs: frame and padding (4), the dot (2), a gap, a name of 20, two marks (a gap
+    // and 2 each), a gap, the rights (18 + 3 × 5 = 33), a gap and ✕ — 69 cells, never less; the grid a cell between two.
+    expect(tile?.props?.width).toBe(69)
+    expect(tile?.props?.minWidth).toBe(69)
+    expect(nodes.find(n => keyOf(n) === 'sec-tiles')?.props?.gap).toBe(1)
     const parts = childrenOf(tile)
-    // Its head, the rule, then (no note line for a vault that answers) its front.
-    expect(parts.map(keyOf)).toEqual(['sec-extra-head', 'hrule-sec-extra', 'front-extra'])
+    // Its head, the rule, its body (no note line for a vault that answers, no rights line in a wide pane), the spacer, its foot.
+    expect(parts.map(keyOf)).toEqual(['sec-extra-head', 'hrule-sec-extra', 'stamp-extra', 'spacer-sec-extra', 'foot-sec-extra'])
     const head = parts[0]
     expect(head?.props?.justifyContent).toBe('space-between')
     const [left, right] = childrenOf(head)
     const leftNodes = nodesOf(left as never)
-    // The dot's fixed-width cell (its glyph is drawn by the surface).
+    // At the left: the dot's fixed-width cell (its glyph is drawn by the surface), the bold name, then the marks that
+    // open the vault — the planet and Claude's, keys.
     const dotAt = leftNodes.findIndex(n => n.type === 'Box' && n.props?.width === 2 && n.props?.justifyContent === 'center')
     const nameAt = leftNodes.findIndex(n => n.type === 'Text' && textOf(n) === 'extra')
+    const marksAt = leftNodes.findIndex(n => keyOf(n) === 'marks-sec-extra')
     expect(dotAt).toBeGreaterThanOrEqual(0)
     expect(nameAt).toBeGreaterThan(dotAt)
+    expect(marksAt).toBeGreaterThan(nameAt)
     expect(leftNodes[nameAt]?.props?.weight).toBe('semibold')
-    expect(leftNodes.some(n => keyOf(n) === 'web-extra' || keyOf(n) === 'ui-extra' || keyOf(n) === 'marks-sec-extra')).toBe(false)
-    expect(keyOf(right as Drawn)).toBe('remove-extra')
-    expect(right?.type).toBe('Button')
-    expect(nodesOf(right as never).some(n => n.type === 'Text' && textOf(n) === '✕' && n.props?.weight === 'bold')).toBe(true)
+    expect(nodesOf(leftNodes[marksAt] as never).filter(n => n.type === 'Button').map(keyOf)).toEqual(['web-extra', 'ui-extra'])
+    // At the right, one row that never shrinks: the rights, then ✕, bold.
+    expect(keyOf(right as Drawn)).toBe('side-extra')
+    expect(right?.props).toMatchObject({ flexDirection: 'row', flexShrink: 0 })
+    expect(childrenOf(right).map(keyOf)).toEqual(['mode-extra', 'remove-extra'])
+    const [rights, remove] = childrenOf(right)
+    expect(remove?.type).toBe('Button')
+    expect(nodesOf(remove as never).some(n => n.type === 'Text' && textOf(n) === '✕' && n.props?.weight === 'bold')).toBe(true)
+    // The rights: the short title, bold, then the three radios in a row, each its ring and its badge alone — no
+    // words, the legend has them — ◉ on the one in force, lit; the others ○ and dim.
+    expect(rights?.props).toMatchObject({ flexDirection: 'row', flexShrink: 0 })
+    expect(rights?.props?.flexWrap).toBeUndefined()
+    const [title, tiers] = childrenOf(rights)
+    expect(textOf(title!)).toBe('lecture/écriture :')
+    expect(title?.props).toMatchObject({ weight: 'semibold', size: 'body' })
+    expect(tiers?.props?.flexDirection).toBe('row')
+    expect(tiers?.props?.flexWrap).toBeUndefined()
+    const radios = childrenOf(tiers)
+    expect(radios.map(keyOf)).toEqual(['radio-locked-extra', 'radio-soft-extra', 'radio-writable-extra'])
+    const keys = radios.map(r => childrenOf(r)[0])
+    expect(keys.map(n => n?.type)).toEqual(['Button', 'Button', 'Button'])
+    expect(keys.map(n => keyOf(n))).toEqual(['tier-locked-extra', 'tier-soft-extra', 'tier-writable-extra'])
+    expect(keys.map(n => n?.props?.label)).toEqual(['○ 🔒', '◉ ✋', '○ ✏️'])
+    expect(keys.map(n => n?.props?.dimColor)).toEqual([true, false, true])
+    // Each radio's box joins its tier's hover group: a grey ground while any member (the legend's item) is under the pointer.
+    expect(radios.map(r => r.hover)).toEqual(['locked', 'soft', 'writable'].map(m => ({ scope: `tier-${m}`, backgroundColor: 'inactive' })))
     // A rule across the tile under its head: one line high, what overflows clipped (never truncated into '…').
     expect(textOf(parts[1]!)).toBe('─'.repeat(65))
     expect(parts[1]?.props?.height).toBe(1)
     expect(parts[1]?.props?.overflow).toBe('hidden')
+    // The body on the full width — the tile's inside, 69 - 4: the title, bold, over the value; no file before the first write.
+    const column = parts[2]
+    expect(column?.props).toMatchObject({ alignItems: 'flex-start', width: 65, overflow: 'hidden' })
+    const bodyNodes = nodesOf(column as never)
+    const titleAt = bodyNodes.findIndex(n => n.type === 'Text' && textOf(n) === 'Dernière mise à jour :')
+    expect(bodyNodes[titleAt]?.props).toMatchObject({ weight: 'semibold', size: 'body' })
+    expect(bodyNodes.findIndex(n => n.type === 'Text' && textOf(n) === 'aucune via le router')).toBeGreaterThan(titleAt)
+    expect(bodyNodes.some(n => /^note-/.test(keyOf(n) ?? ''))).toBe(false)
+    // The foot, at the right: ▶ Actif on green, ❚❚ Pause beside it, dim — the keys that resume and pause.
+    expect(parts[4]?.props?.justifyContent).toBe('flex-end')
+    const state = childrenOf(parts[4])[0]
+    expect(keyOf(state!)).toBe('state-extra')
+    // A row, one key under the other where the two do not fit ("▶ Active ❚❚ Pause" is 17 cells, a 20-column tile holds 16).
+    expect(state?.props).toMatchObject({ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end' })
+    expect(childrenOf(state).map(keyOf)).toEqual(['state-on-extra', 'state-off-extra'])
+    expect(childrenOf(state)[0]?.props?.backgroundColor).toBe('diffAddedDimmed')
+    expect(childrenOf(state)[1]?.props?.backgroundColor).toBeUndefined()
+    expect(nodesOf(state as never).filter(n => n.type === 'Button').map(n => [keyOf(n), n.props?.label, n.props?.dimColor])).toEqual([
+      ['resume-extra', '▶ Actif', false],
+      ['pause-extra', '❚❚ Pause', true],
+    ])
+    // No column any more: no cell, no vertical rule, no stack, no front; no round key, no back.
+    expect(nodesOf(tile as never).some(n => /^(cell-|rule-|rulecell-|stack-|front-|(icon-)?flip-)/.test(keyOf(n) ?? ''))).toBe(false)
+    // docs, a remote one with no web UI: no mark in its head, the same right part.
+    const docsHead = nodes.find(n => keyOf(n) === 'sec-docs-head')
+    expect(nodesOf(docsHead as never).filter(n => n.type === 'Button').map(keyOf)).toEqual(['tier-locked-docs', 'tier-soft-docs', 'tier-writable-docs', 'remove-docs'])
     await ui.unmount()
   }
 })
 
-test("a secondary's front: three fixed columns parted by rules — its state over its marks, its rights under their title at the left, its last update and files at the left; both surfaces", async ($, on) => {
-  const list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'extra'] } }
-  wire(on, { list })
-  await begin($)
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ ...WIDE, surface })
-    const nodes = nodesOf(await ui.drawn())
-    const front = nodes.find(n => keyOf(n) === 'front-extra')
-    // Side by side, each column as tall as the row, its content at mid-height with a line of air at each end.
-    expect(front?.props?.flexDirection).toBe('row')
-    expect(front?.props?.alignItems).toBe('stretch')
-    expect(front?.props?.gap).toBeUndefined()
-    const parts = childrenOf(front)
-    expect(parts.map(keyOf)).toEqual(['cell-state-extra', 'rule-1-extra', 'cell-rights-extra', 'rule-2-extra', 'cell-files-extra'])
-    const [state, rule1, rights, rule2, files] = parts
-    // Fixed widths, whatever the pane's: the state's two keys + 2 (10), the rights' title (25) + 1,
-    // the files' a cell over the rights' (27, the widest) — none shrinks, each clips what runs over.
-    for (const cell of [state, rights, files]) {
-      expect(cell?.props?.justifyContent).toBe('center')
-      expect(cell?.props?.paddingY).toBe(1)
-      expect(cell?.props?.flexDirection).toBe('column')
-      expect(cell?.props?.flexShrink).toBe(0)
-      expect(cell?.props?.overflow).toBe('hidden')
-    }
-    expect(state?.props).toMatchObject({ width: 10, alignItems: 'center', paddingLeft: 0 })
-    expect(rights?.props).toMatchObject({ width: 26, alignItems: 'flex-start', paddingLeft: 1 })
-    expect(files?.props).toMatchObject({ width: 27, alignItems: 'flex-start', paddingLeft: 1 })
-    expect(files?.props?.width).toBeGreaterThan(rights?.props?.width as number)
-    expect(rights?.props?.width).toBeGreaterThan(state?.props?.width as number)
-    // The tile: its frame and padding (4), the two rules, the three columns — 69 cells; the grid a cell between two.
-    expect(nodes.find(n => keyOf(n) === 'sec-extra')?.props?.width).toBe(69)
-    expect(nodes.find(n => keyOf(n) === 'sec-tiles')?.props?.gap).toBe(1)
-    // The rules: two cells taller than the tallest column (the state's: 2 + 1 + 2 marks), stretched to the row and clipped to it.
-    for (const rule of [rule1, rule2]) {
-      expect(nodesOf(rule as never).filter(n => n.type === 'Text' && textOf(n) === '│')).toHaveLength(7)
-      expect(rule?.props?.overflow).toBe('hidden')
-    }
-    // First column: ▶ Actif (on green) over ❚❚ Pause, then the planet over Claude's mark.
-    const stateParts = childrenOf(state)
-    expect(stateParts.map(keyOf)).toEqual(['state-extra', 'stack-extra'])
-    expect(stateParts[0]?.props?.flexDirection).toBe('column')
-    expect(childrenOf(stateParts[0]).map(keyOf)).toEqual(['state-on-extra', 'state-off-extra'])
-    expect(stateParts[0] && nodesOf(stateParts[0] as never).find(n => keyOf(n) === 'state-on-extra')?.props?.backgroundColor).toBe('diffAddedDimmed')
-    expect(stateParts[1]?.props?.flexDirection).toBe('column')
-    const marks = nodesOf(stateParts[1] as never).filter(n => n.type === 'Button').map(keyOf)
-    expect(marks).toEqual(['web-extra', 'ui-extra'])
-    // Second column: the title, body-sized and bold, then the three options, ◉ on the one in force, all at the left.
-    const menu = childrenOf(rights)[0]
-    expect(keyOf(menu!)).toBe('mode-extra')
-    expect(menu?.props?.alignItems).toBe('flex-start')
-    const [title, tiers] = childrenOf(menu)
-    expect(textOf(title!)).toBe('Droits lecture/écriture :')
-    expect(title?.props).toMatchObject({ weight: 'semibold', size: 'body' })
-    expect(tiers?.props?.alignItems).toBe('flex-start')
-    expect(childrenOf(tiers).map(n => n.type)).toEqual(['Button', 'Button', 'Button'])
-    expect(childrenOf(tiers).map(n => n.props?.label)).toEqual(['○ 🔒 Lecture seule', '◉ ✋ Écriture sur accord', '○ ✏️ Écriture automatique'])
-    expect(childrenOf(tiers).map(n => n.props?.dimColor)).toEqual([true, false, true])
-    // Third column: the title, body-sized and bold, over the value; no file before the first write.
-    const filesNodes = nodesOf(files as never)
-    const column = filesNodes.find(n => keyOf(n) === 'stamp-extra')
-    expect(column?.props).toMatchObject({ alignItems: 'flex-start', width: 26, overflow: 'hidden' })
-    const titleAt = filesNodes.findIndex(n => n.type === 'Text' && textOf(n) === 'Dernière mise à jour :')
-    expect(filesNodes[titleAt]?.props).toMatchObject({ weight: 'semibold', size: 'body' })
-    expect(filesNodes.findIndex(n => n.type === 'Text' && textOf(n) === 'aucune via le router')).toBeGreaterThan(titleAt)
-    expect(filesNodes.some(n => /^note-/.test(keyOf(n) ?? ''))).toBe(false)
-    // No round key, no back: the files are in sight.
-    expect(nodes.some(n => /^(icon-)?flip-/.test(keyOf(n) ?? ''))).toBe(false)
-    // docs, a remote one with no web UI: no marks, the rules as tall as the rights (1 + 3) + 2.
-    const docs = childrenOf(nodes.find(n => keyOf(n) === 'front-docs'))
-    expect(childrenOf(docs[0]).map(keyOf)).toEqual(['state-docs'])
-    expect(nodesOf(docs[1] as never).filter(n => n.type === 'Text' && textOf(n) === '│')).toHaveLength(6)
-    await ui.unmount()
-  }
-})
-
-test("the primary's tile has the same front: its marks alone in the first column, its rights told (not set) in the second, its last update and files in the third", async ($, on) => {
+test("the primary's tile has the same shape: its marks in its head, its rights at the right (told, not set, on an older router), its last update and files on the full width, '● Par défaut' at its foot — no state key, no ✕", async ($, on) => {
   // The primary with a web UI, so that it has marks to show.
   const list = {
     ...LIST,
@@ -3258,35 +3652,40 @@ test("the primary's tile has the same front: its marks alone in the first column
   const nodes = nodesOf(await ui.drawn())
   const tile = nodes.find(n => keyOf(n) === 'primary-row')
   expect(tile?.props?.width).toBe(69)
-  // Its head: the dot, the name, "● Par défaut" — no mark there.
-  const head = nodes.find(n => keyOf(n) === 'primary-row-head')
-  expect(nodesOf(head as never).some(n => keyOf(n) === 'marks-primary-row')).toBe(false)
-  expect(nodesOf(head as never).some(n => n.type === 'Text' && textOf(n) === 'Par défaut')).toBe(true)
-  // No access line of its own any more: its rights are the second column's.
+  const parts = childrenOf(tile)
+  // Its head, the rule, its body, the spacer, its foot — the same parts as a secondary's.
+  expect(parts.map(keyOf)).toEqual(['primary-row-head', 'hrule-primary-row', 'stamp-main', 'spacer-primary-row', 'foot-primary-row'])
+  // Its head: the dot, the name, its marks (keys); at the right its rights alone — no ✕, and the badge is not there.
+  const [left, right] = childrenOf(parts[0])
+  expect(nodesOf(left as never).some(n => keyOf(n) === 'marks-primary-row')).toBe(true)
+  expect(nodesOf(left as never).filter(n => n.type === 'Button').map(keyOf)).toEqual(['web-main', 'ui-main'])
+  expect(keyOf(right as Drawn)).toBe('side-main')
+  expect(childrenOf(right).map(keyOf)).toEqual(['mode-main'])
+  expect(nodesOf(parts[0] as never).some(n => n.type === 'Text' && textOf(n) === 'Par défaut')).toBe(false)
+  // Never paused, never removed: no state key, no ✕ anywhere in it; no access line of its own either.
+  expect(nodesOf(tile as never).some(n => /^(resume-|pause-|state-|remove-)/.test(keyOf(n) ?? ''))).toBe(false)
   expect(nodes.some(n => keyOf(n) === 'primary-access')).toBe(false)
-  const parts = childrenOf(nodes.find(n => keyOf(n) === 'front-main'))
-  expect(parts.map(keyOf)).toEqual(['cell-state-main', 'rule-1-main', 'cell-rights-main', 'rule-2-main', 'cell-files-main'])
-  expect(parts[0]?.props?.width).toBe(10)
-  expect(parts[2]?.props?.width).toBe(26)
-  expect(parts[4]?.props?.width).toBe(27)
-  // First column: no state switch (a primary is never paused), its marks stacked.
-  expect(childrenOf(parts[0]).map(keyOf)).toEqual(['stack-main'])
-  expect(nodesOf(parts[0] as never).some(n => /^(resume|pause)-/.test(keyOf(n) ?? ''))).toBe(false)
-  expect(nodesOf(parts[0] as never).filter(n => n.type === 'Button').map(keyOf)).toEqual(['web-main', 'ui-main'])
-  // Second column: the same title and three tiers as text, ◉ on "Écriture automatique", none a key.
-  const menu = nodesOf(parts[2] as never).find(n => keyOf(n) === 'mode-main')
-  const [title, tiers] = childrenOf(menu)
-  expect(textOf(title!)).toBe('Droits lecture/écriture :')
-  expect(childrenOf(tiers).map(n => n.type)).toEqual(['Text', 'Text', 'Text'])
-  expect(childrenOf(tiers).map(textOf)).toEqual(['○ 🔒 Lecture seule', '○ ✋ Écriture sur accord', '◉ ✏️ Écriture automatique'])
-  expect(childrenOf(tiers).map(n => n.props?.dimColor)).toEqual([true, true, false])
-  // Third column: its last update and its one file, a key.
-  const files = nodesOf(parts[4] as never)
-  expect(files.some(n => n.type === 'Text' && textOf(n) === '24/10/2026  22:21' || /^\d{2}\/\d{2}\/2026 {2}\d{2}:\d{2}$/.test(textOf(n)))).toBe(true)
+  // The rights: the same short title, the three tiers as text (the router reports no tier: no key), ◉ on ✏️.
+  const [title, tiers] = childrenOf(childrenOf(right)[0])
+  expect(textOf(title!)).toBe('lecture/écriture :')
+  // (A drawn tree keeps no Text's key: the radios' boxes are the keys to find.)
+  expect(childrenOf(tiers).map(keyOf)).toEqual(['radio-locked-main', 'radio-soft-main', 'radio-writable-main'])
+  const keys = childrenOf(tiers).map(r => childrenOf(r)[0])
+  expect(keys.map(n => n?.type)).toEqual(['Text', 'Text', 'Text'])
+  expect(keys.map(n => textOf(n!))).toEqual(['○ 🔒', '○ ✋', '◉ ✏️'])
+  expect(keys.map(n => n?.props?.dimColor)).toEqual([true, true, false])
+  // The body, on the tile's inside (69 - 4): its last update and its four files, keys in order.
+  expect(parts[2]?.props?.width).toBe(65)
+  const files = nodesOf(parts[2] as never)
+  expect(files.some(n => n.type === 'Text' && /^\d{2}\/\d{2}\/2026 {2}\d{2}:\d{2}$/.test(textOf(n)))).toBe(true)
   expect(files.find(n => keyOf(n) === 'note-0-main')?.props?.label).toBe('wiki/a.md')
-  // Its four files, keys in order; the rules follow the tallest column, the files' (2 + 4), + 2.
   expect(files.filter(n => n.type === 'Button' && /^note-/.test(keyOf(n) ?? '')).map(n => n.props?.label)).toEqual(['wiki/a.md', 'b.md', 'c.md', 'd.md'])
-  expect(nodesOf(parts[1] as never).filter(n => n.type === 'Text' && textOf(n) === '│')).toHaveLength(8)
+  // The foot, at the right, where a secondary has its state keys: "● Par défaut", the dot in Claude's colour.
+  expect(parts[4]?.props?.justifyContent).toBe('flex-end')
+  const badge = childrenOf(parts[4])[0]
+  expect(keyOf(badge!)).toBe('primary-badge')
+  expect(nodesOf(badge as never).filter(n => n.type === 'Text').map(textOf)).toEqual(['●', 'Par défaut'])
+  expect(nodesOf(badge as never).find(n => n.type === 'Text' && textOf(n) === '●')?.props?.color).toBe('claude')
   await ui.unmount()
 })
 
@@ -3296,11 +3695,11 @@ test('a locked session marks the primary read-only in its rights', async ($, on)
   const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   const menu = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'mode-main')
   const tiers = childrenOf(menu)[1]
-  expect(childrenOf(tiers).map(textOf)).toEqual(['◉ 🔒 Lecture seule', '○ ✋ Écriture sur accord', '○ ✏️ Écriture automatique'])
+  expect(childrenOf(tiers).map(r => textOf(childrenOf(r)[0]!))).toEqual(['◉ 🔒', '○ ✋', '○ ✏️'])
   await ui.unmount()
 })
 
-test('a pane too narrow for the three columns stacks them: state and marks, rights, last update and files, a rule between two', async ($, on) => {
+test("a pane narrower than a tile gets one as wide as itself: the rights on a line of their own under the head, ✕ alone at the head's right, the body on the tile's inside; the primary the same, with nothing at its head's right", async ($, on) => {
   const list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'extra'] } }
   wire(on, { list })
   await begin($)
@@ -3310,29 +3709,38 @@ test('a pane too narrow for the three columns stacks them: state and marks, righ
     // The tile takes the pane: 50 < 69.
     expect(nodes.find(n => keyOf(n) === 'sec-extra')?.props?.width).toBe(50)
     expect(nodes.find(n => keyOf(n) === 'primary-row')?.props?.width).toBe(50)
-    const front = nodes.find(n => keyOf(n) === 'front-extra')
-    expect(front?.props?.flexDirection).toBe('column')
-    const parts = childrenOf(front)
-    expect(parts.map(keyOf)).toEqual(['cell-state-extra', 'rule-1-extra', 'cell-rights-extra', 'rule-2-extra', 'cell-files-extra'])
-    // The rules now run across: one line of ─ over the tile's inside, 50 - 4.
-    for (const rule of [parts[1], parts[3]]) {
-      expect(rule?.type).toBe('Box')
-      expect(rule?.props?.height).toBe(1)
-      expect(rule?.props?.overflow).toBe('hidden')
-      expect(textOf(rule!)).toBe('─'.repeat(46))
-    }
-    // Each stacked column keeps its air and its alignment, and no fixed width.
-    for (const cell of [parts[0], parts[2], parts[4]]) {
-      expect(cell?.props?.paddingY).toBe(1)
-      expect(cell?.props?.width).toBeUndefined()
-    }
-    expect(parts[0]?.props?.alignItems).toBe('center')
-    expect(parts[2]?.props?.alignItems).toBe('flex-start')
-    expect(parts[4]?.props?.alignItems).toBe('flex-start')
-    expect(childrenOf(parts[0]).map(keyOf)).toEqual(['state-extra', 'stack-extra'])
-    expect(nodesOf(parts[2] as never).some(n => keyOf(n) === 'mode-extra')).toBe(true)
-    // The files' column as wide as the tile's inside less its own padding, its paths cut to it.
-    expect(nodesOf(parts[4] as never).find(n => keyOf(n) === 'stamp-extra')?.props?.width).toBe(45)
+    const parts = childrenOf(nodes.find(n => keyOf(n) === 'sec-extra'))
+    // Its head, the rights' line, the rule, its body, the spacer, its foot.
+    expect(parts.map(keyOf)).toEqual(['sec-extra-head', 'rights-sec-extra', 'hrule-sec-extra', 'stamp-extra', 'spacer-sec-extra', 'foot-sec-extra'])
+    // The head's right part holds ✕ alone; its marks stay at the left.
+    const [left, right] = childrenOf(parts[0])
+    expect(nodesOf(left as never).filter(n => n.type === 'Button').map(keyOf)).toEqual(['web-extra', 'ui-extra'])
+    expect(keyOf(right as Drawn)).toBe('side-extra')
+    expect(childrenOf(right).map(keyOf)).toEqual(['remove-extra'])
+    // The rights' line wraps, the same title and radios in it — and the rights row itself wraps between its title
+    // and its radios, and between radios, shrinking to the tile (a 20-column pane holds 16 cells inside).
+    expect(parts[1]?.props).toMatchObject({ flexDirection: 'row', flexWrap: 'wrap' })
+    expect(childrenOf(parts[1]).map(keyOf)).toEqual(['mode-extra'])
+    expect(childrenOf(parts[1])[0]?.props).toMatchObject({ flexDirection: 'row', flexWrap: 'wrap', flexShrink: 1 })
+    expect(nodesOf(parts[1] as never).find(n => keyOf(n) === 'tiers-extra')?.props?.flexWrap).toBe('wrap')
+    expect(nodesOf(parts[1] as never).some(n => n.type === 'Text' && textOf(n) === 'lecture/écriture :')).toBe(true)
+    expect(nodesOf(parts[1] as never).filter(n => n.type === 'Button').map(n => [keyOf(n), n.props?.label])).toEqual([
+      ['tier-locked-extra', '○ 🔒'],
+      ['tier-soft-extra', '◉ ✋'],
+      ['tier-writable-extra', '○ ✏️'],
+    ])
+    // The rule over the tile's inside, 50 - 4; the body as wide, its paths cut to it.
+    expect(textOf(parts[2]!)).toBe('─'.repeat(46))
+    expect(parts[3]?.props?.width).toBe(46)
+    // The foot keeps its keys.
+    expect(nodesOf(parts[5] as never).filter(n => n.type === 'Button').map(keyOf)).toEqual(['resume-extra', 'pause-extra'])
+    // The primary: the same parts, its told tiers on the rights' line, and no right part at all in its head (no ✕).
+    const main = childrenOf(nodes.find(n => keyOf(n) === 'primary-row'))
+    expect(main.map(keyOf)).toEqual(['primary-row-head', 'rights-primary-row', 'hrule-primary-row', 'stamp-main', 'spacer-primary-row', 'foot-primary-row'])
+    expect(nodesOf(main[0] as never).some(n => keyOf(n) === 'side-main' || keyOf(n) === 'mode-main')).toBe(false)
+    expect(childrenOf(main[1]).map(keyOf)).toEqual(['mode-main'])
+    expect(nodesOf(main[1] as never).filter(n => n.type === 'Text').map(textOf)).toEqual(['lecture/écriture :', '○ 🔒', '○ ✋', '◉ ✏️'])
+    expect(childrenOf(main[5]).map(keyOf)).toEqual(['primary-badge'])
     await ui.unmount()
   }
 })
@@ -3359,7 +3767,10 @@ test('a tile says when its vault was last written through the router and lists i
   await begin($)
   const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   await openClosed(ui)
-  const column = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'stamp-docs') as never)
+  const drawn = nodesOf(await ui.drawn())
+  // Obsidian's mark in a local vault's head joins the legend's "open-obsidian" hover group.
+  expect(drawn.find(n => keyOf(n) === 'icon-obsidian-notes')?.hover).toEqual({ scope: 'open-obsidian', backgroundColor: 'inactive' })
+  const column = nodesOf(drawn.find(n => keyOf(n) === 'stamp-docs') as never)
   expect(column.some(n => n.type === 'Text' && textOf(n) === 'Dernière mise à jour :')).toBe(true)
   expect(column.some(n => n.type === 'Text' && /^\d{2}\/\d{2}\/2026 {2}\d{2}:\d{2}$/.test(textOf(n)))).toBe(true)
   // The last files, newest first, under the date: keys, dim.
@@ -3381,12 +3792,13 @@ test('a tile says when its vault was last written through the router and lists i
   await ui.unmount()
 })
 
-test('a path wider than the files column is cut to it between graphemes, "…" closing it; one that just fits is whole; a tile to add cuts to its own inside and opens the whole path', async ($, on) => {
-  const long = 'wiki/un-dossier/une-note-au-titre-vraiment-long.md'
-  const exact = `${'a'.repeat(23)}.md`
-  const astral = `${'𝒜'.repeat(30)}.md`
-  // 23 cells, then a woman astronaut (two emoji joined by a ZWJ, four cells): the cut falls inside her.
-  const joined = `${'a'.repeat(23)}👩‍🚀.md`
+test('a path wider than the tile\'s inside is cut to it between graphemes, "…" closing it; one that just fits is whole; a tile to add cuts to its own inside and opens the whole path', async ($, on) => {
+  // The tile's inside is 65 cells: a path of 78.
+  const long = `wiki/${'a'.repeat(70)}.md`
+  const exact = `${'a'.repeat(62)}.md`
+  const astral = `${'𝒜'.repeat(70)}.md`
+  // 62 cells, then a woman astronaut (two emoji joined by a ZWJ, four cells): the cut falls inside her.
+  const joined = `${'a'.repeat(62)}👩‍🚀.md`
   const list = {
     ...LIST,
     vaultActivity: {
@@ -3408,22 +3820,23 @@ test('a path wider than the files column is cut to it between graphemes, "…" c
   await openAdd(ui)
   const nodes = nodesOf(await ui.drawn())
   const label = (key: string) => nodes.find(n => keyOf(n) === key)?.props?.label as string
-  // The files column is 26 wide inside: a 50-cell path becomes 25 graphemes and "…".
+  // The body is 65 wide, the tile's inside: a 78-cell path becomes 64 graphemes and "…".
+  expect(nodes.find(n => keyOf(n) === 'stamp-docs')?.props?.width).toBe(65)
   const cut = label('note-0-docs')
   expect(cut.endsWith('…')).toBe(true)
-  expect([...cut].length).toBe(26)
+  expect([...cut].length).toBe(65)
   expect(long.startsWith(cut.slice(0, -1))).toBe(true)
-  // A path of exactly 26 cells is given whole.
+  // A path of exactly 65 cells is given whole.
   expect(label('note-1-docs')).toBe(exact)
   // Cut between graphemes: no half of a surrogate pair is left at the cut.
   const cutAstral = label('note-2-docs')
   expect(cutAstral.endsWith('…')).toBe(true)
   expect(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(cutAstral)).toBe(false)
   expect(astral.startsWith(cutAstral.slice(0, -1))).toBe(true)
-  // 25 whole 𝒜 (one cell each) and the "…": nothing else between.
-  expect(/^𝒜{25}…$/u.test(cutAstral)).toBe(true)
+  // 64 whole 𝒜 (one cell each) and the "…": nothing else between.
+  expect(/^𝒜{64}…$/u.test(cutAstral)).toBe(true)
   // A joined emoji is dropped whole, never cut to its first half and a dangling joiner.
-  expect(label('note-3-docs')).toBe(`${'a'.repeat(23)}…`)
+  expect(label('note-3-docs')).toBe(`${'a'.repeat(62)}…`)
   // A tile to add: its column takes the tile's inside (34 - 6 = 28), the path is cut to it, and
   // its key opens the WHOLE path, not the cut one.
   const added = nodes.find(n => keyOf(n) === 'stamp-extra')
@@ -3447,11 +3860,11 @@ test('a pane narrower than the least tile width still gets a tile as wide as the
   const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 20 }, surface: 'desktop' })
   const nodes = nodesOf(await ui.drawn())
   expect(nodes.find(n => keyOf(n) === 'sec-docs')?.props?.width).toBe(20)
-  expect(nodes.find(n => keyOf(n) === 'front-docs')?.props?.flexDirection).toBe('column')
-  // The files column: 20 less the frame and padding (4) and its own padding (1); the path cut to 15.
-  expect(nodes.find(n => keyOf(n) === 'stamp-docs')?.props?.width).toBe(15)
+  expect(nodes.some(n => keyOf(n) === 'rights-sec-docs')).toBe(true)
+  // The body: 20 less the frame and padding (4); the path cut to 16.
+  expect(nodes.find(n => keyOf(n) === 'stamp-docs')?.props?.width).toBe(16)
   const cut = nodes.find(n => keyOf(n) === 'note-0-docs')?.props?.label as string
-  expect([...cut].length).toBe(15)
+  expect([...cut].length).toBe(16)
   expect(cut.endsWith('…')).toBe(true)
   await ui.unmount()
 })
@@ -3479,7 +3892,7 @@ test("a recent file the router gives no link to says so, opens nothing; with the
   expect(await ui.find({ type: 'Text', text: /^Pas de lien vers a\.md : no view agent$/ })).toBeTruthy()
   // The default browser off (Claude's pane still on): the file is named, with no key.
   await ui.press({ key: 'nav-admin' })
-  await openAdmin(ui, 'general')
+  await ui.press({ key: 'admin-sec-open' })
   await ui.press({ key: 'open-browser-off' })
   await ui.press({ key: 'nav-vaults' })
   expect(await ui.find({ type: 'Button', key: 'note-0-docs' })).toBeFalsy()
@@ -3491,11 +3904,19 @@ test("a recent file the router gives no link to says so, opens nothing; with the
 test('the wide menu draws its keys as tabs on a shelf: round frames cut short of their bottom, the one in sight open over the rule', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
-  const tabKeys = ['vaults', 'add', 'admin'] as const
-  const labels = { vaults: 'Vaults', add: '+ Ajouter un vault', admin: '⚙ Administration' }
+  const tabKeys = ['vaults', 'add'] as const
+  const labels = { vaults: 'Vaults', add: '+ Ajouter un vault' }
   const tabOf = (tree: unknown, key: string) => nodesOf(tree).find(n => keyOf(n) === key)
   // The tabs, with the one in sight open and the others closed, in a menu copy under `prefix`.
-  const shelf = (tree: unknown, prefix: string, inSight: (typeof tabKeys)[number]) => {
+  // `inSight` 'admin': the console shows, no tab is open and the gear is held down.
+  const shelf = (tree: unknown, prefix: string, inSight: (typeof tabKeys)[number] | 'admin') => {
+    const gearBox = nodesOf(tree).find(n => keyOf(n) === `icon-${prefix}nav-admin`)
+    if (gearBox) {
+      expect(gearBox.props?.backgroundColor).toBe(inSight === 'admin' ? 'inactive' : undefined)
+    } else {
+      // The terminal: the glyph key, lit while held down, dim otherwise.
+      expect(nodesOf(tree).find(n => keyOf(n) === `${prefix}nav-admin`)?.props?.dimColor).toBe(inSight !== 'admin')
+    }
     for (const id of tabKeys) {
       const tab = tabOf(tree, `${prefix}navtab-${id}`) as Drawn & { children?: Drawn[] }
       const isOpen = id === inSight
@@ -3527,7 +3948,7 @@ test('the wide menu draws its keys as tabs on a shelf: round frames cut short of
       expect(nodesOf(tab as never).some(n => n.type === 'Text' && /[╯╰│]/.test(textOf(n)))).toBe(false)
     }
     const open = tabKeys.filter(id => tabOf(tree, `${prefix}navtab-${id}`)?.props?.height === 3)
-    expect(open).toEqual([inSight])
+    expect(open).toEqual(inSight === 'admin' ? [] : [inSight])
   }
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface })
@@ -3596,90 +4017,108 @@ test('the menu keeps its shape when the router, the version and the update check
     badge: nodesOf(tree).some(n => keyOf(n) === 'update-badge'),
     version: nodesOf(tree).some(n => n.type === 'Text' && /^v\d/.test(textOf(n))),
   })
-  // Before the router is read: no "+ Ajouter un vault", no version, no badge — a 95-column
-  // terminal pane would hold what is drawn, even with two of the three to come, yet it
-  // folds, as it will once all of them are there (103 cells, as the terminal counts them).
-  const narrow = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 95 }, surface: 'terminal' })
+  // Before the router is read: no "+ Ajouter un vault", no version, no badge — an 80-column
+  // terminal pane would hold what is drawn, even with the rest to come, yet it folds, as it
+  // will once all of them are there (83 cells, as the terminal counts them: two tabs, the
+  // version's room, the badge, the gear and GitHub, with their gaps).
+  const narrow = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80 }, surface: 'terminal' })
   const wide = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   expect(shape(await narrow.drawn())).toEqual({ burger: true, tabs: [], badge: false, version: false })
-  expect(shape(await wide.drawn())).toEqual({ burger: false, tabs: ['navtab-vaults', 'navtab-admin'], badge: false, version: false })
+  expect(shape(await wide.drawn())).toEqual({ burger: false, tabs: ['navtab-vaults'], badge: false, version: false })
   // Read: the same panes, drawn again with the third key, the version and the badge, keep their shape.
   await begin($)
   expect(shape(await narrow.drawn())).toEqual({ burger: true, tabs: [], badge: false, version: false })
-  expect(shape(await wide.drawn())).toEqual({ burger: false, tabs: ['navtab-vaults', 'navtab-add', 'navtab-admin'], badge: true, version: true })
+  expect(shape(await wide.drawn())).toEqual({ burger: false, tabs: ['navtab-vaults', 'navtab-add'], badge: true, version: true })
   await narrow.press({ key: 'nav-burger' })
   expect(await narrow.find({ type: 'Button', key: 'nav-add' })).toBeTruthy()
   await narrow.unmount()
   await wide.unmount()
+  // The thresholds themselves, French: the terminal folds at 82 and spreads at 83; the desktop
+  // (its mark three cells, its gear and GitHub three each) at 80 and 81.
+  for (const [surface, columns, isFolded] of [['terminal', 82, true], ['terminal', 83, false], ['desktop', 80, true], ['desktop', 81, false]] as const) {
+    const pane = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: columns }, surface })
+    expect(shape(await pane.drawn()).burger).toBe(isFolded)
+    await pane.unmount()
+  }
 })
 
-test('the band\'s page keys are black arrows with the count inside: "◀N" before the page, "N▶" after it; the terminal draws the texts', async ($, on) => {
+test("the menu's pick keeps a way to open a local vault on the terminal: 💎 after its tier, where its name was the key", async ($, on) => {
+  // notes is local and known to Obsidian: on the line its name opens it (the
+  // terminal's key; the desktop has Obsidian's mark too). Picked, it is not
+  // named on the line, so the terminal gets 💎 after the bar.
+  const list = {
+    ...LIST,
+    workspaceBinding: { ...LIST.workspaceBinding, also: ['notes', 'extra', 'docs'] },
+    vaults: [...LIST.vaults.filter(v => v.name !== 'notes'), { name: 'notes', type: 'local', online: true, path: 'C:\\VAULTS\\Notes' }],
+  }
+  wire(on, { list, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  engineBand(on)
+  await begin($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 85 }, surface })
+    const nodes = nodesOf(await band.drawn())
+    expect(nodes.some(n => n.type === 'Select' && keyOf(n) === 'band-pick')).toBe(true)
+    const row = nodesOf(nodes.find(n => keyOf(n) === 'band-row-notes') as never)
+    const keys = row.map(n => keyOf(n)).filter((k): k is string => !!k)
+    const at = (key: string) => keys.indexOf(key)
+    expect(at('band-pause-notes')).toBeGreaterThan(-1)
+    expect(at('band-pause-notes')).toBeLessThan(at('band-tier-notes'))
+    expect(at('band-tier-notes')).toBeLessThan(at('band-bar-notes'))
+    expect(at('band-bar-notes')).toBeLessThan(at('band-obsidian-notes'))
+    expect(keys.some(k => /^band-(open|name|plain)-notes$/.test(k))).toBe(false)
+    const key = row.find(n => n.type === 'Button' && keyOf(n) === 'band-obsidian-notes')
+    // The terminal's glyph key; the desktop's blank key over Obsidian's mark.
+    expect(key?.props?.label).toBe(surface === 'terminal' ? '💎' : '\u00a0\u00a0')
+    expect(row.some(n => n.type === 'Svg' && n.props?.alt === 'Obsidian')).toBe(surface === 'desktop')
+    await band.unmount()
+  }
+  // The 💎 is counted: on the terminal the menu's form takes 61 (the fixed
+  // part), a gap, the menu (13) and the picked controls with their bar and
+  // 💎 (1 + 1 + 1 + 2 + 2 + 3 = 10) = 85 — its words from 85, compact at 84.
+  for (const [columns, hasWords] of [[85, true], [84, false]] as const) {
+    const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: columns }, surface: 'terminal' })
+    expect((await bandTexts(band)).includes('Secondaires :')).toBe(hasWords)
+    await band.unmount()
+  }
+  // On the line, where notes is named, the terminal has no 💎: the name is the key.
+  const wide = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 200 }, surface: 'terminal' })
+  const wideNodes = nodesOf(await wide.drawn())
+  expect(wideNodes.some(n => keyOf(n) === 'band-open-notes')).toBe(true)
+  expect(wideNodes.some(n => keyOf(n) === 'band-obsidian-notes')).toBe(false)
+  expect(wideNodes.some(n => keyOf(n) === 'band-bar-notes')).toBe(false)
+  await wide.unmount()
+})
+
+// The mobile app's table has no Select. The band there shows the picked one
+// named, its controls, and a dim count of the others; its compact threshold
+// is that form's own measure — 61 (the fixed part, bare), a gap, "+4" (2) and
+// the named slot " ▶ alpha-vault ✋" (17, nothing framed in this form) = 81 —
+// not the menu's (61 + 1 + 21 + 5 = 88).
+test('a surface without the menu shows the picked one named, with a dim count of the others, and is compact by that measure', async ($, on) => {
   const names = ['alpha-vault', 'beta-vault', 'gamma-vault', 'delta-vault', 'epsilon-vault']
   wire(on, { list: { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: names } } })
   engineBand(on)
   await begin($)
-  // On the desktop: a mark (a filled pentagon pointing the way, the count in white in it),
-  // its alt the text, a blank Button as wide laid over it; drawn lit, not dim.
-  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 110 }, surface: 'desktop' })
-  const mark = (tree: unknown, key: string) => {
-    const box = nodesOf(tree).find(n => keyOf(n) === `icon-${key}`)
-    const svg = nodesOf(box as never).find(n => n.type === 'Svg')
-    const button = nodesOf(box as never).find(n => n.type === 'Button' && keyOf(n) === key)
-    return { box, svg, button }
+  const at = async (bodyColumns: number) => {
+    const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns }, surface: 'mobile' })
+    const nodes = nodesOf(await ui.drawn())
+    const texts = await bandTexts(ui)
+    await ui.unmount()
+
+    return { nodes, texts }
   }
-  const first = await band.drawn()
-  const hidden = names.length - nodesOf(first).filter(n => /^band-row-/.test(keyOf(n) ?? '')).length
-  expect(hidden).toBeGreaterThan(0)
-  expect(nodesOf(first).some(n => keyOf(n) === 'band-back')).toBe(false)
-  const more = mark(first, 'band-more')
-  expect(more.svg?.props).toMatchObject({ alt: `${hidden}▶`, width: 18 + 7 * String(hidden).length, height: 16 })
-  const source = String(more.svg?.props?.source)
-  expect(source).toContain('fill="#1f1f1f" stroke="#ffffff"')
-  expect(source).toMatch(new RegExp(`>${hidden}</text>`))
-  expect(source).toContain('fill="#ffffff"')
-  // Pointing right: the shape ends on a point at the right edge, the left edge straight.
-  expect(source).toMatch(/d="M0 0H\d+L\d+ 8L\d+ 16H0Z"/)
-  expect(more.button?.props).toMatchObject({ plain: true, label: '\u00a0'.repeat(3 + String(hidden).length) })
-  expect(more.button?.props?.dimColor).toBeUndefined()
-  expect(nodesOf(first).some(n => n.type === 'Text' && /[‹›]/.test(textOf(n)))).toBe(false)
-  // Turned: "◀N" before the names, N the secondaries before the page, pointing left.
-  await band.press({ key: 'band-more' })
-  const second = await band.drawn()
-  const back = mark(second, 'band-back')
-  const before = names.indexOf((keyOf(nodesOf(second).find(n => /^band-row-/.test(keyOf(n) ?? '')) as Drawn) ?? '').replace('band-row-', ''))
-  expect(before).toBeGreaterThan(0)
-  expect(back.svg?.props).toMatchObject({ alt: `◀${before}`, width: 18 + 7 * String(before).length, height: 16 })
-  expect(String(back.svg?.props?.source)).toMatch(/d="M7 0H\d+V16H7L0 8Z"/)
-  expect(back.button?.props?.label).toBe('\u00a0'.repeat(3 + String(before).length))
-  await band.press({ key: 'band-back' })
-  expect(nodesOf(await band.drawn()).some(n => keyOf(n) === 'band-back')).toBe(false)
-  await band.unmount()
-  // On the terminal: the texts as keys, lit.
-  const term = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 110 }, surface: 'terminal' })
-  const moreKey = nodesOf(await term.drawn()).find(n => keyOf(n) === 'band-more')
-  expect(moreKey?.type).toBe('Button')
-  expect(moreKey?.props?.label).toMatch(/^\d+▶$/)
-  expect(moreKey?.props?.dimColor).toBeUndefined()
-  await term.press({ key: 'band-more' })
-  const backKey = nodesOf(await term.drawn()).find(n => keyOf(n) === 'band-back')
-  expect(backKey?.props?.label).toMatch(/^◀\d+$/)
-  await term.unmount()
-  // The terminal counts a key as its text and a gap, a cell less than the mark: the first
-  // secondary shows one column sooner there than on the desktop (whose mark takes a cell more).
-  const firstAt = async (surface: 'terminal' | 'desktop') => {
-    for (let columns = 40; columns < 160; columns += 1) {
-      const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: columns }, surface })
-      const rows = nodesOf(await ui.drawn()).filter(n => /^band-row-/.test(keyOf(n) ?? '')).length
-      await ui.unmount()
-      if (rows > 0) {
-        return columns
-      }
-    }
-    return -1
-  }
-  const [onDesktop, onTerminal] = [await firstAt('desktop'), await firstAt('terminal')]
-  expect(onTerminal).toBeGreaterThan(40)
-  expect(onDesktop - onTerminal).toBe(1)
+  const words = await at(110)
+  expect(words.nodes.some(n => n.type === 'Select')).toBe(false)
+  expect(textOf(words.nodes.find(n => keyOf(n) === 'band-count') as never)).toBe('+4')
+  expect(words.texts).toContain('alpha-vault')
+  expect(words.texts.some(t => names.slice(1).includes(t))).toBe(false)
+  expect(words.nodes.filter(n => /^band-row-/.test(keyOf(n) ?? '')).map(n => keyOf(n))).toEqual(['band-row-alpha-vault'])
+  expect(words.nodes.some(n => keyOf(n) === 'band-pause-alpha-vault')).toBe(true)
+  expect(words.texts).toContain('Secondaires :')
+  const keys = words.nodes.map(n => keyOf(n))
+  expect(keys.indexOf('band-count')).toBeLessThan(keys.indexOf('band-row-alpha-vault'))
+  expect((await at(81)).texts).toContain('Secondaires :')
+  expect((await at(80)).texts).not.toContain('Secondaires :')
 })
 
 // The workspace's hooks, as scripts/workspace-hooks.mjs answers them: the
@@ -3734,7 +4173,8 @@ test('the console shows the read-only hooks always on and switches the others fo
   expect(hooks.enabled).toEqual([])
   // Still wired machine-wide: said so, and no switch that would not hold.
   expect(await ui.find({ type: 'Button', key: 'hook-vault-link-linter-on' })).toBeFalsy()
-  expect(await ui.find({ type: 'Text', text: /^Encore installé globalement/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: 'installé globalement' })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Encore installé globalement/ })).toBeTruthy()
   await ui.unmount()
 })
 
@@ -3748,17 +4188,11 @@ test('the console opened from the pane menu reads this workspace’s hooks too',
   expect(hooks.runs.some(argv => argv[2] === 'status')).toBe(true)
   await openAdmin(ui, 'hooks')
   expect(await ui.find({ type: 'Button', key: 'hook-wiki-autocommit-on' })).toBeTruthy()
+  // Wide, the settings page: Hooks last in the side list, its page titled, each hook a row.
+  const nodes = nodesOf(await ui.drawn())
+  const side = nodes.filter(n => n.type === 'Button' && String(keyOf(n)).startsWith('admin-sec-')).map(n => String(keyOf(n)))
+  expect(side.at(-1)).toBe('admin-sec-hooks')
+  expect(nodesOf(nodes.find(n => keyOf(n) === 'admin-hooks') as never).some(n => n.type === 'Text' && n.props?.size === 'heading' && textOf(n) === 'Hooks de ce workspace')).toBe(true)
+  expect(nodes.find(n => keyOf(n) === 'hook-wiki-autocommit')?.props?.justifyContent).toBe('space-between')
   await ui.unmount()
 })
-
-for (const [kept, opens] of [['wireguard', 'general'], ['open', 'general'], ['unregister', 'register']] as const) {
-  test(`a section kept from the six-section console ("${kept}") opens where its content now lives ("${opens}")`, async ($, on) => {
-    wire(on, { list: LIST })
-    on('state.get', { plugin: 'obsidian-router', key: 'adminSection' } as never, () => ({ value: { value: kept, version: 1 } }) as never)
-    await begin($)
-    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-    await ui.press({ key: 'toggle-admin' })
-    expect(accordionOf(await ui.drawn()).open).toEqual([opens])
-    await ui.unmount()
-  })
-}

@@ -16,24 +16,287 @@ The three read-only hooks (`hot-cache-load`, `workspace-briefing`, `decisions-re
 everywhere. The eight others no longer run machine-wide: each is switched on, or not, for one
 workspace at a time.
 
-- **Administration › Hooks de ce workspace**: the read-only hooks listed as always on; every
-  other one with a line on what it does and an On / Off button, off by default.
+- **Hooks de ce workspace**, in the administration (the ⚙ gear): a seventh section of the settings page (and of
+  the accordion, on a narrow pane), after "Retirer un vault du router", with its mark in the
+  side list: the read-only hooks as rows marked always on; every other one as a row, its line
+  on what it does at the left and Désactivé / Activé at the right, off by default. Its state
+  line says how many are on ("2 sur 8 activés").
 - `hooks/hooks.json` declares each opt-in hook behind `hooks/opt-in-gate.mjs <name>`, on the
   events `hooks.example.json` gives it. The gate runs the hook only where the workspace
   (`CLAUDE_PROJECT_DIR`) switched it on, in `workspace-hooks.json` beside the router's config;
   otherwise it exits 0 having written and printed nothing. Switched on, the hook gets the same
   stdin and its exit code comes through (exit 2 still blocks).
 - `scripts/workspace-hooks.mjs status|set`: what the console runs.
-- **The console's accordion in four sections**: General (language, plugin version and update,
-  WireGuard and the ways to open a vault), Create an Obsidian vault, Register an existing vault
-  (removing one from the router at its bottom), and the workspace's hooks. A section kept from
-  the six-section console opens where its content now lives.
-  Each header's line follows: General's ends with WireGuard's state and its dot; Hooks says how
-  many are on ("2 sur 8 activés").
 - With the plugin installed, a vault's bootstrap no longer wires hooks into
   `~/.claude/settings.json`. A hook still wired there keeps running everywhere: the gate steps
   aside so it never runs twice, and the console says so (`setup-vault.mjs --uninstall-hooks`
   removes those entries).
+
+## [0.117.3] — 2026-10-25 — the tile in one head line, the six icons in one legend, a ▶ for the band's primary
+
+Asked by Roland from a mockup over v0.117.2's tile, which stood ten lines tall on three fixed
+columns parted by rules (the state keys over the opening marks; the rights as three worded
+radios under their title; the last update and files at the right):
+
+- **The tile's head says it all.** "● name", then the marks that open the vault (the planet and
+  Claude's for a remote one with a web UI, Obsidian's for a local one), and at the right
+  "lecture/écriture :" with the three radios as their ring and badge alone — ○ 🔒 ○ ✋ ◉ ✏️ —
+  then ✕. A rule; then "Dernière mise à jour :", the date and the last files on the tile's full
+  width (a path is cut at 65 cells where the old column cut it at 26); at the foot, right,
+  "▶ Actif" on its green ground beside "❚❚ Pause" (the keys `resume-`/`pause-` as before). The
+  primary's tile has the same shape: its rights at the right (set from the tile on a router that
+  reports them, v0.117.0+, told as text otherwise), "● Par défaut" at its foot where a secondary
+  has its state keys, no ✕. The tile keeps a fixed width — 69 cells in French, now from the
+  head's needs: the frame (4), the dot (2), room for a name of twenty cells, two marks, the
+  rights (18 + 3 × 5), ✕ and the gaps — and the grid wraps as before. A pane narrower than a
+  tile (the 50-column side panel) gets a tile as wide as itself, the rights on a line of their
+  own under the head (a line that wraps between the title and the radios where even that is
+  too narrow) and ✕ alone at the right. The three columns, their vertical rules and the
+  stacking of columns are gone.
+- **One legend for the six icons**, under the menu: one row in two groups that wraps between
+  them in the side panel, a group kept whole as long as the pane is at least as wide as it (70
+  and 74 cells in French, as the terminal counts them; narrower, the group's items wrap too
+  rather than run past the pane's edge) — "Ouvrir : 💎 Obsidian · ✳ navigateur interne · 🪐
+  navigateur par défaut" (each while the console allows that way) and "Droits : 🔒 lecture
+  seule · ✋ écriture sur accord · ✏️ écriture automatique". The words are shorter
+  than v0.115's ("Local : ouvre dans Obsidian" reads "Obsidian" under "Ouvrir"). On the desktop
+  each legend item and every tile's mark or radio of its kind share a hover group (the engine's
+  `hover.scope`, a grey ground): the pointer on ◉ 🔒 in a tile lights "🔒 lecture seule" in the
+  legend, and the pointer on that item lights every tile's 🔒. The terminal, with no hover,
+  keeps the row.
+- **A ▶ for the band's primary** where its orange dot stood (asked by Roland during this
+  change): on a green ground while the vault answers, dim on a grey ground while it does not
+  (a local one closed, a remote one unreachable) or while nothing is known of it yet. A press
+  on the grey one opens a local vault known to be closed in Obsidian (while the console allows
+  that way, as the band's other keys; by Obsidian's own id for the folder, by the folder's
+  name when Obsidian's registry could not be read, and not at all when the registry is known
+  not to list the vault — the rule the tile's 💎 follows) and reads the router again, a
+  failed launch included; any other press reads it again. The router pauses no
+  primary, so this key restores rather than toggles — a secondary's pause has no mirror image
+  for the primary yet. The band's cell count is unchanged: ▶ takes the dot's cell.
+- Locales: `mode.headTitle`, `legend.open`, `legend.rights`, `legend.locked`, `legend.soft`,
+  `legend.writable` added; `legend.obsidian`, `legend.claude`, `legend.browser` shortened;
+  `mode.radioTitle` removed (fr and en; `locale-fr.ts` rebuilt).
+- Adversarial review by Codex, three rounds of FIX FIRST, nine findings fixed and one
+  declined (a third round asked the band's ▶ to launch nothing while Obsidian's registry
+  cannot be read; it opens by the folder's name then, as the tile's 💎 has since v0.110 — the
+  same vault, the same rule — and a test now pins the launch by Obsidian's id when the
+  registry is readable) — a legend group
+  and the stacked rights row could not wrap inside and ran past a pane narrower than them
+  (both wrap now); the primary's ▶ launched Obsidian although the console said no, launched a
+  vault Obsidian does not know (its folder's name could open another), and read as green on
+  a vault nothing is known of yet; its launch promise had no rejection handler (the router is
+  read again either way); the band test accepted any obsidian:// address and no order (it
+  now pins the vault's address and the read after the launch); the state keys could not
+  stack in a 16-cell tile ("▶ Active ❚❚ Pause" is 17); the French paragraph omitted the
+  console's say. Tests: `tests/vault-panel.test.tsx` 142 as the runner counts them (the
+  head's order and contents on both surfaces, the badge-only radios, the foot keys, the
+  stacked form, the legend's groups, words and hover scopes, the band's ▶ in its four states
+  and its launch by id or by name; widths 69, 65, 50, 46, 20 and 16 measured); 28 mutations
+  each seen red — 18 on the design
+  (worded radios back, a name room of 21, no rights group, no hover scope, stacked state
+  keys, a body a cell narrower, the band's ▶ always green, the rights never on their own
+  line, "|" between legend items, the badge back in the primary's head, another hover ground,
+  a legend row that does not wrap, a scopeless iconKey, a secondary's marks out of its head,
+  ✕ before the rights, the old title, a legend item in the wrong group, a rights row that
+  shrinks) and 10 on the repairs (a legend group that never wraps inside, a rights row that
+  never wraps on its own line, Obsidian launched with the console saying no, the router read
+  before the launch, the launch at another vault, the launch of a vault Obsidian does not
+  know, green on a vault nothing is known of, the launch of such a vault, state keys that
+  never stack, Obsidian's id dropped from the launch) — the file restored by hash each time.
+
+## [0.117.2] — 2026-10-25 — the band's second form frames nothing
+
+Asked by Roland from a mockup over v0.117.1's band on his small screen ("enlève l'apparence de
+bouton autour des icônes à droite de la liste déroulante"), where he had also taken the frame
+off the primary:
+
+- **No frame in the menu's form.** When the line shows the menu of the secondaries, the
+  picked one's controls beside it (▶, tier, │, marks) stand bare, and so does the primary's
+  slot ("● name, marks"): the menu's own pill is the line's shape. The first form — every
+  slot on the line — keeps its frames on the desktop; the terminal is as it was.
+- `bandPickIsCompact` measures the second form unframed on every surface; the desktop's
+  "words" threshold for two vaults that open nowhere moves from 84 to 80 (the line's form stays
+  at 88), the mobile fallback's from 85 to 81.
+- Adversarial review by Codex: SHIP, two nits taken — the frame assertions now check the node
+  is there before its border, and three comments said "framed". Tests:
+  `tests/vault-panel.test.tsx` 138 (no border on the picked slot nor on the primary in the
+  second form, on both surfaces and in both its states; the first form's three frames still
+  pinned; twenty mutations each seen red, among them the second form framed and the second
+  form measured with frames).
+
+## [0.117.1] — 2026-10-25 — the band on a small screen: a menu of the secondaries, the picked one's controls beside it
+
+Asked by Roland from a screenshot of v0.116.13 on a small screen (the line 88–118 cells wide,
+measured): the band showed "Secondaires : 4▶" and nothing else — the fixed parts take 84
+cells, the first secondary's slot 33 and the "+N" arrow 6, so nothing fitted under 123, and
+the count drawn then was a dim text, no key. A list under the line (v0.112) was ruled out
+again: it grows the band and pushes the prompt down, and the engine clips an absolute Box to
+the band's region, so no list made of Boxes can float over the conversation. The one true
+drop-down the engine has is `Select`, whose rows are text.
+
+- **Two forms for the line.** When every secondary's slot fits, the line is as in v0.116.13
+  (each vault framed, "▶ name tier │ marks"). When it does not, a **menu** (`Select`, the
+  one the administration uses for the language and the removal) stands where the slots
+  were: every secondary in the binding's order, each row "▶ name 🔒" (⏸ while paused, the
+  tier as its badge). Beside it, the **picked one's controls** in their frame, without the
+  name the menu already shows: its ▶ (or dimmed ▶), its tier, the bar and the marks that
+  open it. A pick is kept (`bandPick`), ignored while everything fits, and falls back to the
+  first when its vault is unbound. On the terminal, where a local vault's name was the key
+  that opened it, the picked slot gets a 💎 key after the bar instead.
+- **Compact when even the menu's form runs over**: the headings "Principal :" and
+  "Secondaires :" are left out and the toggle at the right is its glyph "◧" alone. On
+  Roland's screen: at 88 cells the primary, the menu and the picked controls, with their
+  words from 90 or so.
+- **The paging is gone**: no "◀N" / "+N" arrows, no `bandPages`, no page state; the `cells`
+  arithmetic is now `slotCells`, `baseCells`, `bandFit` (every slot or none) and
+  `bandPickIsCompact`. A surface without `Select` (the mobile app's table) shows the picked
+  one named and a dim "+N" count, measured as such.
+- Adversarial review by Codex: FIX FIRST, three findings fixed — a picked local vault had no
+  opener left on the terminal (the 💎 key), the fallback's count key was on a Text (whose
+  key the trees drop) and its width was measured as the menu's. Tests:
+  `tests/vault-panel.test.tsx` 138 (the menu's rows and order, a pick that moves the
+  controls and acts through the router, a pick kept then dropped with its vault, the
+  thresholds 84/88 desktop, 92 and 102 for a remote and a local vault, 93 for CJK names, the
+  compact form at 40 and 60 cells on both surfaces, the terminal's 💎 and its 85/84
+  threshold, the mobile fallback and its 85/84; eighteen mutations each seen red — the pick
+  ignored, never or always compact, the second form from two hidden, each frame uncounted,
+  the picked slot counted or drawn with its name, the state glyph dropped, the headings or
+  the toggle kept when compact, a wide character at one cell, the tier before the name, the
+  bar without marks, the terminal's 💎 missing or uncounted, the fallback measured as the
+  menu, the menu drawn on the mobile app).
+
+## [0.117.0] — 2026-10-25 — the primary vault's rights can be set, like a secondary's
+
+Asked from the vault panel ("je ne peux pas modifier les droits de lecture/écriture du vault
+principal"): the primary was read-write by decision, with no way to narrow it.
+
+- **`set_primary_vault_mode({ vault, mode })`** — a new tool, the primary's twin of
+  `set_secondary_vault_mode`: `locked` (read-only strict), `soft` (read-only unless the user
+  said yes in the conversation, then `confirmSecondaryWrite: true`), `writable` (the default —
+  recording it removes the restriction). Recorded per workspace on the binding as
+  `primaryTier: { vault, mode }`; the tier names its vault, so a re-binding to another primary
+  retires it by itself. **Nothing changes for a primary nobody qualified.** A restriction only,
+  never an opening: an unreadable tier (hand edit) reads as `locked`; the tool refuses on a gated
+  deployment, on a stranger or a secondary, on a binding the router had to repair, and in a
+  session whose own binding does not hold that vault as primary (a restriction it would not
+  enforce is not recorded).
+- **The gate**: `assertVaultWritable`, `automaticWriteAllowed` and the queued-maintenance check
+  ask `writeTierFor` (a secondary's tier, else the primary's), with sentences of their own for a
+  narrowed primary; the promotion guards keep asking the secondary tier only. The session
+  journal hook (`hooks/session-auto-journal.mjs`) stops writing into a narrowed primary — locked
+  or soft, no one to ask — and takes a tier set mid-session at its next event.
+  `list_vaults` reports `workspaceBinding.primaryMode`.
+- **The panel**: the primary's tile shows the three radio buttons as keys, drawn at once and
+  drawn back if the router refuses; a router that reports no primary tier keeps the old text.
+  The tile now shows the tier the router holds (a session lock is single-vault isolation, not
+  read-only).
+- **The wizard**: `/bind-workspace` no longer answers "a primary is always read-write" — it asks
+  the three-mode question of a primary the user names, and `set_primary_vault_mode` joins its
+  declared tools.
+- Limits, said: sessions already open pick the tier up when they reload the router's config; it
+  governs the router's own write tools and the session journal hook — **not** the setup,
+  provisioning and maintenance commands, nor the helpers a skill runs by itself (notably
+  `provision_vault` aimed at an existing vault, `wiki-ingest`'s state file, `wiki-autocommit`):
+  the same gap the secondaries' tiers have, left for a follow-up. Decision recorded in the vault
+  (`primaire-restreignable-par-workspace`, proposed).
+- Adversarial review by Codex, two passes. First: four P1 and three P2 — the session journal
+  writing past the tier, a tier recorded in a session that would not enforce it, a malformed
+  tier failing open, the shared `confirmSecondaryWrite` wording — all fixed. Second: an unreadable
+  config re-enabling an open workspace-bound journal, blank vault names failing open, the wizard
+  still refusing the feature, the result's wording too broad — fixed; the rest is the limits
+  above. Tests: `tests/set-primary-vault-mode.test.mjs` (11), the journal hook's (5 more, mutation
+  checked), `tests/vault-panel.test.tsx` 138; the router suite 8264 green.
+
+## [0.116.13] — 2026-10-25 — each vault of the band in its own round frame
+
+Asked by Roland from a mockup over v0.116.12's band, "pour mieux voir les différents vaults
+en cours":
+
+- **A frame per vault, on the desktop.** The primary ("● name, marks") and each secondary
+  ("▶ name tier │ marks") stand in their own thin round frame (`inactive`, the tab frames'
+  colour); nothing is drawn between two any more — the "·" is gone, the frame parts them.
+  The "│" inside a slot, before the marks that open the vault, stays.
+- **The terminal is unchanged**: no frame (a bordered box takes three lines there), a "│"
+  between two secondaries.
+- `bandFit` counts a frame as two cells (one each side) on the primary and on each slot of a
+  graphical surface, and no "· " any more; the pinned desktop thresholds move by four
+  (81/88 for two vaults that open nowhere, 90/102 for a remote and a local one), the
+  terminal's (83/92) do not.
+- Adversarial review by Codex: SHIP, two nits taken — two stale comments, and two older
+  assertions that looked for "›" (gone since v0.116.6) now look for the "N▶" text. The one
+  thing the trees cannot prove is the band's height on the desktop (a frame drawn as a
+  rectangle on the line, as the tabs' are): to be seen on screen. Tests:
+  `tests/vault-panel.test.tsx` 134 (every slot framed `round`/`inactive` on the desktop,
+  none on the terminal, no "·"/"│" text between two on the desktop; three mutations seen
+  red — the frame uncounted, a frame on the terminal, none on the primary).
+
+## [0.116.12] — 2026-10-25 — the band's slots in order: ▶, name, tier, a bar, the marks; "+N" centred in its arrow
+
+Asked by Roland from two crops of v0.116.9's band (the count in the black arrow too low, no
+"+" before it) and a sketch of the slot he wanted:
+
+- **The count centred in its arrow.** `dominant-baseline="central"` at 8.5 drew the bold
+  11 px digits centred at 9.2 of 16 in Chromium (which draws the mark) — 1.2 px too low, as
+  the crop showed. The label now sits on a plain baseline at 11.9, where the digits stand
+  from 4.1 to 11.95, centred on the arrow's 8; no baseline attribute, so another renderer
+  draws it the same. The **more arrow reads "+N"** (a cell wider: 18 + 7 px a character,
+  the blank key over it a space longer), the back arrow keeps "N"; each label is centred on
+  the straight part of its shape. The terminal's texts ("◀N", "N▶") are unchanged.
+- **A secondary's slot in a new order**: its ▶ (pause) or dimmed ▶ (resume) **first**, then
+  its name, then its tier mark (lock, hand, pen; the badge on the terminal), then — only
+  when the vault opens somewhere — a dim "│" and the marks that open it: Obsidian's for a
+  local vault (after the bar now; the name still opens it too), the planet and Claude's mark
+  for a remote one. A vault that opens nowhere ends at its tier, no bar. The primary's slot
+  ("● name, marks") is unchanged.
+- `bandFit` counts the bar as two cells (its gap and itself) where a slot has marks; the
+  pinned thresholds move with it (77/84 for two vaults that open nowhere; 83/92 on the
+  terminal and 86/98 on the desktop for a remote and a local one). The Text keys the tests
+  look for are carried by a Box, since the drawn trees keep a Box's and a Button's key, not
+  a Text's.
+- Adversarial review by Codex: one finding fixed — the "no bar" assertion named a vault the
+  fixture did not bind (it binds it now and asserts its slot ends at the tier). Tests:
+  `tests/vault-panel.test.tsx` 134 (the slot's order on both surfaces, the bar dim and
+  absent where nothing opens, the arrow's "+N", its width, its baseline and its x on both
+  arrows; six mutations each seen red — the baseline back at 8.5, no "+", the tier before
+  the name, the bar uncounted, the control after the marks, the bar drawn without marks).
+
+## [0.116.11] — 2026-10-25 — the console behind a gear at the menu's right; no tab, no footer
+
+- **The gear**: the administration console is no tab any more. A gear (the octicon, in
+  GitHub's grey) stands at the menu's right just before GitHub's mark, on the wide menu and
+  on the folded one alike; a press shows the console, another brings the vaults back. While
+  the console is in sight the gear is drawn held down and no tab is open (the folded menu
+  then reads "☰ Administration"). The terminal gets a "⚙" key in its place.
+- **The footer is gone**: the "⚙ Administration ›" / "‹ Retour aux vaults" button at the
+  bottom of the pane, and its strings, are removed — the gear does both.
+- The fold threshold counts the gear (83 cells on the terminal in French, 81 on the desktop,
+  down from 103 / 100: one tab fewer, one mark more).
+- Tests: `tests/vault-panel.test.tsx` 131 (the admin-tab and footer tests rewritten around
+  the gear: its place, its pressed state, the toggle, the fold); 7 mutations killed.
+
+## [0.116.9] — 2026-10-25 — the administration as a settings page, after ChatGPT's and Perplexity's
+
+Asked by Roland from two screenshots ("c'est pas terrible l'administration"): the accordion
+read as a list, not as a settings page. Wide enough (96 columns, a desktop pane), the console
+is now laid out the way those two are:
+
+- **A side column** lists the six sections, each with a grey line icon (a glyph on the
+  terminal; WireGuard's is a dot in the colour of its state) and its name, the shown one on
+  a grey ground. A press shows that section; nothing folds.
+- **The page at the right**: the section's title, its state line under it (the one the
+  accordion's headers carry), and its settings in a rounded, dim card.
+- **Settings as rows**: in "Général" and "Ouverture des vaults", each setting is one row —
+  its label at the left, its control at the right (the language menu, the version and the
+  update keys, the Oui/Non of each way of opening) — with a thin rule between two rows. The
+  forms and the removal menu keep their layout inside the card.
+- **Narrower, the accordion stays** (a terminal pane, a phone), the same section shown: the
+  layout follows the width, the state does not change.
+- Adversarial review by Codex: one finding fixed — the test accepted an icon inside the
+  Button (it asserts the icon beside it now). Tests: `tests/vault-panel.test.tsx` 133 (the side list in order with its marks on both
+  surfaces, the shown section's ground, title, state line and card, the rows, a second press
+  that keeps the section, the fall-back to the accordion under 96 columns; the width switch,
+  the ground and the rows each seen red under their mutation).
 
 ## [0.116.8] — 2026-10-25 — fixed columns, tiles that wrap, the files in sight; tabs with one frame colour
 
