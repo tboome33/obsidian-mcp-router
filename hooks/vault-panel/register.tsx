@@ -182,8 +182,9 @@ const MODES: { mode: SecondaryMode; icon: string }[] = [
   { mode: 'writable', icon: '✏️' },
 ]
 const iconOf = (mode: SecondaryMode) => MODES.find(m => m.mode === mode)?.icon ?? '🔒'
-// The ground a legend item and the tiles' marks or radios of its kind take
-// while the pointer rests on any of them: the desktop's hover groups.
+// The ground a legend item takes under the pointer, and the tiles' marks or
+// radios of its kind with it (the desktop's hover groups, lit from the
+// legend alone).
 const HOVER_GROUND = 'inactive'
 // The same tiers as marks, in the grey of the band's other marks: a graphical
 // surface draws them in place of the badges, so the band's line has one style.
@@ -1604,6 +1605,9 @@ const markAlt = (source: string) =>
           ? 'GitHub'
           : t('mark.browser')
 
+// The router's purple, as the logo below draws on screen (its saturated
+// pixels average #6040b0 in a screenshot of v0.117.3): the open tab's key.
+const ROUTER_PURPLE = '#6040b0'
 // The router's mark, at the left of the pane's menu: the left of the
 // repository's logo (docs/assets/logo.png), 64 px, its white made transparent.
 const ROUTER_MARK = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><image width="64" height="64" href="data:image/png;base64,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"/></svg>`
@@ -2470,37 +2474,45 @@ export const register: Register = on => {
     // corner of its own, so the frame's rounded top is kept and its bottom
     // ("╰──╯", or the desktop's thin line) is cut away. Under the key, a row
     // of blanks keeps the frame's bottom edge well below the cut on every
-    // surface: a closed tab shows two rows of it, the frame's top and the
-    // key; the tab in sight shows three, the blanks too, so its sides go on
-    // one row past the rule under the menu, and its ground, opaque, hides
-    // the rule across its width: the tab and the page below are one. The
-    // rule stands on the row the closed tabs end on, so they are closed by
-    // it. (v0.116.1 covered the frame's bottom row with absolute Boxes: the
-    // desktop laid them under the frame, over the rule and the legend.)
+    // surface. Every tab shows two rows of it, the frame's top and the key,
+    // and ends on the rule under the menu, open or closed: v0.116.8 gave the
+    // open one a third row, its sides going on past the rule and its ground
+    // hiding the rule — and the desktop drew two stubs under it (Roland's
+    // screenshot of v0.117.3). The tab in sight is told by its key alone: a
+    // bold text in the router's purple. (v0.116.1 covered the frame's bottom
+    // row with absolute Boxes: the desktop laid them under the frame, over
+    // the rule and the legend.)
     const menuTab = (prefix: string, id: PaneView, label: string) => {
       const isOpen = id === view
       return (
         // A column that neither shrinks nor stretches its frame: the frame
         // keeps its own height (five rows at least) and the cut is a cut.
-        <Box key={`${prefix}navtab-${id}`} height={isOpen ? 3 : 2} overflow="hidden" flexShrink={0} flexDirection="column">
+        <Box key={`${prefix}navtab-${id}`} height={2} overflow="hidden" flexShrink={0} flexDirection="column">
           {/* The frame in the tiles' own colour, as plain to see as theirs. The
-              open tab on the page's own ground (`inverseText`: what the text
-              is drawn on), opaque, its key a bold text in the text's colour,
-              as wide as the tab (two blanks each side) — no pill of its own,
-              so the tab and the page below read as one; the closed ones dim keys. */}
-          <Box
-            borderStyle="round"
-            borderColor="inactive"
-            backgroundColor={isOpen ? 'inverseText' : undefined}
-            flexDirection="column"
-            paddingBottom={1}
-            flexShrink={0}
-            minHeight={5}
-          >
+              open tab's key a bold text in the router's purple, as wide as the
+              tab (two blanks each side) — no pill of its own; the closed ones
+              dim keys. The desktop draws a Button's label in its own colour
+              (a Text's colour inside one is ignored, seen on v0.116.4), so
+              there the purple text stands on its own and a blank Button is
+              laid over it, the one the click lands on, as `iconKey` lays one
+              over a mark — wider than the text and clipped to it, its blanks
+              non-breaking ones, as iconKey's: the desktop collapses a run of
+              plain spaces to nothing (Codex). The terminal keeps the text
+              inside the key. */}
+          <Box borderStyle="round" borderColor="inactive" flexDirection="column" paddingBottom={1} flexShrink={0} minHeight={5}>
             {isOpen ? (
-              <Button key={`${prefix}nav-${id}`} plain onPress={() => void showView($, id)}>
-                <Text weight="bold" color="text">{`  ${label}  `}</Text>
-              </Button>
+              Mark ? (
+                <Box key={`${prefix}navopen-${id}`} flexDirection="row" flexShrink={0}>
+                  <Text weight="bold" color={ROUTER_PURPLE}>{`  ${label}  `}</Text>
+                  <Box position="absolute" top={0} left={0} right={0} bottom={0} overflow="hidden">
+                    <Button key={`${prefix}nav-${id}`} label={' '.repeat((cells(label) + 4) * 3)} plain onPress={() => void showView($, id)} />
+                  </Box>
+                </Box>
+              ) : (
+                <Button key={`${prefix}nav-${id}`} plain onPress={() => void showView($, id)}>
+                  <Text weight="bold" color={ROUTER_PURPLE}>{`  ${label}  `}</Text>
+                </Button>
+              )
             ) : (
               menuItem(prefix, id, label)
             )}
@@ -2514,10 +2526,31 @@ export const register: Register = on => {
     // the click lands on; a surface with no SVG has a glyph key instead.
     // The terminal draws no SVG (its element draws nothing there): a glyph.
     const Mark = e.surface !== 'terminal' ? Svg : null
+    // A member of a legend item's hover group that lights but never
+    // triggers: a Box under a mark or a radio, drawn `none` — no pointer area
+    // of its own — and revealed on a grey ground while the legend's item of
+    // that kind is under the pointer (the engine reveals every member of a
+    // lit group). So the legend lights the tiles, and a tile's mark or radio
+    // under the pointer lights nothing: v0.117.3 made the marks members
+    // themselves, and one under the pointer lit the legend and every other
+    // mark of its kind (Roland, on screen). Drawn first, under what it lights.
+    const lit = (key: string, scope: string) => (
+      <Box
+        key={`lit-${key}`}
+        position="absolute"
+        top={0}
+        left={0}
+        right={0}
+        bottom={0}
+        display="none"
+        backgroundColor={HOVER_GROUND}
+        hover={{ scope, display: 'flex' }}
+      />
+    )
     // `pressed`: the key drawn held down (a grey ground; on the terminal, its
     // glyph lit instead of dim), for a control whose effect is still on.
-    // `scope`: the hover group the key joins (the legend's item of its kind):
-    // on the desktop, the pointer on any member lights them all.
+    // `scope`: the legend's hover group of this kind of mark, lit from the
+    // legend alone (see `lit`).
     const iconKey = (source: string, glyph: string, key: string, onPress: () => void, pressed = false, scope?: string) =>
       Mark ? (
         <Box
@@ -2526,8 +2559,8 @@ export const register: Register = on => {
           alignItems="center"
           flexShrink={0}
           backgroundColor={pressed ? 'inactive' : undefined}
-          hover={scope ? { scope, backgroundColor: HOVER_GROUND } : undefined}
         >
+          {scope ? lit(key, scope) : null}
           <Mark source={source} alt={markAlt(source)} width={16} height={16} />
           <Box position="absolute" top={0} left={0}>
             <Button key={key} label={'  '} plain onPress={onPress} />
@@ -2564,7 +2597,9 @@ export const register: Register = on => {
         {'─'.repeat(Math.max(1, menuColumns))}
       </Text>
     )
-    const brand = Mark ? <Mark source={ROUTER_MARK} alt={markAlt(ROUTER_MARK)} width={22} height={22} /> : null
+    // A little larger than the keys' marks (16) and than it was (22): asked
+    // by Roland from a screenshot of v0.117.3.
+    const brand = Mark ? <Mark source={ROUTER_MARK} alt={markAlt(ROUTER_MARK)} width={26} height={26} /> : null
     const repository = (prefix: string) =>
       iconKey(GITHUB_MARK, t('footer.github'), `${prefix}github`, () => void openUrl($, REPO_URL))
     // The gear: the console shown, or the vaults again while it is; drawn
@@ -2618,12 +2653,13 @@ export const register: Register = on => {
           {rule}
         </Box>
       ) : (
-        // The rule stands on the third row, where the closed tabs end and the
-        // open one goes on: a Box's top border rather than a Text, so that the
+        // The rule stands on the third row, where every tab ends (the open
+        // one too, since v0.117.4): a Box's top border rather than a Text, so that the
         // desktop draws it on the row's upper edge, against the tabs' sides,
         // not mid-row as a glyph; its corners and sides are laid a cell past
         // the pane's edges and its lower rows cut, so one line is left. Drawn
-        // before the tabs, so the open tab's ground paints over it.
+        // before the tabs; every tab ends on it (v0.117.4), nothing paints
+        // over it any more.
         <Box key={`${prefix}nav`} flexDirection="column">
           <Box key={`${prefix}nav-rule`} position="absolute" top={2} left={0} right={0} height={1} overflow="hidden">
             <Box position="absolute" top={0} left={-1} right={-1} height={2} borderStyle="single" borderColor="inactive" />
@@ -2649,10 +2685,11 @@ export const register: Register = on => {
     // wraps under the first, a group kept whole — and a pane narrower than a
     // group itself (70 and 74 cells in French, as the terminal counts them)
     // wraps the group's items too, rather than cut them off at its edge
-    // (Codex, on the 50-column pane of the tests). Each item joins the hover
-    // group of its mark or tier, the tiles' with it: on the desktop the
-    // pointer on an item lights every tile's mark or radio of that kind, and
-    // the pointer on one of those lights the item.
+    // (Codex, on the 50-column pane of the tests). Each item is the trigger
+    // of a hover group: under the pointer it takes a grey ground, and so
+    // does, in every tile, the mark or radio of its kind (`lit`: a hidden
+    // member under each, revealed with the group — one way only; a tile's
+    // mark under the pointer lights nothing, as Roland asked on v0.117.3).
     const legendItem = (key: string, scope: string, mark: unknown, text: string) => (
       <Box key={key} flexDirection="row" gap={1} alignItems="center" hover={{ scope, backgroundColor: HOVER_GROUND }}>
         {mark as never}
@@ -3585,13 +3622,19 @@ export const register: Register = on => {
     // A tile to add holds less, but not so little that two squeeze in the side panel.
     const addWidth = fit(4, TILE_WIDTH + 4)
     // A horizontal rule across a tile's inside (its frame and padding taken
-    // off), dim: the parting under its head, or between stacked columns. A row
-    // of "─" one line high, what overflows clipped — never truncated, since a
-    // truncation ends in "…" on the desktop, whose font draws "─" wider than
-    // the cell the columns are counted in.
+    // off), dim: the parting under its head. A row of "─" one line high. The
+    // desktop's font draws "─" wider than the cell the width is counted in
+    // (14.4 px to 12.5, measured on a screenshot of v0.117.3, where the
+    // 65 dashes of a 69-cell tile wrapped and the cut showed a stub of the
+    // second row under the rule): a graphical surface gets 86 dashes in a
+    // hundred, which fill the inside short of a cell, and the Text is cut at
+    // the edge rather than wrapped — "…" there, should a font run wider
+    // still, is the lesser evil. The terminal draws them cell for cell.
     const hrule = (key: string, width: number) => (
       <Box key={key} flexShrink={0} height={1} overflow="hidden">
-        <Text dimColor>{'─'.repeat(Math.max(1, width - 4))}</Text>
+        <Text dimColor wrap="truncate-end">
+          {'─'.repeat(Math.max(1, Mark ? Math.floor((width - 4) * 0.86) : width - 4))}
+        </Text>
       </Box>
     )
     // A vault's tile: its state, name and marks on top, with what acts on the
@@ -3747,9 +3790,10 @@ export const register: Register = on => {
     // Keys where a press sets the tier (a secondary's, and the primary's on a
     // router that keeps one for it); else told, as text — the primary of an
     // older router: read-only while the session is locked, else writing
-    // without asking. Each radio's box joins its tier's hover group, the
-    // legend's item with it: on the desktop the pointer on one lights the
-    // other (the terminal has no hover). In a tile's head the row never
+    // without asking. Each radio in a box of its own (the one a test finds a
+    // told-as-text radio by: a drawn tree keeps no Text's key), with, under
+    // it, the hidden member of its tier's hover group that the legend's item
+    // lights (`lit`); the radio under the pointer lights nothing. In a tile's head the row never
     // shrinks (the tile is as wide as it needs); on its own line, in a pane
     // narrower than a tile, it wraps between its title and its radios, and
     // between radios, rather than run past the tile's edge (Codex: a
@@ -3774,7 +3818,8 @@ export const register: Register = on => {
             const label = `${mode === m.mode ? '◉' : '○'} ${m.icon}`
 
             return (
-              <Box key={`radio-${m.mode}-${row.name}`} hover={{ scope: `tier-${m.mode}`, backgroundColor: HOVER_GROUND }}>
+              <Box key={`radio-${m.mode}-${row.name}`}>
+                {lit(`tier-${m.mode}-${row.name}`, `tier-${m.mode}`)}
                 {setter ? (
                   <Button key={`tier-${m.mode}-${row.name}`} label={label} plain dimColor={mode !== m.mode} onPress={() => setter(m.mode)} />
                 ) : (

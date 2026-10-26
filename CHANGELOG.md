@@ -10,7 +10,57 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
-### Opt-in hooks, switched on per workspace from the vault panel
+## [0.117.5] — 2026-10-26 — the tabs end on the rule, the open one bold and purple; the tile's rule in one row; the legend lights the tiles, one way; the opt-in hooks
+
+Asked by Roland from a screenshot of v0.117.3 and a mockup over it:
+
+- **The tabs end on the rule.** The open tab was three rows tall so that its sides ran past the
+  rule under the menu and its ground hid the rule: the desktop drew two stubs under it. Every
+  tab is two rows now, open or closed, and ends on the rule; the open one is told by its key
+  alone — a bold text in the router's purple (`#6040b0`, the logo's own as measured on screen)
+  — where it was bold in the text's colour. The desktop draws a Button's label in its own
+  colour (a Text's colour inside one is ignored, seen on v0.116.4), so there the purple text
+  stands on its own with a blank Button laid over it, the one the click lands on, as the marks
+  have had since v0.110; the terminal keeps the text inside the key. The router's mark at the
+  menu's left is a little larger (26 px, from 22).
+- **The tile's rule in one row.** The desktop's font draws "─" wider than the cell the tile is
+  counted in (14.4 px to 12.5, measured): the 65 dashes of a 69-cell tile wrapped, and the cut
+  at one row let a stub of the second row show under the rule. On a graphical surface the rule
+  now holds 86 dashes in a hundred (55 in a 69-cell tile, 39 in a 50-column pane), which fill
+  the inside but for a small gap at the right (a cell and a half or so, by the measurement),
+  and the Text is cut at the edge rather than wrapped; the terminal still draws them cell for
+  cell.
+- **The legend lights the tiles, one way.** v0.117.3's hover groups work on the desktop, Roland
+  saw: the pointer on a legend item lights every tile's mark or radio of its kind — and, since
+  every member of a group both lights and triggers, the pointer on a tile's mark lit the legend
+  and every other mark of its kind too, which he did not want. Now a tile's mark or radio is no
+  member: under each, drawn first, a hidden Box (`display: none`, a grey ground) is the member,
+  revealed with the group while the legend's item is under the pointer, and, drawn none, has
+  no pointer area of its own. The legend's item alone triggers.
+- Adversarial review by Codex, two rounds: FIX FIRST (the purple on a Text inside a Button
+  never reaches the desktop, which draws a Button's label in its own colour — hence the text on
+  its own with a blank Button over it; stale comments on the tabs' geometry; a theme-aware
+  purple asked for and declined, the logo's own kept for Roland's light theme), then SHIP with
+  three nits taken (a last stale comment, the rule's gap said too precisely, this line). Not
+  verified by it, nor by the tests: the blank Button's real coverage of the text on the
+  desktop, and the one-way hover on screen. Tests: `tests/vault-panel.test.tsx` 142 as the
+  runner counts them (every tab two rows and without a ground, the open key's purple text on
+  the menu and on its sticky copy and, on the desktop, its blank Button over it, the brand's
+  size, the rule's dash count per surface and its cut, the legend items' hover groups, the
+  hidden members under the marks and the radios and none on the marks' boxes, the radios' boxes
+  or the gear); 17 mutations each seen red — the open tab three rows again, its key in the
+  text's colour, its ground back, the brand at 22, the rule wrapped again, the full count of
+  dashes on the desktop, a legend group that never wraps inside, a rights row that never wraps
+  on its own line (from the 0.117.3 bench, still red); a mark with no hidden member, a radio with
+  none, a legend item that triggers nothing, a mark that is a member itself (two ways), a hidden
+  member drawn (the harness refuses the reveal then), a member in the wrong group, the open tab's
+  purple text inside the Button on the desktop, a blank key too short for the text, plain
+  spaces in the blank key (the desktop collapses them; non-breaking ones, as iconKey's) — the
+  file restored by hash each time.
+- (0.117.4 was tagged on this branch before PR #42 below landed on `main`; the number was
+  skipped so that the tag released carries both.)
+
+### Also in this version: opt-in hooks, switched on per workspace from the vault panel (PR #42)
 
 The three read-only hooks (`hot-cache-load`, `workspace-briefing`, `decisions-recall`) still run
 everywhere. The eight others no longer run machine-wide: each is switched on, or not, for one
