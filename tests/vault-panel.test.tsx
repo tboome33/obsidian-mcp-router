@@ -1198,7 +1198,7 @@ test('every tier is three radio buttons under a title, the one in force marked',
 // What the pane and /vaults must name when Claude Code's permissions refuse
 // the read: the rules to add, under the server the call went to.
 const READ_RULES =
-  /permissions\.allow.*mcp__plugin_obsidian-router_router__list_vaults\. Pour ses liens 🌐 et 🪟 : mcp__plugin_obsidian-router_router__list_files, mcp__plugin_obsidian-router_router__get_view_link\. Pour que ses clics changent la liaison : mcp__plugin_obsidian-router_router__confirm_workspace_binding, mcp__plugin_obsidian-router_router__set_secondary_vault_mode, mcp__plugin_obsidian-router_router__set_primary_vault_mode, mcp__plugin_obsidian-router_router__register_remote_vault, mcp__plugin_obsidian-router_router__unregister_vault — ces règles laissent aussi le modèle/s
+  /permissions\.allow.*mcp__plugin_obsidian-router_router__list_vaults\. Pour ses liens 🌐 et 🪟 : mcp__plugin_obsidian-router_router__list_files, mcp__plugin_obsidian-router_router__get_view_link\. Pour que ses clics changent la liaison : mcp__plugin_obsidian-router_router__confirm_workspace_binding, mcp__plugin_obsidian-router_router__set_secondary_vault_mode, mcp__plugin_obsidian-router_router__set_primary_vault_mode, mcp__plugin_obsidian-router_router__set_auto_enrich_mode, mcp__plugin_obsidian-router_router__lock_vault, mcp__plugin_obsidian-router_router__unlock_vaults, mcp__plugin_obsidian-router_router__install_conventions, mcp__plugin_obsidian-router_router__register_remote_vault, mcp__plugin_obsidian-router_router__unregister_vault — ces règles laissent aussi le modèle/s
 
 test('a read refused by auto mode names the permissions to add, never "router injoignable"', async ($, on) => {
   wire(on, { list: LIST, blocked: ['list_vaults'] })
@@ -1312,7 +1312,7 @@ test('a click refused by auto mode says nothing changed and names the two write 
   expect(
     await ui.find({
       type: 'Text',
-      text: /rien n'a été changé.*mcp__plugin_obsidian-router_router__confirm_workspace_binding, mcp__plugin_obsidian-router_router__set_secondary_vault_mode, mcp__plugin_obsidian-router_router__set_primary_vault_mode, mcp__plugin_obsidian-router_router__register_remote_vault, mcp__plugin_obsidian-router_router__unregister_vault — ces règles laissent aussi le modèle/s,
+      text: /rien n'a été changé.*mcp__plugin_obsidian-router_router__confirm_workspace_binding, mcp__plugin_obsidian-router_router__set_secondary_vault_mode, mcp__plugin_obsidian-router_router__set_primary_vault_mode, mcp__plugin_obsidian-router_router__set_auto_enrich_mode, mcp__plugin_obsidian-router_router__lock_vault, mcp__plugin_obsidian-router_router__unlock_vaults, mcp__plugin_obsidian-router_router__install_conventions, mcp__plugin_obsidian-router_router__register_remote_vault, mcp__plugin_obsidian-router_router__unregister_vault — ces règles laissent aussi le modèle/s,
     }),
   ).toBeTruthy()
   // Only the write rules: the read ones are not what this click needs.
@@ -4268,5 +4268,60 @@ test('the hooks section links to its help: the guide of the hooks on GitHub', as
   expect((await ui.find({ type: 'Button', key: 'hooks-help' }))?.props?.label).toBe('? Aide sur les hooks')
   await ui.press({ key: 'hooks-help' })
   expect(hooks.launched.at(-1)?.at(-1)).toBe('https://github.com/tboome33/obsidian-mcp-router/blob/main/docs/features/14-guide-des-hooks.md')
+  await ui.unmount()
+})
+
+test('the Configuration tab sets the enrichment mode, the primary rights, the lock and the conventions, for this workspace', async ($, on) => {
+  const list = { ...LIST, autoEnrichMode: 'ClaudeAsk', workspaceBinding: { ...LIST.workspaceBinding, primaryMode: 'writable' } }
+  const installed = new Set(['source-type'])
+  const calls = wire(on, {
+    list,
+    answers: {
+      install_conventions: (args: { ids: string[]; dryRun?: boolean }) => {
+        if (!args.dryRun) {
+          args.ids.forEach(id => installed.add(id))
+        }
+
+        return {
+          detection: ['source-type', 'heading-hierarchy', 'languages', 'bilingual'].map(id => ({ id, installed: installed.has(id) })),
+          catalogue: [{ id: 'bilingual', retired: true }],
+          vaultLanguages: { languages: ['fr'] },
+        }
+      },
+    },
+  })
+  hooksScript(on, { enabled: [], global: [], runs: [] })
+  await begin($)
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  await ui.press({ key: 'nav-config' })
+  // The sections, in order: the hooks, the enrichment, the primary's rights, the reachable vaults, the conventions.
+  const keys = nodesOf(await ui.drawn()).map(n => keyOf(n))
+  const order = ['config-hooks', 'config-enrich', 'config-rights', 'config-lock', 'config-conventions'].map(k => keys.indexOf(k))
+  expect(order.every(at => at >= 0)).toBe(true)
+  expect([...order].sort((x, y) => x - y)).toEqual(order)
+  // The enrichment: kept for the workspace (persist), FullAuto never offered.
+  expect(await ui.find({ type: 'Button', key: 'enrich-FullAuto' })).toBeFalsy()
+  await ui.press({ key: 'enrich-Hybrid' })
+  expect(calls.find(c => c.tool === 'set_auto_enrich_mode')?.args).toEqual({ mode: 'Hybrid', persist: true })
+  // The primary's rights: its three radios, a press sets the tier.
+  await ui.press({ key: 'tier-soft-main' })
+  expect(calls.find(c => c.tool === 'set_primary_vault_mode')?.args).toEqual({ vault: 'main', mode: 'soft' })
+  // The lock: the primary only, kept for the workspace; then all the bound vaults again.
+  // The router records the lock on the binding: the read-back draws it.
+  list.workspaceBinding.locked = true
+  await ui.press({ key: 'lock-primary' })
+  expect(calls.find(c => c.tool === 'lock_vault')?.args).toEqual({ vault: 'main', persist: true })
+  await eventually(async () => (await ui.find({ key: 'lock-box-primary' }))?.props?.backgroundColor === 'diffAddedDimmed')
+  await ui.press({ key: 'lock-all' })
+  expect(calls.find(c => c.tool === 'unlock_vaults')?.args).toEqual({ persist: true })
+  // The conventions: read with a dry run on the primary, the retired one left out; "languages"
+  // is told, not installed from here; a missing one installs, and the list is read again.
+  expect(calls.find(c => c.tool === 'install_conventions')?.args).toEqual({ vault: 'main', ids: [], dryRun: true })
+  expect(await ui.find({ key: 'conv-bilingual' })).toBeFalsy()
+  expect(await ui.find({ type: 'Button', key: 'conv-install-languages' })).toBeFalsy()
+  expect(await ui.find({ type: 'Button', key: 'conv-install-source-type' })).toBeFalsy()
+  await ui.press({ key: 'conv-install-heading-hierarchy' })
+  expect(calls.some(c => c.tool === 'install_conventions' && !c.args.dryRun && (c.args.ids as string[])[0] === 'heading-hierarchy')).toBe(true)
+  await eventually(async () => !(await ui.find({ type: 'Button', key: 'conv-install-heading-hierarchy' })))
   await ui.unmount()
 })

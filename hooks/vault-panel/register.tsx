@@ -18,7 +18,7 @@ const TRUTHY = new Set(['true', '1', 'yes', 'on'])
 // The router as /mcp lists it: shipped as a plugin, or declared by hand.
 const SERVERS = ['plugin:obsidian-router:router', 'obsidian-router']
 const ROUTER_TOOL =
-  /^mcp__(plugin_obsidian-router_router|obsidian-router)__(confirm_workspace_binding|set_secondary_vault_mode|set_primary_vault_mode|lock_vault|unlock_vaults)$/
+  /^mcp__(plugin_obsidian-router_router|obsidian-router)__(confirm_workspace_binding|set_secondary_vault_mode|set_primary_vault_mode|lock_vault|unlock_vaults|set_auto_enrich_mode)$/
 
 const snapshot = atom({ plugin: 'obsidian-router', key: 'snapshot' } as const, null)
 const busy = atom({ plugin: 'obsidian-router', key: 'busy' } as const, null)
@@ -70,6 +70,8 @@ const wireguard = atom({ plugin: 'obsidian-router', key: 'wireguard' } as const,
 const workspaceHooks = atom({ plugin: 'obsidian-router', key: 'workspaceHooks' } as const, null)
 // The Configuration tab is in sight: this workspace's hooks and settings.
 const showConfig = atom({ plugin: 'obsidian-router', key: 'showConfig' } as const, false)
+// The primary vault's conventions, as a dry run of install_conventions reports them.
+const primaryConventions = atom({ plugin: 'obsidian-router', key: 'primaryConventions' } as const, null)
 
 // ---- Texts ----------------------------------------------------------------
 // Every text the pane and the band show comes from locales/<code>.json in the
@@ -328,6 +330,8 @@ type ListVaults = {
   configPath?: string
   /** A session lock set by lock_vault: runtime only, not in the binding. */
   lockedTo?: string | null
+  /** The wiki's auto-enrichment mode in force for this session. */
+  autoEnrichMode?: string
   /** The router's own version, as it reports it. */
   routerBuild?: { version?: string } | null
   /** The binding entry as the config file holds it, read once (router v0.101.0+). */
@@ -398,6 +402,10 @@ const WRITE_TOOLS = [
   'confirm_workspace_binding',
   'set_secondary_vault_mode',
   'set_primary_vault_mode',
+  'set_auto_enrich_mode',
+  'lock_vault',
+  'unlock_vaults',
+  'install_conventions',
   'register_remote_vault',
   'unregister_vault',
 ]
@@ -724,6 +732,7 @@ function toSnapshot(data: ListVaults, fetchedAt: number): Snapshot {
     ...(b?.primaryMode ? { primaryMode: b.primaryMode } : {}),
     isLocked: b?.locked ?? false,
     lockedTo: data.lockedTo ?? null,
+    autoEnrichMode: data.autoEnrichMode ?? null,
     isImported: b?.confirmedVia === 'migration',
     secondaries: (b?.also ?? []).filter(name => !pausedNames.has(name)).map(name => ({ ...row(name), mode: modeOf(name) })),
     available,
@@ -1456,6 +1465,34 @@ async function setHook($: EngineInterface, name: string, isOn: boolean) {
   }
 }
 
+// The primary vault's conventions: every one of the router's library, installed
+// or not, as a dry run of install_conventions reports them (it writes nothing);
+// a retired one is left out. Read when the Configuration tab opens and after an
+// install. No primary, nothing to read.
+async function readConventions($: EngineInterface) {
+  const vault = (await read($, snapshot))?.primary?.name
+  if (!vault) {
+    await update($, primaryConventions, () => null)
+
+    return
+  }
+  try {
+    const answer = JSON.parse(await call($, 'install_conventions', { vault, ids: [], dryRun: true })) as {
+      detection?: { id?: string; installed?: boolean }[]
+      catalogue?: { id?: string; retired?: boolean }[]
+      vaultLanguages?: { languages?: string[] | null } | null
+    }
+    const retired = new Set((answer.catalogue ?? []).filter(c => c.retired).map(c => c.id))
+    const items = (answer.detection ?? [])
+      .filter((d): d is { id: string; installed?: boolean } => typeof d.id === 'string' && !retired.has(d.id))
+      .map(d => ({ id: d.id, installed: d.installed === true }))
+    await update($, primaryConventions, () => ({ vault, items, languages: answer.vaultLanguages?.languages ?? null }))
+  } catch (err) {
+    await update($, primaryConventions, () => null)
+    await update($, failure, () => t('config.conventions.readFailed', { error: message(err) }))
+  }
+}
+
 // Bumped by every registration sent: an older one finishing late leaves the
 // form alone.
 let submission = 0
@@ -2082,6 +2119,7 @@ async function showView($: EngineInterface, view: PaneView) {
   }
   if (view === 'config' && !wasConfig) {
     void readHooks($)
+    void readConventions($)
   }
   if (view !== 'admin' && wasAdmin) {
     await update($, adminForm, now => (now.apiKey ? { ...now, apiKey: '' } : now))
@@ -4206,7 +4244,147 @@ export const register: Register = on => {
     )
 
     if (isConfigShown) {
-      return configPage([])
+      const configSection = (key: string, title: string, note: string | null, body: unknown) => (
+        <Box key={key} flexDirection="column" gap={1}>
+          <Box key={`${key}-head`} flexDirection="row" gap={2} alignItems="center" flexWrap="wrap">
+            {section(title)}
+            {note && (
+              <Text size="caption" dimColor>
+                {note}
+              </Text>
+            )}
+          </Box>
+          {body as never}
+        </Box>
+      )
+      // The wiki's auto-enrichment: how freely Claude saves to the vault. Set
+      // for this workspace (its .env); FullAuto is never written there, so the
+      // tab offers the three others and only tells FullAuto when it is in force.
+      const enrichModes = ['ClaudeAsk', 'Hybrid', 'off'] as const
+      const enrichNow = snap.autoEnrichMode ?? 'ClaudeAsk'
+      const enrich = configSection(
+        'config-enrich',
+        t('config.enrich.title'),
+        t(`config.enrich.${enrichNow === 'FullAuto' ? 'fullAuto' : enrichNow}`),
+        <Box key="config-enrich-body" flexDirection="column" gap={1}>
+          {toggle<string>(
+            'enrich',
+            enrichModes.map(mode => ({ value: mode, label: t(`config.enrich.label.${mode}`) })),
+            enrichNow,
+            mode =>
+              mode !== enrichNow &&
+              void act($, {
+                doing: t('action.enrich.doing', { mode: t(`config.enrich.label.${mode}`) }),
+                done: t('action.enrich.done', { mode: t(`config.enrich.label.${mode}`) }),
+                tool: 'set_auto_enrich_mode',
+                args: () => ({ mode, persist: true }),
+                shows: now => ({ ...now, autoEnrichMode: mode }),
+              }),
+          )}
+          <Text size="caption" dimColor>
+            {t('config.enrich.hint')}
+          </Text>
+        </Box>,
+      )
+      // The primary vault: its write rights, and whether the workspace reaches
+      // it alone.
+      const lockNow = snap.isLocked
+      const primarySettings = snap.primary
+        ? [
+            configSection(
+              'config-rights',
+              t('config.rights.title'),
+              snap.primary.name,
+              <Box key="config-rights-body" flexDirection="column" gap={1}>
+                {rightsOf(snap.primary, null)}
+                <Text size="caption" dimColor>
+                  {t('config.rights.hint')}
+                </Text>
+              </Box>,
+            ),
+            configSection(
+              'config-lock',
+              t('config.lock.title'),
+              null,
+              <Box key="config-lock-body" flexDirection="column" gap={1}>
+                {toggle<'all' | 'primary'>(
+                  'lock',
+                  [
+                    { value: 'all', label: t('config.lock.all') },
+                    { value: 'primary', label: t('config.lock.primary', { vault: snap.primary.name }) },
+                  ],
+                  lockNow ? 'primary' : 'all',
+                  value =>
+                    (value === 'primary') !== lockNow &&
+                    void act($, {
+                      doing: value === 'primary' ? t('action.lock.doing') : t('action.unlock.doing'),
+                      done: value === 'primary' ? t('action.lock.done', { vault: snap.primary?.name ?? '' }) : t('action.unlock.done'),
+                      tool: value === 'primary' ? 'lock_vault' : 'unlock_vaults',
+                      args: () => (value === 'primary' ? { vault: snap.primary?.name ?? '', persist: true } : { persist: true }),
+                      shows: now => ({ ...now, isLocked: value === 'primary' }),
+                    }),
+                )}
+                <Text size="caption" dimColor>
+                  {t('config.lock.hint')}
+                </Text>
+              </Box>,
+            ),
+          ]
+        : []
+      // The primary vault's conventions: installed ones ticked, the others with
+      // their own Install key. "languages" carries the vault's own value: it is
+      // set with /obsidian-router:conventions, which asks for it.
+      const conv = await read($, primaryConventions)
+      const convShown = conv && snap.primary && conv.vault === snap.primary.name ? conv : null
+      const conventionsSection = snap.primary
+        ? configSection(
+            'config-conventions',
+            t('config.conventions.title'),
+            convShown
+              ? t('config.conventions.note', { on: convShown.items.filter(c => c.installed).length, total: convShown.items.length, vault: snap.primary.name })
+              : null,
+            !convShown ? (
+              <Text key="config-conventions-reading" size="caption" dimColor>
+                {t('config.conventions.reading')}
+              </Text>
+            ) : (
+              settingRows(
+                'config-conventions-rows',
+                convShown.items.map(c =>
+                  settingRow(
+                    `conv-${c.id}`,
+                    c.id,
+                    c.installed ? (
+                      <Text key={`conv-${c.id}-on`} size="caption" color="success">
+                        {`✓ ${t('config.conventions.installed')}`}
+                      </Text>
+                    ) : c.id === 'languages' ? (
+                      <Text key={`conv-${c.id}-ask`} size="caption" dimColor>
+                        {t('config.conventions.languages')}
+                      </Text>
+                    ) : (
+                      <Button
+                        key={`conv-install-${c.id}`}
+                        label={t('config.conventions.install')}
+                        variant="secondary"
+                        onPress={() =>
+                          void act($, {
+                            doing: t('action.convention.doing', { id: c.id }),
+                            done: t('action.convention.done', { id: c.id }),
+                            tool: 'install_conventions',
+                            args: () => ({ vault: convShown.vault, ids: [c.id] }),
+                          }).then(() => readConventions($))
+                        }
+                      />
+                    ),
+                  ),
+                ),
+              )
+            ),
+          )
+        : null
+
+      return configPage([enrich, ...primarySettings, ...(conventionsSection ? [conventionsSection] : [])])
     }
 
     return (

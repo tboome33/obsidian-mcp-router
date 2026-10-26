@@ -92,6 +92,8 @@ export type Snapshot = {
   primaryMode?: SecondaryMode
   /** The binding restricts the session to the primary. */
   isLocked: boolean
+  /** The wiki's auto-enrichment mode in force (list_vaults.autoEnrichMode). */
+  autoEnrichMode?: string | null
   /** A session lock from lock_vault: runtime only, never written to the binding. */
   lockedTo: string | null
   /** The binding came from the one-time .env import, nobody confirmed it. */
@@ -163,6 +165,8 @@ declare module 'claude-code' {
       workspaceHooks: WorkspaceHooks | null
       /** The Configuration tab is in sight (this workspace's hooks and settings). */
       showConfig: boolean
+      /** The primary vault's conventions, from a dry run of install_conventions. */
+      primaryConventions: { vault: string; items: { id: string; installed: boolean }[]; languages: string[] | null } | null
     }
   }
 }
