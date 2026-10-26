@@ -1212,6 +1212,8 @@ const WG_SERVICES =
 const WG_INSTALL_URL = 'https://www.wireguard.com/install/'
 const DOCS = 'https://github.com/tboome33/obsidian-mcp-router/blob/main/docs/deploy/remote-vault'
 const GUIDE_URL = `${DOCS}/README.md`
+// The hooks' help: what each one is for, the three always on, the eight to switch on.
+const HOOKS_HELP_URL = 'https://github.com/tboome33/obsidian-mcp-router/blob/main/docs/features/14-guide-des-hooks.md'
 const PROMPT_URL = `${DOCS}/PROMPT.md`
 
 async function detectWireguard($: EngineInterface): Promise<WireguardState> {
@@ -3380,9 +3382,15 @@ export const register: Register = on => {
             'admin-hooks',
             t('hooks.title'),
             <Box key="admin-hooks-body" flexDirection="column" gap={1}>
-              <Text size="caption" dimColor>
-                {hooks ? t('hooks.intro', { workspace: hooks.workspace }) : t('hooks.reading')}
-              </Text>
+              {/* What the section is for, and its help: the guide of the hooks on GitHub. */}
+              <Box key="admin-hooks-head" flexDirection="row" justifyContent="space-between" alignItems="center" gap={2} flexWrap="wrap">
+                <Box flexShrink={1}>
+                  <Text size="caption" dimColor>
+                    {hooks ? t('hooks.intro', { workspace: hooks.workspace }) : t('hooks.reading')}
+                  </Text>
+                </Box>
+                <Button key="hooks-help" label={t('hooks.help')} plain onPress={() => void openUrl($, HOOKS_HELP_URL)} />
+              </Box>
               {hooks &&
                 settingRows('admin-hooks-rows', [
                   // The read-only ones: on everywhere, no switch.

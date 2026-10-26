@@ -4175,11 +4175,13 @@ test('a surface without the menu shows the picked one named, with a dim count of
 
 // The workspace's hooks, as scripts/workspace-hooks.mjs answers them: the
 // console runs it with node, for the session's folder.
-function hooksScript(on: On, state: { enabled: string[]; global: string[]; runs: (readonly string[])[] }) {
+function hooksScript(on: On, state: { enabled: string[]; global: string[]; runs: (readonly string[])[]; launched?: (readonly string[])[] }) {
   const OPT_IN = ['wiki-query-first-nudge', 'session-auto-journal', 'wiki-autocommit', 'vault-link-linter']
   on('session.cwd', () => ({ value: '/work/project' }))
   on('process.run', (_, e) => {
     if (e.argv[0] !== 'node') {
+      state.launched?.push(e.argv)
+
       return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
     state.runs.push(e.argv)
@@ -4246,5 +4248,19 @@ test('the console opened from the pane menu reads this workspace’s hooks too',
   expect(side.at(-1)).toBe('admin-sec-hooks')
   expect(nodesOf(nodes.find(n => keyOf(n) === 'admin-hooks') as never).some(n => n.type === 'Text' && n.props?.size === 'heading' && textOf(n) === 'Hooks de ce workspace')).toBe(true)
   expect(nodes.find(n => keyOf(n) === 'hook-wiki-autocommit')?.props?.justifyContent).toBe('space-between')
+  await ui.unmount()
+})
+
+test('the hooks section links to its help: the guide of the hooks on GitHub', async ($, on) => {
+  wire(on, { list: LIST, env: { APPDATA: 'C:\Users\me\AppData\Roaming' } })
+  const hooks = { enabled: [] as string[], global: [] as string[], runs: [] as (readonly string[])[], launched: [] as (readonly string[])[] }
+  hooksScript(on, hooks)
+  await begin($)
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  await ui.press({ key: 'nav-admin' })
+  await openAdmin(ui, 'hooks')
+  expect((await ui.find({ type: 'Button', key: 'hooks-help' }))?.props?.label).toBe('? Aide sur les hooks')
+  await ui.press({ key: 'hooks-help' })
+  expect(hooks.launched.at(-1)?.at(-1)).toBe('https://github.com/tboome33/obsidian-mcp-router/blob/main/docs/features/14-guide-des-hooks.md')
   await ui.unmount()
 })
