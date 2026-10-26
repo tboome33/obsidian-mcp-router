@@ -71,17 +71,15 @@ test('the panel lists the binding and changes it through the router', async ($, 
     expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeTruthy()
     expect(await ui.find({ type: 'Text', text: /^SECONDAIRES : 2$/ })).toBeTruthy()
     expect(await ui.find({ type: 'Button', key: 'open-closed' })).toBeTruthy()
-    // The add list holds the unbound vaults only, by tab; the
-    // operator-disabled vault is left out.
-    await openAdd(ui)
-    await ui.press({ key: 'tab-locaux' })
-    expect((await ui.find({ type: 'Text', text: /^closed$/ }))?.text).toBe('closed')
-    expect(await ui.find({ type: 'Text', text: /^off$/ })).toBeFalsy()
-    expect(await ui.find({ type: 'Button', key: 'add-extra' })).toBeFalsy()
-    await openAdd(ui)
-    await ui.press({ key: 'tab-distants' })
-    expect(await ui.find({ type: 'Button', key: 'add-extra' })).toBeTruthy()
-    expect(await ui.find({ type: 'Button', key: 'add-closed' })).toBeFalsy()
+    // The add tab's left column holds the unbound vaults only; the
+    // operator-disabled vault is left out; the right one, the secondaries.
+    await showTab(ui, 'nav-add')
+    expect(await ui.find({ type: 'Button', key: 'pick-left-closed' })).toBeTruthy()
+    expect(await ui.find({ type: 'Button', key: 'pick-left-extra' })).toBeTruthy()
+    expect(await ui.find({ type: 'Button', key: 'pick-left-off' })).toBeFalsy()
+    expect(await ui.find({ type: 'Button', key: 'pick-right-docs' })).toBeTruthy()
+    expect(await ui.find({ type: 'Button', key: 'pick-left-docs' })).toBeFalsy()
+    await showTab(ui, 'nav-vaults')
     await ui.unmount()
   }
 
@@ -91,18 +89,9 @@ test('the panel lists the binding and changes it through the router', async ($, 
   await ui.press({ key: 'tier-writable-notes' })
   expect(calls.find(c => c.tool === 'set_secondary_vault_mode')?.args).toEqual({ vault: 'notes', mode: 'writable' })
 
-  await openAdd(ui)
-  await ui.press({ key: 'tab-distants' })
-  // A remote vault opens its web UI in the app's browser; one with no UI in
-  // its description (docs) has no button.
-  await ui.press({ key: 'ui-extra' })
-  expect(calls.find(c => c.server === 'Claude_Browser')).toEqual({
-    server: 'Claude_Browser',
-    tool: 'preview_start',
-    args: { url: 'https://10.8.0.1:3002/' },
-  })
+  // A remote vault with no UI in its description (docs) has no button.
   expect(await ui.find({ type: 'Button', key: 'ui-docs' })).toBeFalsy()
-  await ui.press({ key: 'add-extra' })
+  await addVaults(ui, ['extra'])
   expect(calls.find(c => c.tool === 'confirm_workspace_binding')?.args).toEqual({
     vault: 'main',
     also: ['docs', 'notes', 'extra'],
@@ -262,6 +251,26 @@ async function openAdd(ui: Mounted) {
   }
 }
 
+// A tab of the pane's menu: pressed where the menu shows it, through "☰" where
+// the pane is too narrow for the tabs.
+async function showTab(ui: Mounted, key: 'nav-vaults' | 'nav-add' | 'nav-config') {
+  if (!(await ui.find({ type: 'Button', key }))) {
+    await ui.press({ key: 'nav-burger' })
+  }
+  await ui.press({ key })
+}
+
+// Adds vaults as secondaries the way the pane does: the "Ajouter un vault" tab,
+// each name ticked in the left column, then →; back to "Vaults en cours".
+async function addVaults(ui: Mounted, names: string[]) {
+  await showTab(ui, 'nav-add')
+  for (const name of names) {
+    await ui.press({ key: `pick-left-${name}` })
+  }
+  await ui.press({ key: 'add-move-right' })
+  await showTab(ui, 'nav-vaults')
+}
+
 async function openClosed(ui: Mounted) {
   if (!(await ui.find({ key: 'mode-notes' }))) {
     await ui.press({ key: 'toggle-closed' })
@@ -287,12 +296,10 @@ test('a click works from the binding as the router has it now, and never sends t
   const calls = wire(on, state)
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdd(ui)
-  await ui.press({ key: 'tab-distants' })
 
   // Another session locks the workspace and drops `docs` after this pane drew.
   state.list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, locked: true, also: ['notes'] } }
-  await ui.press({ key: 'add-extra' })
+  await addVaults(ui, ['extra'])
   const sent = calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args
   expect(sent).toEqual({ vault: 'main', also: ['notes', 'extra'], open: false })
   expect(sent && 'locked' in sent).toBe(false)
@@ -313,9 +320,7 @@ test('a click is computed from the entry on file and sent with its digest', asyn
   const calls = wire(on, state)
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdd(ui)
-  await ui.press({ key: 'tab-distants' })
-  await ui.press({ key: 'add-extra' })
+  await addVaults(ui, ['extra'])
   expect(calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args).toEqual({
     vault: 'main',
     also: ['notes', 'extra'],
@@ -372,9 +377,7 @@ test('a write the router refuses as stale says so plainly', async ($, on) => {
   wire(on, state)
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdd(ui)
-  await ui.press({ key: 'tab-distants' })
-  await ui.press({ key: 'add-extra' })
+  await addVaults(ui, ['extra'])
   expect(await ui.find({ type: 'Text', text: /La liaison a été modifiée pendant l'envoi/ })).toBeTruthy()
   await ui.unmount()
 })
@@ -619,9 +622,7 @@ test('a binding answer without `also` draws, and a click still sends a list', as
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: /^SECONDAIRES : 0$/ })).toBeTruthy()
-  await openAdd(ui)
-  await ui.press({ key: 'tab-distants' })
-  await ui.press({ key: 'add-extra' })
+  await addVaults(ui, ['extra'])
   expect(calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args).toEqual({ vault: 'main', also: ['extra'], open: false })
   await ui.unmount()
 })
@@ -814,7 +815,7 @@ test('a pane the app drew on its own gets the redraws after the model binding ca
   await ui.unmount()
 })
 
-test('the layout: a status line, every secondary as a tile, adding folded away, a filter over secondaries', async ($, on) => {
+test('the layout: a status line, every secondary as a tile, no vault to add in "Vaults en cours", a filter over secondaries', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
   for (const surface of ['terminal', 'desktop'] as const) {
@@ -826,10 +827,11 @@ test('the layout: a status line, every secondary as a tile, adding folded away, 
     expect(await ui.find({ key: 'mode-notes' })).toBeTruthy()
     expect(await ui.find({ key: 'mode-docs' })).toBeTruthy()
     expect(await ui.find({ type: 'Button', key: 'open-closed' })).toBeTruthy()
-    // Adding is folded, while there is a primary: one button and how many.
-    expect(await ui.find({ type: 'Button', key: 'toggle-add' })).toMatchObject({ props: { label: '+ Ajouter un vault' } })
-    expect(await ui.find({ type: 'Text', text: /^2 disponibles$/ })).toBeTruthy()
+    // No vault to add under the vaults in use, while there is a primary: they are the
+    // "Ajouter un vault" tab's (Roland, from a sketch).
+    expect(await ui.find({ type: 'Button', key: 'toggle-add' })).toBeFalsy()
     expect(await ui.find({ type: 'Button', key: 'tab-locaux' })).toBeFalsy()
+    expect(await ui.find({ type: 'Button', key: 'pick-left-extra' })).toBeFalsy()
     await ui.unmount()
   }
 
@@ -879,15 +881,13 @@ test('a click starts from the entry the router last reported: no list_vaults bef
   const calls = wire(on, state)
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdd(ui)
-  await ui.press({ key: 'tab-distants' })
 
   // First click: computed from the refresh's entry, sent straight away. From
   // here every read fails, so the second click can only start from what the
   // write itself answered.
   ;(state as { refuse?: string }).refuse = 'list_vaults'
   const before = calls.length
-  await ui.press({ key: 'add-extra' })
+  await addVaults(ui, ['extra'])
   expect(calls[before]?.tool).toBe('confirm_workspace_binding')
   expect(calls[before]?.args).toEqual({ vault: 'main', also: ['notes', 'extra'], ifBindingDigest: 'd'.repeat(64), ifNoOtherSpellings: true, open: false })
 
@@ -1056,10 +1056,14 @@ const launches = (on: On) => {
   return launched
 }
 
+// The links of a remote vault are its tile's: extra, a remote vault with a web
+// UI, bound as a secondary so that its tile stands in "Vaults en cours".
+const WITH_EXTRA = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, also: ['docs', 'notes', 'extra'] } }
+
 test('a remote vault with a web UI, no view agent: 🌐 and 🪟 open its own address', async ($, on) => {
   // get_view_link is not served: a router without a view agent hides it.
   const calls = wire(on, {
-    list: LIST,
+    list: WITH_EXTRA,
     answers: { list_files: { files: ['Welcome.md'] } },
     refuse: 'get_view_link',
     refuseText: 'Unknown tool: get_view_link',
@@ -1068,8 +1072,6 @@ test('a remote vault with a web UI, no view agent: 🌐 and 🪟 open its own ad
   const launched = launches(on)
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdd(ui)
-  await ui.press({ key: 'tab-distants' })
   await ui.press({ key: 'web-extra' })
   // The planet: the default browser.
   expect(launched).toEqual([['rundll32', 'url.dll,FileProtocolHandler', 'https://10.8.0.1:3002/']])
@@ -1080,7 +1082,7 @@ test('a remote vault with a web UI, no view agent: 🌐 and 🪟 open its own ad
 
 test('with a view agent, 🌐 and 🪟 go through its link to a note of the vault, which brings it to the front', async ($, on) => {
   const calls = wire(on, {
-    list: LIST,
+    list: WITH_EXTRA,
     answers: {
       // No note at the root: the first one in wiki/.
       list_files: (args: { directory: string }) =>
@@ -1092,8 +1094,6 @@ test('with a view agent, 🌐 and 🪟 go through its link to a note of the vaul
   const launched = launches(on)
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdd(ui)
-  await ui.press({ key: 'tab-distants' })
   await ui.press({ key: 'web-extra' })
   expect(calls.find(c => c.tool === 'get_view_link')?.args).toEqual({ vault: 'extra', note: 'wiki/index.md' })
   expect(launched).toEqual([['rundll32', 'url.dll,FileProtocolHandler', GO]])
@@ -1103,25 +1103,21 @@ test('with a view agent, 🌐 and 🪟 go through its link to a note of the vaul
 })
 
 test('a 🌐 launch that exits non-zero says so', async ($, on) => {
-  wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  wire(on, { list: WITH_EXTRA, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
   on('process.run', () => ({
     value: { exitCode: 1, stdout: '', stderr: 'no browser', isStdoutTruncated: false, isStderrTruncated: false },
   }))
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdd(ui)
-  await ui.press({ key: 'tab-distants' })
   await ui.press({ key: 'web-extra' })
   expect(await ui.find({ type: 'Text', text: /Navigateur : no browser/ })).toBeTruthy()
   await ui.unmount()
 })
 
 test('🪟 opens the vault in the app browser, and brings the browser pane into view', async ($, on) => {
-  const calls = wire(on, { list: LIST })
+  const calls = wire(on, { list: WITH_EXTRA })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdd(ui)
-  await ui.press({ key: 'tab-distants' })
   await ui.press({ key: 'ui-extra' })
   expect(calls.some(c => c.tool === 'preview_start')).toBe(true)
   // The tab alone opens in a hidden pane: the pane is brought into view after it.
@@ -1133,11 +1129,9 @@ test('🪟 opens the vault in the app browser, and brings the browser pane into 
 
 for (const how of ['refused', 'unreachable'] as const) {
 test(`a pane that cannot be brought into view (${how}) leaves 🪟 silent: the tab is open`, async ($, on) => {
-  const calls = wire(on, how === 'refused' ? { list: LIST, refuse: 'show_pane', refuseText: 'server not found' } : { list: LIST, unreachable: 'show_pane' })
+  const calls = wire(on, how === 'refused' ? { list: WITH_EXTRA, refuse: 'show_pane', refuseText: 'server not found' } : { list: WITH_EXTRA, unreachable: 'show_pane' })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdd(ui)
-  await ui.press({ key: 'tab-distants' })
   await ui.press({ key: 'ui-extra' })
   expect(await eventually(async () => calls.find(c => c.tool === 'show_pane'))).toBeTruthy()
   expect(calls.filter(c => c.tool === 'preview_start').length).toBe(1)
@@ -1148,11 +1142,9 @@ test(`a pane that cannot be brought into view (${how}) leaves 🪟 silent: the t
 
 test('when the app browser cannot be reached, the panel points to the 🌐 link', async ($, on) => {
   // No browser pane answers under either name.
-  const calls = wire(on, { list: LIST, refuse: 'preview_start', refuseText: 'server not found' })
+  const calls = wire(on, { list: WITH_EXTRA, refuse: 'preview_start', refuseText: 'server not found' })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdd(ui)
-  await ui.press({ key: 'tab-distants' })
   await ui.press({ key: 'ui-extra' })
   expect(calls.filter(c => c.tool === 'preview_start').length).toBeGreaterThan(0)
   expect(await ui.find({ type: 'Text', text: /Le bouton 🌐 ouvre la même interface/ })).toBeTruthy()
@@ -1378,17 +1370,15 @@ const keyOf = (n: Drawn) => n.key ?? (n.props?.key as string | undefined)
 const textOf = (n: Drawn): string =>
   typeof n.children === 'string' ? n.children : Array.isArray(n.children) ? n.children.map(c => (typeof c === 'string' ? c : textOf(c as Drawn))).join('') : ''
 
-test('the primary, the secondaries and the vaults to add are the same tile, in grids that wrap', async ($, on) => {
+test('the primary and the secondaries are the same tile, in grids that wrap', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
   for (const surface of ['terminal', 'desktop', 'mobile'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    // The add list is folded by default: unfold it, on all of its vaults.
-    await openAdd(ui)
     const nodes = nodesOf(await ui.drawn())
-    // In LIST: one primary, two secondaries (one open, one closed), two vaults to add.
+    // In LIST: one primary, two secondaries (one open, one closed); the vaults to add are the add tab's.
     const tiles = nodes.filter(n => n.props?.borderStyle === 'single' && /^(primary-row|sec-|av-)/.test(keyOf(n) ?? ''))
-    expect(tiles.map(n => keyOf(n))).toEqual(['primary-row', 'sec-docs', 'sec-notes', 'av-closed', 'av-extra'])
+    expect(tiles.map(n => keyOf(n))).toEqual(['primary-row', 'sec-docs', 'sec-notes'])
     const width = tiles[0]!.props?.width
     for (const tile of tiles) {
       // One tile for all three: same width (the side panel holds one per line), same border, same parts.
@@ -1410,11 +1400,9 @@ test('the primary, the secondaries and the vaults to add are the same tile, in g
       expect(controls === undefined || controls.props?.flexWrap === 'wrap').toBe(true)
     }
     // A thin frame for every tile, the primary's in Claude's colour.
-    expect(tiles.map(n => n.props?.borderColor)).toEqual(['claude', 'inactive', 'inactive', 'inactive', 'inactive'])
-    // The grids wrap.
-    for (const key of ['sec-tiles', 'av-tiles']) {
-      expect(nodes.find(n => keyOf(n) === key)?.props?.flexWrap).toBe('wrap')
-    }
+    expect(tiles.map(n => n.props?.borderColor)).toEqual(['claude', 'inactive', 'inactive'])
+    // The grid wraps.
+    expect(nodes.find(n => keyOf(n) === 'sec-tiles')?.props?.flexWrap).toBe('wrap')
     // Every surface: the tier as three radios in a row after their short title — the primary's told, the two secondaries' set.
     const modes = nodes.filter(n => /^mode-/.test(keyOf(n) ?? '') && n.type === 'Box')
     expect(modes.map(keyOf)).toEqual(['mode-main', 'mode-docs', 'mode-notes'])
@@ -1468,22 +1456,44 @@ test('no legend: the status line says how many are bound and whether they all an
   }
 })
 
-test('the Locaux and Distants tabs are real buttons, the open one lit', async ($, on) => {
-  wire(on, { list: LIST })
+test('"Ajouter un vault": the vaults to add at the left, the secondaries at the right, ticked names moved by → and ←', async ($, on) => {
+  const calls = wire(on, { list: LIST })
   await begin($)
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ ...PANE, surface })
-    await openAdd(ui)
-    await ui.press({ key: 'tab-locaux' })
-    const tabOf = async (key: string) => nodesOf(await ui.drawn()).find(n => n.type === 'Button' && keyOf(n) === key)
-    expect((await tabOf('tab-locaux'))?.props?.variant).toBe('primary')
-    expect((await tabOf('tab-distants'))?.props?.variant).toBe('secondary')
-    expect((await tabOf('tab-locaux'))?.props?.plain).toBeFalsy()
-    await ui.press({ key: 'tab-distants' })
-    expect((await tabOf('tab-distants'))?.props?.variant).toBe('primary')
-    expect((await tabOf('tab-locaux'))?.props?.variant).toBe('secondary')
-    await ui.unmount()
-  }
+  // Wide: the two columns side by side, the arrows between them; each column half the pane.
+  const wide = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  await showTab(wide, 'nav-add')
+  const nodes = nodesOf(await wide.drawn())
+  expect(nodes.find(n => keyOf(n) === 'add-columns')?.props?.flexDirection).toBe('row')
+  const columns = ['add-available', 'add-arrows', 'add-bound'].map(key => nodes.findIndex(n => keyOf(n) === key))
+  expect(columns.every(at => at >= 0)).toBe(true)
+  expect([...columns].sort((x, y) => x - y)).toEqual(columns)
+  expect(nodes.find(n => keyOf(n) === 'add-available')?.props?.width).toBe(Math.floor((140 - 5 - 2) / 2))
+  // The left column: the vaults that can be added, A → Z; the right one: the secondaries, paused ones too.
+  expect(nodes.filter(n => n.type === 'Button' && /^pick-left-/.test(keyOf(n) ?? '')).map(keyOf)).toEqual(['pick-left-closed', 'pick-left-extra'])
+  expect(nodes.filter(n => n.type === 'Button' && /^pick-right-/.test(keyOf(n) ?? '')).map(keyOf)).toEqual(['pick-right-docs', 'pick-right-notes'])
+  // Nothing ticked: the arrows send nothing.
+  await wide.press({ key: 'add-move-right' })
+  await wide.press({ key: 'add-move-left' })
+  expect(calls.some(c => c.tool === 'confirm_workspace_binding')).toBe(false)
+  // A name ticked is lit, its box checked; → binds the ticked vaults as secondaries.
+  await wide.press({ key: 'pick-left-extra' })
+  expect((await wide.find({ type: 'Button', key: 'pick-left-extra' }))?.props?.label).toBe('☑ extra')
+  expect((await wide.find({ key: 'pick-left-row-extra' }))?.props?.backgroundColor).toBe('diffAddedDimmed')
+  expect((await wide.find({ type: 'Button', key: 'add-move-right' }))?.props?.variant).toBe('primary')
+  await wide.press({ key: 'add-move-right' })
+  expect(calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args).toEqual({ vault: 'main', also: ['docs', 'notes', 'extra'], open: false })
+  // ← takes the ticked secondaries out.
+  await wide.press({ key: 'pick-right-docs' })
+  await wide.press({ key: 'add-move-left' })
+  expect(calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args?.also).not.toContain('docs')
+  await wide.unmount()
+  // Narrow: the columns one under the other, the arrows in a row between them.
+  const narrow = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await showTab(narrow, 'nav-add')
+  const stacked = nodesOf(await narrow.drawn())
+  expect(stacked.find(n => keyOf(n) === 'add-columns')?.props?.flexDirection).toBe('column')
+  expect(stacked.find(n => keyOf(n) === 'add-arrows')?.props?.flexDirection).toBe('row')
+  await narrow.unmount()
 })
 
 const BAND = {
@@ -2237,12 +2247,10 @@ test('a vault registered on the loopback is listed as local, with no web UI butt
   wire(on, { list: withLoop })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdd(ui)
-  await ui.press({ key: 'tab-locaux' })
-  expect(await ui.find({ type: 'Button', key: 'add-loop' })).toBeTruthy()
+  await showTab(ui, 'nav-add')
+  const row = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'pick-left-row-loop')
+  expect(nodesOf(row as never).filter(n => n.type === 'Text').map(n => textOf(n))).toContain('Local')
   expect(await ui.find({ type: 'Button', key: 'ui-loop' })).toBeFalsy()
-  await ui.press({ key: 'tab-distants' })
-  expect(await ui.find({ type: 'Button', key: 'add-loop' })).toBeFalsy()
   await ui.unmount()
 })
 
@@ -2869,68 +2877,39 @@ const MANY = {
     { name: 'Remote2', type: 'remote', online: true },
   ],
 }
+// The names of the add tab's left column, in their order.
 const addedNames = async (ui: { drawn(): Promise<unknown> }) =>
   nodesOf(await ui.drawn())
-    .filter(n => n.props?.borderStyle === 'single' && /^av-/.test(keyOf(n) ?? ''))
-    .map(n => keyOf(n)!.slice(3))
+    .filter(n => n.type === 'Button' && /^pick-left-/.test(keyOf(n) ?? ''))
+    .map(n => keyOf(n)!.slice('pick-left-'.length))
 
-test('adding: all, local or remote ones, a search, and A → Z or Z → A regardless of case', async ($, on) => {
+test('adding: the vaults to add A → Z regardless of case, and a search over them', async ($, on) => {
   wire(on, { list: MANY })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await ui.press({ key: 'toggle-add' })
-  // All of them by default, A → Z whatever the case.
-  expect(await ui.find({ type: 'Button', key: 'tab-tous' })).toMatchObject({ props: { label: 'Tous · 5', variant: 'primary' } })
+  await showTab(ui, 'nav-add')
   expect(await addedNames(ui)).toEqual(['alpha', 'closed', 'extra', 'Remote2', 'Zeta'])
-  await ui.select({ key: 'add-sort', value: 'za' })
-  expect(await addedNames(ui)).toEqual(['Zeta', 'Remote2', 'extra', 'closed', 'alpha'])
-  await ui.press({ key: 'tab-locaux' })
-  expect(await addedNames(ui)).toEqual(['Zeta', 'closed', 'alpha'])
-  await ui.press({ key: 'tab-distants' })
-  expect(await addedNames(ui)).toEqual(['Remote2', 'extra'])
-  await ui.press({ key: 'tab-tous' })
+  // The search narrows the left column, whatever the case; its submit key says "Filtrer".
+  expect((await ui.find({ key: 'add-search' }))?.props?.submitLabel).toBe('Filtrer')
   await ui.input({ key: 'add-search', text: 'TA', kind: 'change' })
   expect(await addedNames(ui)).toEqual(['Zeta'])
-  // An open local one can be looked at in Obsidian before it is added, "+ Ajouter" beside it.
-  expect(await ui.find({ type: 'Button', key: 'obsidian-Zeta' })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /^Local · Obsidian/ })).toBeFalsy()
-  expect(await ui.find({ type: 'Button', key: 'add-Zeta' })).toMatchObject({ props: { label: '+ Ajouter', variant: 'secondary' } })
-  // "+ Ajouter" sits on the tile's last line, pushed to its right, under a spacer that takes the height left.
-  const tileNodes = nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'av-Zeta') as never)
-  const foot = tileNodes.find(n => keyOf(n) === 'foot-av-Zeta')
-  expect(foot?.props?.justifyContent).toBe('flex-end')
-  expect(nodesOf(foot as never).some(n => keyOf(n) === 'add-Zeta')).toBe(true)
-  expect(tileNodes.find(n => keyOf(n) === 'spacer-av-Zeta')?.props?.flexGrow).toBe(1)
-  // Its Obsidian mark in its head, never beside "+ Ajouter".
-  const head = tileNodes.find(n => keyOf(n) === 'av-Zeta-head')
-  expect(nodesOf(head as never).some(n => keyOf(n) === 'obsidian-Zeta')).toBe(true)
-  expect(nodesOf(head as never).some(n => keyOf(n) === 'add-Zeta')).toBe(false)
-  // The tabs, the search and the order share one bar; "Fermer" folds the list back.
-  const bar = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'add-bar')
-  expect(bar?.props?.flexDirection).toBe('row')
-  for (const key of ['tab-tous', 'add-search', 'add-sort']) {
-    expect(nodesOf(bar as never).some(n => keyOf(n) === key)).toBe(true)
-  }
-  expect(nodesOf(bar as never).find(n => keyOf(n) === 'add-search')?.props?.submitLabel).toBe('Filtrer')
-  await ui.press({ key: 'toggle-add' })
-  expect(await ui.find({ type: 'Button', key: 'tab-tous' })).toBeFalsy()
+  await ui.input({ key: 'add-search', text: 'nothing', kind: 'change' })
+  expect(await addedNames(ui)).toEqual([])
+  expect(await ui.find({ type: 'Text', text: /^Aucun vault ne correspond/ })).toBeTruthy()
   await ui.unmount()
 })
 
-test('a wide pane lays the tiles in a grid: bound tiles of a fixed width, as many per line as fit, four to add per line', async ($, on) => {
+test('a wide pane lays the tiles in a grid: bound tiles of a fixed width, as many per line as fit', async ($, on) => {
   wire(on, { list: MANY })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 130 }, surface: 'desktop' })
-  await ui.press({ key: 'toggle-add' })
   const nodes = nodesOf(await ui.drawn())
   const width = (key: string) => nodes.find(n => keyOf(n) === key)?.props?.width as number
   // A bound vault's tile is its three fixed columns wide — 68 cells whatever
   // the pane, so the pane's width alone says how many stand on a line (the
   // grid wraps): one at 130, two from 139 (69 + 1 + 69) on, three from 209.
-  // The tiles to add: (130 - 3) / 4, rounded down.
   expect(width('primary-row')).toBe(69)
   expect(width('sec-docs')).toBe(69)
-  expect(width('av-closed')).toBe(31)
   expect(nodes.find(n => keyOf(n) === 'sec-tiles')?.props?.flexWrap).toBe('wrap')
   await ui.unmount()
   for (const columns of [139, 209]) {
@@ -3296,7 +3275,7 @@ test('the menu stays at the top while the pane scrolls: a copy, no frame, over t
   }
 })
 
-test('the menu switches the view: + Ajouter un vault opens the list, the gear the console (and back), Vaults back', async ($, on) => {
+test('the menu switches the view: Ajouter un vault opens the two columns, the gear the console (and back), Vaults back', async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 }, surface: 'desktop' })
@@ -3314,7 +3293,7 @@ test('the menu switches the view: + Ajouter un vault opens the list, the gear th
     )
   }
   await ui.press({ key: 'nav-add' })
-  expect(await ui.find({ type: 'Button', key: 'tab-tous' })).toBeTruthy()
+  expect(await ui.find({ key: 'add-transfer' })).toBeTruthy()
   expect(await inView('nav-add')).toBe(true)
   expect(await inView('nav-vaults')).toBe(false)
   await ui.press({ key: 'nav-admin' })
@@ -3431,7 +3410,7 @@ test('a pane too narrow for the menu folds it into "☰" and the view in sight; 
   // Open: the three, one under the other; a pick shows its view and folds the menu.
   expect(await ui.find({ type: 'Button', key: 'nav-add' })).toBeTruthy()
   await ui.press({ key: 'nav-add' })
-  expect(await ui.find({ type: 'Button', key: 'tab-tous' })).toBeTruthy()
+  expect(await ui.find({ key: 'add-transfer' })).toBeTruthy()
   expect(await ui.find({ type: 'Button', key: 'nav-add' })).toBeFalsy()
   expect((await ui.find({ type: 'Button', key: 'nav-burger' }))?.props?.label).toBe('☰ Ajouter un vault')
   // Folded too, the gear stays at the right; the console in sight names itself on the fold.
@@ -3448,7 +3427,8 @@ test('a pane too narrow for the menu folds it into "☰" and the view in sight; 
 })
 
 test('under the menu, a legend says what each mark and each badge means: one wrapping row in two groups, "Ouvrir" and "Droits", each a bold word and its items parted by "·", a group cut only in a pane narrower than it; each item lights the tiles\' marks or radios of its kind, one way', async ($, on) => {
-  wire(on, { list: LIST })
+  const state: { list: unknown } = { list: LIST }
+  wire(on, state)
   await begin($)
   const texts = (n: Drawn | undefined) => nodesOf(n as never).filter(x => x.type === 'Text').map(textOf)
   const boxes = (n: Drawn | undefined) => childrenOf(n).filter(x => x.type === 'Box')
@@ -3491,9 +3471,11 @@ test('under the menu, a legend says what each mark and each badge means: one wra
   // A tile's mark is no trigger: its box carries no hover of its own. Under the mark, drawn first, a hidden
   // member of the group (`lit-<key>`: absolute over the box, display none, a grey ground) is revealed while the
   // legend's item is under the pointer — one way only. The gear at the menu's right has none of this.
+  // extra's marks are its tile's: bound as a secondary, read again.
+  state.list = WITH_EXTRA
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdd(ui)
-  await ui.press({ key: 'tab-distants' })
+  await ui.press({ key: 'refresh' })
+  await eventually(() => ui.find({ key: 'icon-web-extra' }))
   const nodes = nodesOf(await ui.drawn())
   for (const [key, scope] of [['web-extra', 'open-browser'], ['ui-extra', 'open-claude']] as const) {
     const box = nodes.find(n => keyOf(n) === `icon-${key}`)
@@ -3569,11 +3551,7 @@ test("a secondary's tile, in a pane at least a tile wide: its head holds its dot
   await begin($)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...WIDE, surface })
-    await openAdd(ui)
     const nodes = nodesOf(await ui.drawn())
-    // A tile to add keeps its marks' box in its head, after its name.
-    const addHead = nodesOf(nodes.find(n => keyOf(n) === 'av-closed-head') as never)
-    expect(addHead.some(n => keyOf(n) === 'marks-av-closed')).toBe(true)
     const tile = nodes.find(n => keyOf(n) === 'sec-extra')
     expect(tile?.props?.borderStyle).toBe('single')
     // The tile is as wide as its head needs: frame and padding (4), the dot (2), a gap, a name of 20, two marks (a gap
@@ -3830,7 +3808,7 @@ test('a tile says when its vault was last written through the router and lists i
   await ui.unmount()
 })
 
-test('a path wider than the tile\'s inside is cut to it between graphemes, "…" closing it; one that just fits is whole; a tile to add cuts to its own inside and opens the whole path', async ($, on) => {
+test('a path wider than the tile\'s inside is cut to it between graphemes, "…" closing it; one that just fits is whole; a cut one opens the whole path', async ($, on) => {
   // The tile's inside is 65 cells: a path of 78.
   const long = `wiki/${'a'.repeat(70)}.md`
   const exact = `${'a'.repeat(62)}.md`
@@ -3849,13 +3827,11 @@ test('a path wider than the tile\'s inside is cut to it between graphemes, "…"
           { path: joined, at: '2026-10-24T17:21:00.000Z' },
         ],
       },
-      extra: { lastWriteAt: '2026-10-24T20:21:00.000Z', recent: [{ path: long, at: '2026-10-24T20:21:00.000Z' }] },
     },
   }
   const calls = wire(on, { list })
   await begin($)
   const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
-  await openAdd(ui)
   const nodes = nodesOf(await ui.drawn())
   const label = (key: string) => nodes.find(n => keyOf(n) === key)?.props?.label as string
   // The body is 65 wide, the tile's inside: a 78-cell path becomes 64 graphemes and "…".
@@ -3875,15 +3851,9 @@ test('a path wider than the tile\'s inside is cut to it between graphemes, "…"
   expect(/^𝒜{64}…$/u.test(cutAstral)).toBe(true)
   // A joined emoji is dropped whole, never cut to its first half and a dangling joiner.
   expect(label('note-3-docs')).toBe(`${'a'.repeat(62)}…`)
-  // A tile to add: its column takes the tile's inside (34 - 6 = 28), the path is cut to it, and
-  // its key opens the WHOLE path, not the cut one.
-  const added = nodes.find(n => keyOf(n) === 'stamp-extra')
-  expect(added?.props?.width).toBe(28)
-  const addedCut = label('note-0-extra')
-  expect(addedCut.endsWith('…')).toBe(true)
-  expect([...addedCut].length).toBe(28)
-  await ui.press({ key: 'note-0-extra' })
-  expect(calls.find(c => c.tool === 'get_view_link')?.args).toEqual({ vault: 'extra', note: long })
+  // A cut path's key opens the WHOLE path, not the cut one.
+  await ui.press({ key: 'note-0-docs' })
+  expect(calls.find(c => c.tool === 'get_view_link')?.args).toEqual({ vault: 'docs', note: long })
   await ui.unmount()
 })
 

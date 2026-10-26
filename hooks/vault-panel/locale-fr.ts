@@ -332,5 +332,19 @@ export const FR: Record<string, string> = {
   "action.unlock.doing": "Déverrouillage",
   "action.unlock.done": "Ce workspace accède de nouveau à tous ses vaults",
   "action.convention.doing": "Installation de la convention {id}",
-  "action.convention.done": "Convention {id} installée"
+  "action.convention.done": "Convention {id} installée",
+  "add.moveRight": "→",
+  "add.moveLeft": "←",
+  "add.transferHint": "Cochez des vaults, puis → pour les ajouter ou ← pour les retirer.",
+  "add.columnAvailable": "Vaults disponibles · {count}",
+  "add.columnBound": "Vaults secondaires · {count}",
+  "add.none": "Aucun vault à ajouter",
+  "action.addMany.doing.one": "Ajout de {names}",
+  "action.addMany.doing.other": "Ajout de {names}",
+  "action.addMany.done.one": "{names} ajouté aux vaults secondaires",
+  "action.addMany.done.other": "{names} ajoutés aux vaults secondaires",
+  "action.removeMany.doing.one": "Retrait de {names}",
+  "action.removeMany.doing.other": "Retrait de {names}",
+  "action.removeMany.done.one": "{names} retiré des vaults secondaires",
+  "action.removeMany.done.other": "{names} retirés des vaults secondaires"
 }

@@ -34,6 +34,9 @@ const showAdd = atom({ plugin: 'obsidian-router', key: 'showAdd' } as const, fal
 // The "add a vault" grid's search and its order (A → Z, or Z → A).
 const addQuery = atom({ plugin: 'obsidian-router', key: 'addQuery' } as const, '')
 const addSort = atom({ plugin: 'obsidian-router', key: 'addSort' } as const, 'az' as 'az' | 'za')
+// The names picked in each column of "Ajouter un vault": the vaults to add at
+// the left, the secondaries to take out at the right.
+const addPick = atom({ plugin: 'obsidian-router', key: 'addPick' } as const, { left: [] as string[], right: [] as string[] })
 // Bumped at every open and close of the pane: the band reads it so that it is
 // drawn again; what the toggle says comes from isPanePlaced.
 const paneVersion = atom({ plugin: 'obsidian-router', key: 'paneVersion' } as const, 0)
@@ -4243,6 +4246,191 @@ export const register: Register = on => {
       </Box>
     )
 
+    // "Ajouter un vault": two columns — the vaults that can be added at the left,
+    // this workspace's secondaries at the right — and two arrows between them
+    // that move the names picked (Roland, from a sketch). A name is picked by a
+    // press on it; → binds the picked vaults as secondaries (read-only with a
+    // per-write yes, as any new secondary), ← takes the picked secondaries out.
+    // The primary and the rights stay on the tiles of "Vaults en cours". Wide
+    // enough, the three side by side; narrower, one under the other.
+    const pick = await read($, addPick)
+    const boundNames = allSecondaries.map(entry => entry.row.name)
+    const leftPicked = pick.left.filter(name => snap.available.some(v => v.name === name))
+    const rightPicked = pick.right.filter(name => boundNames.includes(name))
+    const togglePick = (side: 'left' | 'right', name: string) =>
+      void update($, addPick, now => ({
+        ...now,
+        [side]: now[side].includes(name) ? now[side].filter(n => n !== name) : [...now[side], name],
+      }))
+    const moveRight = () => {
+      const names = leftPicked
+      if (names.length === 0) {
+        return
+      }
+      void update($, addPick, now => ({ ...now, left: [] }))
+      void rebind(
+        $,
+        {
+          doing: tn('action.addMany.doing', names.length, { names: names.join(', ') }),
+          done: tn('action.addMany.done', names.length, { names: names.join(', ') }),
+        },
+        shown,
+        current => [...current, ...names.filter(n => !current.includes(n))],
+        {
+          shows: now => ({
+            ...now,
+            secondaries: [
+              ...now.secondaries,
+              ...now.available.filter(r => names.includes(r.name) && !now.secondaries.some(x => x.name === r.name)).map(r => ({ ...r, mode: 'soft' as const })),
+            ],
+            available: now.available.filter(r => !names.includes(r.name)),
+          }),
+        },
+      )
+    }
+    const moveLeft = () => {
+      const names = rightPicked
+      if (names.length === 0) {
+        return
+      }
+      void update($, addPick, now => ({ ...now, right: [] }))
+      void rebind(
+        $,
+        {
+          doing: tn('action.removeMany.doing', names.length, { names: names.join(', ') }),
+          done: tn('action.removeMany.done', names.length, { names: names.join(', ') }),
+        },
+        shown,
+        current => current.filter(n => !names.includes(n)),
+        {
+          shows: now => ({
+            ...now,
+            secondaries: now.secondaries.filter(r => !names.includes(r.name)),
+            paused: (now.paused ?? []).filter(r => !names.includes(r.name)),
+          }),
+        },
+      )
+    }
+    const placeShort = (v: VaultRow) => (isRemote(v) ? t('link.remoteShort') : t('link.localShort'))
+    const pickRow = (side: 'left' | 'right', v: VaultRow, isPicked: boolean, isDim = false) => (
+      <Box
+        key={`pick-${side}-row-${v.name}`}
+        flexDirection="row"
+        gap={1}
+        alignItems="center"
+        paddingX={1}
+        backgroundColor={isPicked ? 'diffAddedDimmed' : undefined}
+      >
+        {dot(v.online, isRemote(v))}
+        <Button
+          key={`pick-${side}-${v.name}`}
+          label={`${isPicked ? '☑' : '☐'} ${v.name}`}
+          plain
+          dimColor={isDim && !isPicked}
+          onPress={() => togglePick(side, v.name)}
+        />
+        <Text size="caption" dimColor>
+          {placeShort(v)}
+        </Text>
+      </Box>
+    )
+    const searchedAdd = Input ? addTyped.trim().toLowerCase() : ''
+    const leftRows = snap.available
+      .filter(v => !searchedAdd || v.name.toLowerCase().includes(searchedAdd))
+      .sort((x, y) => x.name.localeCompare(y.name, undefined, { sensitivity: 'base' }))
+    // Side by side, the two columns share the pane's width less the arrows'
+    // (five cells) and the two gaps; one under the other, each takes it all.
+    const isTransferWide = (e.props.bodyColumns ?? 60) >= 72
+    const transferWidth = isTransferWide ? Math.floor(((e.props.bodyColumns ?? 60) - 5 - 2) / 2) : undefined
+    const transferColumn = (key: string, title: string, rows: unknown[], empty: string, tools?: unknown) => (
+      <Box key={key} flexDirection="column" gap={1} width={transferWidth} flexShrink={1} borderStyle="round" borderColor="inactive" paddingX={1}>
+        <Text weight="semibold">{title}</Text>
+        {tools as never}
+        {rows.length === 0 ? (
+          <Text size="caption" dimColor>
+            {empty}
+          </Text>
+        ) : (
+          (rows as never)
+        )}
+      </Box>
+    )
+    const arrows = (
+      <Box
+        key="add-arrows"
+        flexDirection={isTransferWide ? 'column' : 'row'}
+        gap={1}
+        alignItems="center"
+        justifyContent="center"
+        flexShrink={0}
+      >
+        <Button
+          key="add-move-right"
+          label={t('add.moveRight')}
+          variant={leftPicked.length > 0 ? 'primary' : 'secondary'}
+          dimColor={leftPicked.length === 0}
+          onPress={moveRight}
+        />
+        <Button
+          key="add-move-left"
+          label={t('add.moveLeft')}
+          variant={rightPicked.length > 0 ? 'primary' : 'secondary'}
+          dimColor={rightPicked.length === 0}
+          onPress={moveLeft}
+        />
+      </Box>
+    )
+    const transfer = snap.primary ? (
+      <Box key="add-transfer" flexDirection="column" gap={1}>
+        <Box key="add-head" flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+          {section(t('add.title'))}
+          <Text size="caption" dimColor>
+            {t('add.transferHint')}
+          </Text>
+        </Box>
+        <Box key="add-columns" flexDirection={isTransferWide ? 'row' : 'column'} gap={1} alignItems={isTransferWide ? 'stretch' : undefined}>
+          {transferColumn(
+            'add-available',
+            t('add.columnAvailable', { count: snap.available.length }),
+            leftRows.map(v => pickRow('left', v, leftPicked.includes(v.name))),
+            searchedAdd ? t('add.noMatch') : t('add.none'),
+            Input ? (
+              <Box key="add-search-box" flexShrink={1}>
+                <Input
+                  key="add-search"
+                  placeholder={t('add.search')}
+                  value={addTyped}
+                  submitLabel={t('add.filter')}
+                  onInput={(value: string) => void update($, addQuery, () => value)}
+                  onSubmit={(value: string) => void update($, addQuery, () => value)}
+                />
+              </Box>
+            ) : null,
+          )}
+          {arrows}
+          {transferColumn(
+            'add-bound',
+            t('add.columnBound', { count: allSecondaries.length }),
+            allSecondaries.map(({ row, isPaused }) => pickRow('right', row, rightPicked.includes(row.name), isPaused)),
+            t('secondaries.none'),
+          )}
+        </Box>
+      </Box>
+    ) : (
+      adding
+    )
+    if (isAddShown && !isConfigShown) {
+      return (
+        <Box flexDirection="column" gap={1}>
+          {navMenu('')}
+          {statusLine}
+          {problems}
+          {transfer}
+          {sticky}
+        </Box>
+      )
+    }
+
     if (isConfigShown) {
       const configSection = (key: string, title: string, note: string | null, body: unknown) => (
         <Box key={key} flexDirection="column" gap={1}>
@@ -4421,7 +4609,7 @@ export const register: Register = on => {
         )}
         {primary}
         {secondaries}
-        {adding}
+        {!snap.primary && adding}
         {sticky}
       </Box>
     )

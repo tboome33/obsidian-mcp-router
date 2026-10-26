@@ -363,5 +363,19 @@
   "action.unlock.doing": "Unlocking",
   "action.unlock.done": "This workspace reaches all its vaults again",
   "action.convention.doing": "Installing the {id} convention",
-  "action.convention.done": "{id} convention installed"
+  "action.convention.done": "{id} convention installed",
+  "add.moveRight": "→",
+  "add.moveLeft": "←",
+  "add.transferHint": "Tick vaults, then → to add them or ← to take them out.",
+  "add.columnAvailable": "Available vaults · {count}",
+  "add.columnBound": "Secondary vaults · {count}",
+  "add.none": "No vault to add",
+  "action.addMany.doing.one": "Adding {names}",
+  "action.addMany.doing.other": "Adding {names}",
+  "action.addMany.done.one": "{names} added to the secondary vaults",
+  "action.addMany.done.other": "{names} added to the secondary vaults",
+  "action.removeMany.doing.one": "Taking out {names}",
+  "action.removeMany.doing.other": "Taking out {names}",
+  "action.removeMany.done.one": "{names} taken out of the secondary vaults",
+  "action.removeMany.done.other": "{names} taken out of the secondary vaults"
 }

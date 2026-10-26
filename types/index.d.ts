@@ -165,6 +165,8 @@ declare module 'claude-code' {
       workspaceHooks: WorkspaceHooks | null
       /** The Configuration tab is in sight (this workspace's hooks and settings). */
       showConfig: boolean
+      /** The names picked in each column of "Ajouter un vault". */
+      addPick: { left: string[]; right: string[] }
       /** The primary vault's conventions, from a dry run of install_conventions. */
       primaryConventions: { vault: string; items: { id: string; installed: boolean }[]; languages: string[] | null } | null
     }
