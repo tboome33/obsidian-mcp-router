@@ -271,6 +271,15 @@ async function addVaults(ui: Mounted, names: string[]) {
   await showTab(ui, 'nav-vaults')
 }
 
+// The gear drawn held down, while the console is in sight: the mark in the
+// router's purple, on no grey ground (one drew a grey square over the grey
+// gear, Roland on v0.119.0).
+async function gearHeld(ui: Mounted) {
+  const gear = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'icon-nav-admin')
+  expect(gear?.props?.backgroundColor).toBeUndefined()
+  return String(nodesOf(gear as never).find(n => n.type === 'Svg')?.props?.source).includes('#6040b0')
+}
+
 async function openClosed(ui: Mounted) {
   if (!(await ui.find({ key: 'mode-notes' }))) {
     await ui.press({ key: 'toggle-closed' })
@@ -2519,7 +2528,7 @@ test('/vault-setup opens the pane on the console, where a vault is created with 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   // The console holds the pane, the gear held down; the vaults come back on its press.
   expect(await ui.find({ type: 'Button', key: 'create-submit' })).toBeTruthy()
-  expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'icon-nav-admin')?.props?.backgroundColor).toBe('inactive')
+  expect(await gearHeld(ui)).toBe(true)
   expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
   await ui.input({ key: 'create-name-field', text: 'Notes Pro', kind: 'change' })
   await ui.input({ key: 'create-path-field', text: 'C:\\VAULTS\\Notes Pro', kind: 'change' })
@@ -3085,22 +3094,39 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(nodes.find(n => keyOf(n) === 'admin-nav')?.props).toMatchObject({ width: 26, flexShrink: 0 })
     expect(nodes.some(n => String(keyOf(n)).endsWith('-head') && String(keyOf(n)).startsWith('admin-'))).toBe(false)
     expect(nodes.some(n => /^admin-(general|open|create|wireguard|register|unregister)-rule$/.test(String(keyOf(n))))).toBe(false)
-    // The six sections in order in the side list, each a Button; Général shown, on a grey ground, the others dim.
+    // The six sections in order in the side list, each a Button; Général shown: framed, its name bold
+    // and plain, no grey ground (it made the name unreadable, Roland on v0.119.0); the others dim.
     expect(accordionOf(tree)).toEqual({ headers: [...ADMIN_SECTIONS], open: ['general'] })
     for (const [i, name] of ADMIN_SECTIONS.entries()) {
+      const isShown = name === 'general'
       const row = nodes.find(n => keyOf(n) === `admin-nav-${name}`)
-      expect(row?.props?.backgroundColor).toBe(name === 'general' ? 'inactive' : undefined)
+      expect(row?.props?.backgroundColor).toBeUndefined()
+      // Three rows tall, the frame's lines above and under the name.
+      expect(row?.props).toMatchObject({ height: 3, paddingX: 2 })
+      const children = (row?.children as Drawn[] | undefined) ?? []
+      // The frame: laid over the row, drawn on the shown one, revealed under the pointer on the others.
+      const frame = children[0]
+      expect(frame?.type).toBe('Box')
+      expect(frame?.props).toMatchObject({ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderStyle: 'round', borderColor: 'inactive' })
+      expect(frame?.props?.display).toBe(isShown ? 'flex' : 'none')
+      expect(frame?.hover).toEqual(isShown ? undefined : { display: 'flex' })
+      const title = nodesOf(row as never).find(n => n.type === 'Text' && textOf(n) === ADMIN_TITLES[i])
+      expect(title?.props?.weight).toBe(isShown ? 'bold' : undefined)
+      expect(!!title?.props?.dimColor).toBe(!isShown)
       const button = nodesOf(row as never).find(n => n.type === 'Button' && keyOf(n) === `admin-sec-${name}`)
-      expect(button?.props?.dimColor).toBe(name !== 'general')
-      expect(nodesOf(button as never).some(n => n.type === 'Text' && textOf(n) === ADMIN_TITLES[i])).toBe(true)
-      // Its mark: an Svg beside the Button on the desktop, a glyph inside it on the terminal.
+      expect(button).toBeTruthy()
       if (surface === 'desktop') {
-        // A direct child of the row, before the Button; never inside the Button, which may not hold one.
-        const children = (row?.children as Drawn[] | undefined) ?? []
-        expect(children.findIndex(n => n.type === 'Svg' && n.props?.alt === ADMIN_TITLES[i])).toBe(0)
-        expect(nodesOf(button as never).some(n => n.type === 'Svg')).toBe(false)
+        // The mark, a direct child of the row after the frame; the name a Text of its own beside it,
+        // and a blank Button laid over the row (the desktop draws a Button's label in its own weight).
+        expect(children.findIndex(n => n.type === 'Svg' && n.props?.alt === ADMIN_TITLES[i])).toBe(1)
+        expect(children[2]).toBe(title)
+        expect(nodesOf(button as never).some(n => n.type === 'Svg' || n.type === 'Text')).toBe(false)
+        expect(String(button?.props?.label)).toMatch(/^\u00a0+$/)
       } else {
+        // The terminal: a glyph and the name inside the key.
+        expect(button?.props?.dimColor).toBe(!isShown)
         expect(nodesOf(button as never).some(n => n.type === 'Text' && ['⚙', '↗', '+', '●', '⊕', '−'].includes(textOf(n).trim()))).toBe(true)
+        expect(nodesOf(button as never)).toContain(title)
       }
     }
     // The page: the title, the state line, the settings in a rounded card.
@@ -3141,9 +3167,9 @@ test('the console holds the pane while open: its sections one under the other, t
   await begin($)
   const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80 }, surface: 'desktop' })
   // The gear, up while the vaults show; a press holds it down and opens the console.
-  expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'icon-nav-admin')?.props?.backgroundColor).toBeUndefined()
+  expect(await gearHeld(ui)).toBe(false)
   await ui.press({ key: 'nav-admin' })
-  expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'icon-nav-admin')?.props?.backgroundColor).toBe('inactive')
+  expect(await gearHeld(ui)).toBe(true)
   // The vaults hidden, the six sections drawn in one column, no frame, a rule under each.
   expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
   const nodes = nodesOf(await ui.drawn())
@@ -3301,7 +3327,7 @@ test('the menu switches the view: Ajouter un vault opens the two columns, the ge
   // The console in sight: no tab open, the gear held down.
   expect(await inView('nav-add')).toBe(false)
   expect(await inView('nav-vaults')).toBe(false)
-  expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'icon-nav-admin')?.props?.backgroundColor).toBe('inactive')
+  expect(await gearHeld(ui)).toBe(true)
   // The console holds the pane, the menu still on top of it; the gear again brings the vaults back.
   expect(await ui.find({ type: 'Button', key: 'nav-vaults' })).toBeTruthy()
   await ui.press({ key: 'nav-admin' })
@@ -3920,7 +3946,9 @@ test("the wide menu draws its keys as tabs on a shelf: round frames cut short of
   const shelf = (tree: unknown, prefix: string, inSight: (typeof tabKeys)[number] | 'admin', surface: 'terminal' | 'desktop') => {
     const gearBox = nodesOf(tree).find(n => keyOf(n) === `icon-${prefix}nav-admin`)
     if (gearBox) {
-      expect(gearBox.props?.backgroundColor).toBe(inSight === 'admin' ? 'inactive' : undefined)
+      // Held down: the mark in the router's purple, on no grey ground; grey otherwise.
+      expect(gearBox.props?.backgroundColor).toBeUndefined()
+      expect(String(nodesOf(gearBox as never).find(n => n.type === 'Svg')?.props?.source).includes('#6040b0')).toBe(inSight === 'admin')
     } else {
       // The terminal: the glyph key, lit while held down, dim otherwise.
       expect(nodesOf(tree).find(n => keyOf(n) === `${prefix}nav-admin`)?.props?.dimColor).toBe(inSight !== 'admin')
