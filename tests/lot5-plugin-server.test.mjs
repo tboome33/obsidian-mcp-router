@@ -51,6 +51,8 @@ import {
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const readJson = (rel) => JSON.parse(fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8'));
+// An opt-in hook declared behind the gate: `node "${CLAUDE_PLUGIN_ROOT}/hooks/opt-in-gate.mjs" <name>`.
+const isGated = (command) => /[\/]hooks[\/]opt-in-gate\.mjs" [a-z0-9-]+$/.test(command);
 
 // ---- 1. ensure-deps -----------------------------------------------------
 
@@ -364,11 +366,18 @@ describe('plugin manifests', () => {
     // Plugin hooks are active for EVERY installer with no opt-in step, so
     // anything that commits to git, writes session transcripts into a vault,
     // blocks a turn with exit 2, or phones home must stay out.
+    //
+    // The opt-in hooks ARE declared here, but only behind
+    // hooks/opt-in-gate.mjs, which runs one only in a workspace its owner
+    // switched on from the vault panel's console — that switch is the opt-in
+    // step. Off (the default), the gate reads a file and exits 0: it meets the
+    // four rules itself. tests/workspace-hooks.test.mjs proves the gate.
     const manifest = readJson('hooks/hooks.json');
     const shipped = new Set();
     for (const event of Object.keys(manifest.hooks)) {
       for (const block of manifest.hooks[event]) {
         for (const entry of block.hooks) {
+          if (isGated(entry.command)) continue;
           const m = entry.command.match(/([a-z0-9-]+\.mjs)/);
           assert.ok(m, `unparseable hook command: ${entry.command}`);
           shipped.add(m[1]);
@@ -424,10 +433,11 @@ describe('plugin manifests', () => {
       for (const b of blocks) {
         for (const h of b.hooks) {
           assert.equal(h.type, 'command', `${event}: every plugin hook is a command hook`);
+          if (isGated(h.command)) continue;
           files.push(h.command.match(/([a-z0-9-]+\.mjs)/)[1]);
         }
       }
-      byEvent[event] = files.sort();
+      if (files.length > 0) byEvent[event] = files.sort();
     }
     assert.deepEqual(byEvent, {
       // hot.md and the briefing are both context a session needs from its
@@ -452,6 +462,8 @@ describe('plugin manifests', () => {
     for (const event of Object.keys(manifest.hooks)) {
       for (const block of manifest.hooks[event]) {
         for (const entry of block.hooks) {
+          // A gated hook is off unless switched on: no opt-out to carry.
+          if (isGated(entry.command)) continue;
           const file = entry.command.match(/([a-z0-9-]+\.mjs)/)[1];
           const src = fs.readFileSync(path.join(REPO_ROOT, 'hooks', file), 'utf8');
           assert.ok(src.includes(OPT_OUTS[file]), `${file} must honour ${OPT_OUTS[file]}`);

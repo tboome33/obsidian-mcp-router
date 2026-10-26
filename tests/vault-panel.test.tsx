@@ -2986,8 +2986,8 @@ test('a remote vault that does not answer says so on its tile, with a retry that
   await ui.unmount()
 })
 
-const ADMIN_SECTIONS = ['general', 'open', 'create', 'wireguard', 'register', 'unregister'] as const
-const ADMIN_TITLES = ['Général', 'Ouverture des vaults', 'Créer un vault Obsidian', 'WireGuard', 'Enregistrer un vault', 'Retirer un vault du router']
+const ADMIN_SECTIONS = ['general', 'open', 'create', 'wireguard', 'register', 'unregister', 'hooks'] as const
+const ADMIN_TITLES = ['Général', 'Ouverture des vaults', 'Créer un vault Obsidian', 'WireGuard', 'Enregistrer un vault', 'Retirer un vault du router', 'Hooks de ce workspace']
 
 // The accordion as drawn: each section's header in order, and which one is unfolded.
 const accordionOf = (tree: unknown) => {
@@ -2999,14 +2999,14 @@ const accordionOf = (tree: unknown) => {
 }
 
 for (const surface of ['terminal', 'desktop'] as const) {
-  test(`the console is an accordion on the ${surface}: six headers in order, Général unfolded first, one section open at a time`, async ($, on) => {
+  test(`the console is an accordion on the ${surface}: seven headers in order, Général unfolded first, one section open at a time`, async ($, on) => {
     wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
     windowsWireguard(on, { isInstalled: true, tunnels: ['wg0'], launched: [] })
     await begin($)
     const ui = await $.ui.mount({ ...PANE, surface })
     await ui.press({ key: 'nav-admin' })
     expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
-    // Six headers, in order, each with its title; Général open, the others folded, their bodies not drawn.
+    // Seven headers, in order, each with its title; Général open, the others folded, their bodies not drawn.
     const first = await ui.drawn()
     expect(accordionOf(first)).toEqual({ headers: [...ADMIN_SECTIONS], open: ['general'] })
     const nodes = nodesOf(first)
@@ -3041,7 +3041,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
       return parts.find(p => ['▸', '▾'].includes(p))
     })
-    expect(chevrons).toEqual(['▾', '▸', '▸', '▸', '▸', '▸'])
+    expect(chevrons).toEqual(['▾', '▸', '▸', '▸', '▸', '▸', '▸'])
     // A press on another header unfolds it and folds Général; its body is indented, with air above and below.
     await ui.press({ key: 'admin-sec-create' })
     const second = await ui.drawn()
@@ -3106,7 +3106,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(nodes.find(n => keyOf(n) === 'admin-nav')?.props).toMatchObject({ width: 26, flexShrink: 0 })
     expect(nodes.some(n => String(keyOf(n)).endsWith('-head') && String(keyOf(n)).startsWith('admin-'))).toBe(false)
     expect(nodes.some(n => /^admin-(general|open|create|wireguard|register|unregister)-rule$/.test(String(keyOf(n))))).toBe(false)
-    // The six sections in order in the side list, each a Button; Général shown, on a grey ground, the others dim.
+    // The seven sections in order in the side list, each a Button; Général shown, on a grey ground, the others dim.
     expect(accordionOf(tree)).toEqual({ headers: [...ADMIN_SECTIONS], open: ['general'] })
     for (const [i, name] of ADMIN_SECTIONS.entries()) {
       const row = nodes.find(n => keyOf(n) === `admin-nav-${name}`)
@@ -3121,7 +3121,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
         expect(children.findIndex(n => n.type === 'Svg' && n.props?.alt === ADMIN_TITLES[i])).toBe(0)
         expect(nodesOf(button as never).some(n => n.type === 'Svg')).toBe(false)
       } else {
-        expect(nodesOf(button as never).some(n => n.type === 'Text' && ['⚙', '↗', '+', '●', '⊕', '−'].includes(textOf(n).trim()))).toBe(true)
+        expect(nodesOf(button as never).some(n => n.type === 'Text' && ['⚙', '↗', '+', '●', '⊕', '−', '↪'].includes(textOf(n).trim()))).toBe(true)
       }
     }
     // The page: the title, the state line, the settings in a rounded card.
@@ -3165,7 +3165,7 @@ test('the console holds the pane while open: its sections one under the other, t
   expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'icon-nav-admin')?.props?.backgroundColor).toBeUndefined()
   await ui.press({ key: 'nav-admin' })
   expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'icon-nav-admin')?.props?.backgroundColor).toBe('inactive')
-  // The vaults hidden, the six sections drawn in one column, no frame, a rule under each.
+  // The vaults hidden, the seven sections drawn in one column, no frame, a rule under each.
   expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
   const nodes = nodesOf(await ui.drawn())
   expect(nodes.find(n => keyOf(n) === 'admin')?.props?.flexDirection).toBe('column')
@@ -4171,4 +4171,80 @@ test('a surface without the menu shows the picked one named, with a dim count of
   expect(keys.indexOf('band-count')).toBeLessThan(keys.indexOf('band-row-alpha-vault'))
   expect((await at(81)).texts).toContain('Secondaires :')
   expect((await at(80)).texts).not.toContain('Secondaires :')
+})
+
+// The workspace's hooks, as scripts/workspace-hooks.mjs answers them: the
+// console runs it with node, for the session's folder.
+function hooksScript(on: On, state: { enabled: string[]; global: string[]; runs: (readonly string[])[] }) {
+  const OPT_IN = ['wiki-query-first-nudge', 'session-auto-journal', 'wiki-autocommit', 'vault-link-linter']
+  on('session.cwd', () => ({ value: '/work/project' }))
+  on('process.run', (_, e) => {
+    if (e.argv[0] !== 'node') {
+      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    state.runs.push(e.argv)
+    const args = e.argv.slice(2)
+    if (args[0] === 'set') {
+      const name = args[args.indexOf('--hook') + 1]!
+      state.enabled = args.includes('--on') ? [...state.enabled, name] : state.enabled.filter(h => h !== name)
+    }
+    const stdout = JSON.stringify({
+      workspace: args[args.indexOf('--workspace') + 1],
+      alwaysOn: ['hot-cache-load', 'workspace-briefing', 'decisions-recall'],
+      optIn: OPT_IN.map(name => ({ name, enabled: state.enabled.includes(name), global: state.global.includes(name) })),
+    })
+
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+}
+
+test('the console shows the read-only hooks always on and switches the others for this workspace', async ($, on) => {
+  const toasts: string[] = []
+  wire(on, { list: LIST, toasts })
+  const hooks = { enabled: [] as string[], global: ['vault-link-linter'], runs: [] as (readonly string[])[] }
+  hooksScript(on, hooks)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdmin(ui, 'hooks')
+
+  expect(hooks.runs[0]?.slice(2)).toEqual(['status', '--workspace', '/work/project'])
+  // The header's line: how many are on, the ones wired machine-wide counted.
+  expect(nodesOf(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'admin-sec-hooks-note') as never).some(n => n.type === 'Text' && textOf(n) === '1 sur 4 activés')).toBe(true)
+  expect(await ui.find({ type: 'Text', text: /^Pour \/work\/project\./ })).toBeTruthy()
+  // The read-only ones: listed, with no switch.
+  expect(await ui.find({ type: 'Text', text: 'hot-cache-load' })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'hook-hot-cache-load-on' })).toBeFalsy()
+  // An opt-in one: off by default (pressing Off again changes nothing), switched on, then off again.
+  await ui.press({ key: 'hook-wiki-autocommit-off' })
+  expect(hooks.runs.some(argv => argv.includes('set'))).toBe(false)
+  await ui.press({ key: 'hook-wiki-autocommit-on' })
+  expect(hooks.runs.at(-1)?.slice(2)).toEqual(['set', '--hook', 'wiki-autocommit', '--on', '--workspace', '/work/project'])
+  expect(hooks.enabled).toEqual(['wiki-autocommit'])
+  expect(toasts).toContain('wiki-autocommit activé pour ce workspace')
+  await ui.press({ key: 'hook-wiki-autocommit-off' })
+  expect(hooks.enabled).toEqual([])
+  // Still wired machine-wide: said so, and no switch that would not hold.
+  expect(await ui.find({ type: 'Button', key: 'hook-vault-link-linter-on' })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: 'installé globalement' })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Encore installé globalement/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('the console opened from the pane menu reads this workspace’s hooks too', async ($, on) => {
+  wire(on, { list: LIST })
+  const hooks = { enabled: ['wiki-autocommit'], global: [] as string[], runs: [] as (readonly string[])[] }
+  hooksScript(on, hooks)
+  await begin($)
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  await ui.press({ key: 'nav-admin' })
+  expect(hooks.runs.some(argv => argv[2] === 'status')).toBe(true)
+  await openAdmin(ui, 'hooks')
+  expect(await ui.find({ type: 'Button', key: 'hook-wiki-autocommit-on' })).toBeTruthy()
+  // Wide, the settings page: Hooks last in the side list, its page titled, each hook a row.
+  const nodes = nodesOf(await ui.drawn())
+  const side = nodes.filter(n => n.type === 'Button' && String(keyOf(n)).startsWith('admin-sec-')).map(n => String(keyOf(n)))
+  expect(side.at(-1)).toBe('admin-sec-hooks')
+  expect(nodesOf(nodes.find(n => keyOf(n) === 'admin-hooks') as never).some(n => n.type === 'Text' && n.props?.size === 'heading' && textOf(n) === 'Hooks de ce workspace')).toBe(true)
+  expect(nodes.find(n => keyOf(n) === 'hook-wiki-autocommit')?.props?.justifyContent).toBe('space-between')
+  await ui.unmount()
 })

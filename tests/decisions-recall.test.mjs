@@ -89,8 +89,12 @@ after(() => {
   try { fs.rmSync(vaultDir, { recursive: true, force: true }); } catch { /* best effort */ }
 });
 
+// What is collected, not how fast: the hook's 150 ms wall-clock deadline cut
+// the first scan short on a slow CI runner (373 ms on windows-latest, node 20)
+// and the fixture's decision went missing. The deadline has its own tests,
+// on an injected clock.
 function collect() {
-  return collectDecisions(vaultDir).decisions;
+  return collectDecisions(vaultDir, { deadlineMs: 60_000 }).decisions;
 }
 
 // ---- core: tokenize ---------------------------------------------------

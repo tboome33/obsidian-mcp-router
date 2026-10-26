@@ -10,7 +10,7 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
-## [0.117.4] — 2026-10-25 — the tabs end on the rule, the open one bold and purple; the tile's rule in one row; the legend lights the tiles, one way
+## [0.117.5] — 2026-10-26 — the tabs end on the rule, the open one bold and purple; the tile's rule in one row; the legend lights the tiles, one way; the opt-in hooks
 
 Asked by Roland from a screenshot of v0.117.3 and a mockup over it:
 
@@ -57,6 +57,30 @@ Asked by Roland from a screenshot of v0.117.3 and a mockup over it:
   purple text inside the Button on the desktop, a blank key too short for the text, plain
   spaces in the blank key (the desktop collapses them; non-breaking ones, as iconKey's) — the
   file restored by hash each time.
+- (0.117.4 was tagged on this branch before PR #42 below landed on `main`; the number was
+  skipped so that the tag released carries both.)
+
+### Also in this version: opt-in hooks, switched on per workspace from the vault panel (PR #42)
+
+The three read-only hooks (`hot-cache-load`, `workspace-briefing`, `decisions-recall`) still run
+everywhere. The eight others no longer run machine-wide: each is switched on, or not, for one
+workspace at a time.
+
+- **Hooks de ce workspace**, in the administration (the ⚙ gear): a seventh section of the settings page (and of
+  the accordion, on a narrow pane), after "Retirer un vault du router", with its mark in the
+  side list: the read-only hooks as rows marked always on; every other one as a row, its line
+  on what it does at the left and Désactivé / Activé at the right, off by default. Its state
+  line says how many are on ("2 sur 8 activés").
+- `hooks/hooks.json` declares each opt-in hook behind `hooks/opt-in-gate.mjs <name>`, on the
+  events `hooks.example.json` gives it. The gate runs the hook only where the workspace
+  (`CLAUDE_PROJECT_DIR`) switched it on, in `workspace-hooks.json` beside the router's config;
+  otherwise it exits 0 having written and printed nothing. Switched on, the hook gets the same
+  stdin and its exit code comes through (exit 2 still blocks).
+- `scripts/workspace-hooks.mjs status|set`: what the console runs.
+- With the plugin installed, a vault's bootstrap no longer wires hooks into
+  `~/.claude/settings.json`. A hook still wired there keeps running everywhere: the gate steps
+  aside so it never runs twice, and the console says so (`setup-vault.mjs --uninstall-hooks`
+  removes those entries).
 
 ## [0.117.3] — 2026-10-25 — the tile in one head line, the six icons in one legend, a ▶ for the band's primary
 
