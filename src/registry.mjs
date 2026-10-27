@@ -1755,7 +1755,7 @@ function parseEnvVaults(env = {}) {
  *             insecurePort: number|null, enableInsecureServer: boolean|null,
  *             rawPort: unknown, rawInsecurePort: unknown }}
  */
-async function readLocalRestData(vaultPath) {
+export async function readLocalRestData(vaultPath) {
   // Same cross-platform consideration as defaultNameFromPath: vaultPath
   // may be a Windows-style string from config even when runtime is POSIX
   // (CI matrix on Linux). `path.posix.join` on `C:\VAULTS\X` would produce

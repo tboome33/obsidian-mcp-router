@@ -10,6 +10,35 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### A project with no vault gets one from the panel: pick one, or answer a few questions
+
+Setting up the games.kiviri.fr vault on the Hermès VM took a registration by hand (the key found
+in the REST plugin's `data.json`), `setup-vault.mjs --attach --local-path`, eleven plugins, a
+reload of Obsidian, a restart of Claude Code, `/obsidian-router:wiki`, then the conventions.
+
+- **First-run screen.** With no primary, the "Vaults en cours" tab offers two choices: *Choisir un
+  vault existant* or *Créer un nouveau vault* — no trip to the ⚙ console.
+- **Existing vaults, including the ones the router does not know yet.** The vaults already
+  registered (one click binds one as primary), and the vault folders found on this machine:
+  under the vaults root, beside the folders of known vaults, in a `Vaults` folder next to the
+  project. For each one, `scripts/find-vaults.mjs` reads its Local REST API key and asks the
+  loopback and the hosts of the remote vaults already registered (the WireGuard addresses)
+  whether they accept it. *Ajouter et utiliser* then registers it — a container's vault as a
+  remote one with its folder as `localPath`, its key written straight into the router's config,
+  never shown to the panel or the session; a vault served on this machine is adopted by
+  `provision_vault` on its folder — and binds it as primary.
+- **Creation wizard.** One question per screen with its default: the name (the project folder's),
+  the folder (under the vaults root), the kind of wiki (code preselected, each explained in one
+  line), the conventions (the recommended ones ticked), the languages (the pane's), a summary,
+  then one button.
+- **Checklist.** After creating or adding: created and opened, plugins, wiki, bound as primary,
+  conventions — each with its progress. What only the person can do is said plainly (reload
+  Obsidian, leave restricted mode; for a container, the plugins to install and `/obsidian-router:wiki`),
+  with a *Revérifier* button that reads again and retries the conventions.
+- **`/vault-setup` opens the wizard**; with a primary already bound, the new vault is created
+  without being bound. The ⚙ console's *Créer* and *Enregistrer* sections still work, and *Créer*
+  links to the wizard. The startup toast now says to open the vaults pane.
+
 ## [0.119.2] — 2026-10-27 — the panel reads the conventions read-only; read errors stay in their section; no false "no vault" toast
 
 Three panel problems seen on the Hermès VM in auto mode: the Configuration tab read the conventions

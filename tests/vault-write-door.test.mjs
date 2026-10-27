@@ -163,6 +163,7 @@ export const RAW_HTTP_ALLOWLIST = new Map([
   ['src/markdownify/markitdown.mjs', 'talks to a converter service, not to a vault'],
   ['scripts/bridge-fleet-update.mjs', 'deploys plugin files under .obsidian/, which REST does not serve'],
   ['src/helpers/plugin-release-resolver.mjs', 'fetches plugin releases from allowlisted GitHub hosts, checked on every redirect hop; never talks to a vault'],
+  ['src/helpers/find-vaults.mjs', 'asks GET / of a vault found on disk whether it accepts the key read from its own folder (first-run screen); never writes'],
 ]);
 
 /** Directories whose sources ship, and therefore whose sources are the rule. */

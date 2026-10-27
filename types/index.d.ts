@@ -86,6 +86,44 @@ export type CreateForm = {
 /** A vault's writes through the router: when, and its last files, newest first. */
 export type VaultActivity = { lastWriteAt?: string; recent?: { path: string; at: string }[] }
 
+/** A vault folder found on this machine that the router does not know
+ * (scripts/find-vaults.mjs scan). Its REST key never reaches the panel. */
+export type FoundVault = {
+  name: string
+  path: string
+  hasRestApi: boolean
+  hasBridge: boolean
+  hasWiki: boolean
+  missingPlugins: string[]
+  /** Where its Obsidian answers with its own key; null: nothing does from here. */
+  address: { baseUrl: string; tlsInsecure: boolean; insecurePort?: number; isLocal: boolean } | null
+  key: 'accepted' | 'refused' | 'unanswered' | 'absent'
+}
+
+/** One line of the setup checklist. */
+export type SetupItem = {
+  id: 'create' | 'register' | 'plugins' | 'wiki' | 'bind' | 'conventions'
+  state: 'todo' | 'doing' | 'done' | 'failed' | 'manual'
+  detail?: string
+}
+
+/** The first-run screen: no primary yet → pick an existing vault, or create one step by step. */
+export type SetupState = {
+  step: 'choose' | 'existing' | 'name' | 'path' | 'mode' | 'conventions' | 'languages' | 'recap'
+  /** The last scan of this machine for vaults the router does not know. */
+  found: { state: 'scanning' | 'done' | 'failed'; vaults: FoundVault[]; platform?: string; error?: string } | null
+  /** The checklist of a creation or an adoption under way, or finished; null: none. */
+  progress: {
+    vault: string
+    items: SetupItem[]
+    isRunning: boolean
+    conventions: string[]
+    languages: string[]
+    /** What only the person can do now (reload Obsidian, leave restricted mode); null: nothing. */
+    needsYou: string | null
+  } | null
+}
+
 export type Snapshot = {
   primary: VaultRow | null
   /** The primary's own write tier, when the router keeps one (v0.117.0+). */
@@ -106,6 +144,8 @@ export type Snapshot = {
   /** Where a new vault goes by default: the config's vaultsRoot, else the
    * folder most registered vaults sit in. */
   defaultRoot?: string | null
+  /** The router's config file (list_vaults.configPath): what scripts/find-vaults.mjs reads. */
+  configPath?: string | null
   /** The version the router of this session reports (list_vaults.routerBuild). */
   routerVersion?: string | null
   /** When each vault was last written through the router, and its last files. */
@@ -171,6 +211,8 @@ declare module 'claude-code' {
       primaryConventions: { vault: string; items: { id: string; installed: boolean }[]; languages: string[] | null } | null
       /** Why the last read of the hooks, or of the conventions, failed; cleared by the next read that works. */
       readFailures: { hooks: string | null; conventions: string | null }
+      /** The first-run screen and its creation wizard. */
+      setup: SetupState
     }
   }
 }
