@@ -10,6 +10,16 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### view-agent: a shared container that publishes its GUI on several host ports gets a read link
+
+Every read link to `games.kiviri.fr` (Hermès VM) failed with *view-agent returned 400 … container
+obsidian-commun publishes its GUI port 3001 several times*. The shared container on the Dedibox
+publishes its Selkies GUI port 3001 as host ports 3001…3007 on 10.8.0.1, one browser origin per
+configured vault, and detection refused any vault it had to detect there. Those ports all reach the
+same GUI, so detection now takes the lowest one; another container answering on that port is still
+refused as ambiguous. `view-agent/view-agent-direct.py` only — redeploy it on the Dedibox
+(`/opt/view-agent-direct/`, then `systemctl restart view-agent-direct`).
+
 ## [0.119.2] — 2026-10-27 — the panel reads the conventions read-only; read errors stay in their section; no false "no vault" toast
 
 Three panel problems seen on the Hermès VM in auto mode: the Configuration tab read the conventions

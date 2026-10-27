@@ -670,6 +670,31 @@ class TestDetectContainer(DetectBase):
         self.assertEqual(code, 400)
         self.assertIn("also published by b", json.loads(body)["error"])
 
+    def test_gui_port_published_on_several_host_ports_picks_the_lowest(self):
+        # The shared container on the Dedibox: one GUI port 3001 published as 3001…3007 on the
+        # WireGuard address, one per configured vault. They all reach the same GUI.
+        self.docker.containers = [container(ID_A, "obsidian-commun", {
+            "27187/tcp": [("192.0.2.1", 27187)],
+            "3001/tcp": [("192.0.2.1", p) for p in (3004, 3001, 3007, 3002)],
+        })]
+        data, path = self.mint("vault=games.kiviri.fr&note=wiki/a.md&rest="
+                               + urllib.parse.quote("http://192.0.2.1:27187"))
+        self.assertEqual(data["source"], "container obsidian-commun")
+        code, headers, _ = self.get(path)
+        self.assertEqual(code, 302)
+        self.assertEqual(headers["Location"], "https://192.0.2.1:3001/")
+        self.assertEqual(self.nav_cfgs[-1]["open_port"], 27187)
+
+    def test_lowest_gui_port_answered_by_another_container_is_still_ambiguous(self):
+        self.docker.containers = [
+            container(ID_A, "a", {"27180/tcp": [("192.0.2.1", 27180)],
+                                  "3001/tcp": [("192.0.2.1", 3001), ("192.0.2.1", 3002)]}),
+            container(ID_B, "b", {"3001/tcp": [("0.0.0.0", 3001)]}),
+        ]
+        code, _, body = self.view("vault=x&note=a.md&rest=" + urllib.parse.quote("http://192.0.2.1:27180"))
+        self.assertEqual(code, 400)
+        self.assertIn("also published by b", json.loads(body)["error"])
+
     def test_gui_port_on_another_containers_explicit_ip_is_indeterminate(self):
         # A's GUI on 0.0.0.0:3001, B's on [2001:db8::2]:3001; the GUI host is a NAME that may
         # resolve to B's address: cannot be ruled out.

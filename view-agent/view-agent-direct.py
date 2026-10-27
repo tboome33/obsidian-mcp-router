@@ -894,11 +894,13 @@ def _detect_container(cfg, host, port, inventory, fresh=False):
         if _name_meets_explicit_ip(gui_host, [hip for hip, hp, cp in c["ports"] if cp == gp]):
             raise DetectError(400, "container %s publishes its GUI port %d on an explicit address and "
                                    "the GUI host is the name %s: indeterminate" % (c["name"], gp, gui_host))
+        # Several host ports onto the same container GUI port all reach the same GUI (a shared
+        # container gives each configured vault its own browser origin: 3001→3001, 3002→3001…).
+        # Any of them is right; the lowest keeps the link stable. Every other container is
+        # still ruled out on the chosen port below.
         published = {hp for hip, hp, cp in c["ports"] if cp == gp and _reachable(hip, gui_host)}
-        if len(published) > 1:
-            raise DetectError(400, "container %s publishes its GUI port %d several times" % (c["name"], gp))
         if published:
-            gui = published.pop()
+            gui = min(published)
             break
     if gui is not None:
         # The reader's browser will open {gui_host}:{gui}: no OTHER container may answer there,
