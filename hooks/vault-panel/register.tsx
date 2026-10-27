@@ -5020,8 +5020,12 @@ export const register: Register = on => {
     // a frame with a title and a line under it; on the desktop, which draws a
     // Button's label in its own weight and colour, the texts stand on their own
     // and a blank Button is laid over the frame, as `menuTab` does.
+    // The terminal gives a pane few rows: there the first-run screen keeps no
+    // blank row of its own, so the question and its field stay in sight.
+    const isTight = e.surface === 'terminal'
+    const roomy = isTight ? 0 : 1
     const bigChoice = (key: string, title: string, note: string, onPress: () => void) => (
-      <Box key={key} flexDirection="column" borderStyle="round" borderColor={ROUTER_PURPLE} paddingX={2} paddingY={1} width={34} flexShrink={1}>
+      <Box key={key} flexDirection="column" borderStyle="round" borderColor={ROUTER_PURPLE} paddingX={2} paddingY={roomy} width={34} flexShrink={1}>
         {Mark ? (
           <Box key={`${key}-texts`} flexDirection="column">
             <Text weight="bold" color={ROUTER_PURPLE}>
@@ -5059,7 +5063,7 @@ export const register: Register = on => {
     const canOpenHere = setupNow.found?.platform === 'win32' || setupNow.found?.platform === 'darwin'
     const canAdopt = (v: FoundVault) => !!v.address || (v.key === 'unanswered' && canOpenHere)
     const choosing = (
-      <Box key="setup-choose" flexDirection="column" gap={1}>
+      <Box key="setup-choose" flexDirection="column" gap={roomy}>
         <Text weight="semibold">{t('setup.title')}</Text>
         <Text size="caption" dimColor>
           {t('setup.lead', { workspace: workspaceName() || '…' })}
@@ -5171,7 +5175,7 @@ export const register: Register = on => {
     const modes = ['code', 'personal', 'research', 'business'] as const
     const question =
       setupNow.step === 'name' ? (
-        <Box key="wizard-q-name" flexDirection="column" gap={1}>
+        <Box key="wizard-q-name" flexDirection="column" gap={roomy}>
           <Text weight="semibold">{t('setup.q.name')}</Text>
           {wizardField('wizard-name', creating.name, workspaceName(), value => void update($, createForm, now => ({ ...now, name: value })))}
           <Text size="caption" dimColor>
@@ -5179,7 +5183,7 @@ export const register: Register = on => {
           </Text>
         </Box>
       ) : setupNow.step === 'path' ? (
-        <Box key="wizard-q-path" flexDirection="column" gap={1}>
+        <Box key="wizard-q-path" flexDirection="column" gap={roomy}>
           <Text weight="semibold">{t('setup.q.path')}</Text>
           {wizardField('wizard-path', creating.path, defaultPath, value => void update($, createForm, now => ({ ...now, path: value })))}
           <Text size="caption" dimColor>
@@ -5187,7 +5191,7 @@ export const register: Register = on => {
           </Text>
         </Box>
       ) : setupNow.step === 'mode' ? (
-        <Box key="wizard-q-mode" flexDirection="column" gap={1}>
+        <Box key="wizard-q-mode" flexDirection="column" gap={roomy}>
           <Text weight="semibold">{t('setup.q.mode')}</Text>
           {modes.map(mode => (
             <Box key={`wizard-mode-${mode}`} flexDirection="column">
@@ -5207,7 +5211,7 @@ export const register: Register = on => {
           ))}
         </Box>
       ) : setupNow.step === 'conventions' ? (
-        <Box key="wizard-q-conventions" flexDirection="column" gap={1}>
+        <Box key="wizard-q-conventions" flexDirection="column" gap={roomy}>
           <Text weight="semibold">{t('setup.q.conventions')}</Text>
           <Box key="wizard-conventions-head" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
             <Text size="caption">
@@ -5254,7 +5258,7 @@ export const register: Register = on => {
           </Text>
         </Box>
       ) : setupNow.step === 'languages' ? (
-        <Box key="wizard-q-languages" flexDirection="column" gap={1}>
+        <Box key="wizard-q-languages" flexDirection="column" gap={roomy}>
           <Text weight="semibold">{t('setup.q.languages')}</Text>
           {wizardField('wizard-languages', creating.languages, languageCode, value => void update($, createForm, now => ({ ...now, languages: value })))}
           <Text size="caption" dimColor>
@@ -5262,7 +5266,7 @@ export const register: Register = on => {
           </Text>
         </Box>
       ) : (
-        <Box key="wizard-q-recap" flexDirection="column" gap={1}>
+        <Box key="wizard-q-recap" flexDirection="column" gap={roomy}>
           <Text weight="semibold">{t('setup.q.recap')}</Text>
           {(
             [
@@ -5284,7 +5288,7 @@ export const register: Register = on => {
         </Box>
       )
     const wizard = (
-      <Box key="setup-wizard" flexDirection="column" gap={1} borderStyle="round" borderColor="inactive" paddingX={2} paddingY={1}>
+      <Box key="setup-wizard" flexDirection="column" gap={roomy} borderStyle="round" borderColor="inactive" paddingX={2} paddingY={roomy}>
         <Text size="caption" dimColor>
           {t('setup.stepOf', { step: stepAt + 1, total: steps.length })}
         </Text>
@@ -5320,7 +5324,7 @@ export const register: Register = on => {
         <Text dimColor>○</Text>
       )
     const checklist = progress ? (
-      <Box key="setup-checklist" flexDirection="column" gap={1} borderStyle="round" borderColor={ROUTER_PURPLE} paddingX={2} paddingY={1}>
+      <Box key="setup-checklist" flexDirection="column" gap={roomy} borderStyle="round" borderColor={ROUTER_PURPLE} paddingX={2} paddingY={roomy}>
         <Text weight="semibold">{t('setup.checklistTitle', { vault: progress.vault })}</Text>
         {progress.items.map(item => (
           <Box key={`setup-item-${item.id}`} flexDirection="column">
@@ -5355,12 +5359,13 @@ export const register: Register = on => {
     ) : null
     const isWizard = (WIZARD_STEPS as string[]).includes(setupNow.step)
     const firstRun = isWizard ? wizard : setupNow.step === 'existing' ? existing : choosing
+    const isFirstRun = (!snap.primary && !progress) || isWizard
 
     return (
       <Box flexDirection="column" gap={1}>
         {navMenu('')}
-        {legend}
-        {statusLine}
+        {isFirstRun ? null : legend}
+        {isFirstRun ? null : statusLine}
         {problems}
         {isTunnelDown && (
           // Every remote vault silent at once: the tunnel, not the vaults. Said
@@ -5394,7 +5399,7 @@ export const register: Register = on => {
         {/* No primary: the first-run screen — unless a checklist is under way
             or left to read. A wizard asked for by /vault-setup is drawn even
             when the project has a primary (the new vault is then not bound). */}
-        {(!snap.primary && !progress) || isWizard ? firstRun : null}
+        {isFirstRun ? firstRun : null}
         {sticky}
       </Box>
     )
