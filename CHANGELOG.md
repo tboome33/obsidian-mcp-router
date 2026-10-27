@@ -10,6 +10,12 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.119.2] — 2026-10-27 — the panel reads the conventions read-only; read errors stay in their section; no false "no vault" toast
+
+Three panel problems seen on the Hermès VM in auto mode: the Configuration tab read the conventions
+with a write tool that auto mode refused, a read error stayed in red on every tab after the next
+read worked, and the start said "Aucun vault pour ce projet" over a panel that showed the primary.
+
 ### The panel reads without a write tool, its read errors leave, and the start's toast tells the truth
 
 Reported from the Hermès VM (v0.119.1, auto mode), by the session that set up the games.kiviri.fr
