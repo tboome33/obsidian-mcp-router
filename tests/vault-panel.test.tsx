@@ -245,6 +245,14 @@ type Mounted = {
 
 // The add list and the closed secondaries are folded by default, and the
 // fold is session state: open each one only if it is not open already.
+// The console's "Créer un vault" section, unfolded by hand.
+async function openConsoleCreate(ui: Mounted) {
+  await ui.press({ key: 'nav-admin' })
+  if (!(await ui.find({ type: 'Button', key: 'create-submit' }))) {
+    await ui.press({ key: 'admin-sec-create' })
+  }
+}
+
 async function openAdd(ui: Mounted) {
   if (!(await ui.find({ type: 'Button', key: 'tab-locaux' }))) {
     await ui.press({ key: 'toggle-add' })
@@ -366,9 +374,8 @@ test('a Principal pick is sent with the digest of the unbound entry', async ($, 
   const calls = wire(on, { list: unbound })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdd(ui)
-  await ui.press({ key: 'tab-locaux' })
-  await ui.press({ key: 'primary-notes' })
+  await ui.press({ key: 'setup-existing-press' })
+  await ui.press({ key: 'setup-use-notes' })
   expect(calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args).toEqual({
     vault: 'notes',
     ifBindingDigest: 'e'.repeat(64), ifNoOtherSpellings: true,
@@ -612,13 +619,12 @@ test('a stale Principal button never replaces a binding made meanwhile', async (
   const calls = wire(on, state)
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await openAdd(ui)
-  await ui.press({ key: 'tab-locaux' })
-  expect(await ui.find({ type: 'Button', key: 'primary-notes' })).toBeTruthy()
+  await ui.press({ key: 'setup-existing-press' })
+  expect(await ui.find({ type: 'Button', key: 'setup-use-notes' })).toBeTruthy()
 
   // Another session binds the workspace to `main` after this pane drew.
   state.list = LIST
-  await ui.press({ key: 'primary-notes' })
+  await ui.press({ key: 'setup-use-notes' })
   expect(calls.some(c => c.tool === 'confirm_workspace_binding')).toBe(false)
   expect(await ui.find({ type: 'Text', text: /Un principal a été choisi entre-temps \(main\)/ })).toBeTruthy()
   await ui.unmount()
@@ -854,12 +860,19 @@ test('the layout: a status line, every secondary as a tile, no vault to add in "
   await ui.unmount()
 })
 
-test('with no primary yet, the add list is open without asking', async ($, on) => {
+test('with no primary yet, the vaults tab is the first-run choice: an existing vault, or a new one', async ($, on) => {
   wire(on, { list: { ...LIST, workspaceBinding: null } })
   await begin($)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Button', key: 'tab-locaux' })).toBeTruthy()
-  await ui.unmount()
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(await ui.find({ type: 'Text', text: /^Ce projet n'a pas encore de vault principal$/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Button', key: 'setup-existing-press' })).toBeTruthy()
+    expect(await ui.find({ type: 'Button', key: 'setup-create-press' })).toBeTruthy()
+    // No trip to the console, and not the old add list.
+    expect(await ui.find({ type: 'Button', key: 'tab-locaux' })).toBeFalsy()
+    expect(await gearHeld(ui)).toBe(false)
+    await ui.unmount()
+  }
 })
 
 test('on the phone (no menu, no field): the tier keeps its three buttons, and a filter typed elsewhere hides nothing', async ($, on) => {
@@ -2501,9 +2514,9 @@ test('a prerelease is older than its release: the badge shows for 0.108.0-rc.1 �
 test('a vault is not created while its languages field holds no valid code', async ($, on) => {
   const state = { list: { ...LIST, workspaceBinding: null } as unknown, answers: { plan_vault: { approvedPlanSha256: 'f'.repeat(64) } } }
   const calls = wire(on, state)
-  await $.session.start(START)
-  await $.command.run({ command: 'vault-setup', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openConsoleCreate(ui)
   await ui.input({ key: 'create-name-field', text: 'N', kind: 'change' })
   await ui.input({ key: 'create-path-field', text: 'C:\\VAULTS\\N', kind: 'change' })
   await ui.press({ key: 'convention-languages' })
@@ -2517,19 +2530,16 @@ test('a vault is not created while its languages field holds no valid code', asy
   await ui.unmount()
 })
 
-test('/vault-setup opens the pane on the console, where a vault is created with its conventions', async ($, on) => {
+test('the console still creates a vault with its conventions', async ($, on) => {
   const state = {
     list: { ...LIST, workspaceBinding: null } as unknown,
     answers: { plan_vault: { approvedPlanSha256: 'f'.repeat(64) }, provision_vault: { slug: 'notes pro' } },
   }
   const calls = wire(on, state)
-  await $.session.start(START)
-  await $.command.run({ command: 'vault-setup', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  // The console holds the pane, the gear held down; the vaults come back on its press.
-  expect(await ui.find({ type: 'Button', key: 'create-submit' })).toBeTruthy()
+  await openConsoleCreate(ui)
   expect(await gearHeld(ui)).toBe(true)
-  expect(await ui.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeFalsy()
   await ui.input({ key: 'create-name-field', text: 'Notes Pro', kind: 'change' })
   await ui.input({ key: 'create-path-field', text: 'C:\\VAULTS\\Notes Pro', kind: 'change' })
   await ui.press({ key: 'create-mode-code' })
@@ -2561,9 +2571,9 @@ test('conventions that cannot be installed yet are kept, with a retry', async ($
     refuseText: 'vault not reachable yet',
   }
   const calls = wire(on, state)
-  await $.session.start(START)
-  await $.command.run({ command: 'vault-setup', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openConsoleCreate(ui)
   await ui.input({ key: 'create-name-field', text: 'N', kind: 'change' })
   await ui.input({ key: 'create-path-field', text: 'C:\\VAULTS\\N', kind: 'change' })
   await ui.press({ key: 'convention-languages' })
@@ -3059,7 +3069,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 }
 
-test('a flow that leads to the console unfolds its section: no primary → Créer un vault; the update badge → Général', async ($, on) => {
+test('the console points at the wizard, and the update badge unfolds Général', async ($, on) => {
   const state = { list: { ...LIST, workspaceBinding: null } as unknown }
   wire(on, state)
   versions(on, '0.107.0', '0.108.0')
@@ -3068,11 +3078,12 @@ test('a flow that leads to the console unfolds its section: no primary → Crée
   // Another section was left open earlier in the session.
   await ui.press({ key: 'nav-admin' })
   await ui.press({ key: 'admin-sec-wireguard' })
-  await ui.press({ key: 'nav-admin' })
-  await ui.press({ key: 'primary-setup' })
+  await ui.press({ key: 'admin-sec-create' })
   expect(accordionOf(await ui.drawn()).open).toEqual(['create'])
-  expect(await ui.find({ type: 'Button', key: 'create-submit' })).toBeTruthy()
-  await ui.press({ key: 'nav-vaults' })
+  await ui.press({ key: 'create-open-wizard' })
+  expect(await gearHeld(ui)).toBe(false)
+  expect(await ui.find({ type: 'Input', key: 'wizard-name' })).toBeTruthy()
+  await ui.press({ key: 'wizard-back' })
   await eventually(() => ui.find({ type: 'Button', key: 'update-badge' }))
   await ui.press({ key: 'update-badge' })
   expect(accordionOf(await ui.drawn()).open).toEqual(['general'])
@@ -4408,11 +4419,191 @@ test('the start says "no vault for this project" only on a list it read: /vaults
   for (let i = 0; i < 20; i += 1) {
     await tick()
   }
-  expect(toasts.filter(text => /Aucun vault pour ce projet/.test(text))).toEqual([])
+  expect(toasts.filter(text => /^Ce projet n.a pas encore de vault/.test(text))).toEqual([])
   releaseCommand()
   await command
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await eventually(() => ui.find({ type: 'Text', text: /^PRINCIPAL :$/ }))).toBeTruthy()
-  expect(toasts.filter(text => /Aucun vault pour ce projet/.test(text))).toEqual([])
+  expect(toasts.filter(text => /^Ce projet n.a pas encore de vault/.test(text))).toEqual([])
+  await ui.unmount()
+})
+
+// ---- First run: the wizard, the vaults found, the checklist ----------------
+
+const VAULT_SETUP = { command: 'vault-setup', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as const
+
+test('/vault-setup opens the wizard: one question per screen, the project folder as the name, then one button and its checklist', async ($, on) => {
+  const state = {
+    list: { ...LIST, workspaceBinding: null } as unknown,
+    answers: { plan_vault: { approvedPlanSha256: 'f'.repeat(64) }, provision_vault: { ok: true, slug: 'games.kiviri.fr' } },
+  }
+  const calls = wire(on, state)
+  await $.session.start({ ...START, cwd: '/srv/Projets/games.kiviri.fr' })
+  await $.command.run(VAULT_SETUP)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // Not the console: the wizard, in the vaults tab.
+  expect(await gearHeld(ui)).toBe(false)
+  expect(await ui.find({ type: 'Text', text: /^Nouveau vault · étape 1 sur \d$/ })).toBeTruthy()
+  expect((await ui.find({ type: 'Input', key: 'wizard-name' }))?.props?.value).toBe('games.kiviri.fr')
+  await ui.press({ key: 'wizard-next' })
+  await ui.input({ key: 'wizard-path', text: 'C:\\VAULTS\\games', kind: 'change' })
+  await ui.press({ key: 'wizard-next' })
+  // A code project's wiki, preselected; the recommended conventions ticked.
+  expect(String((await ui.find({ type: 'Button', key: 'wizard-mode-code-press' }))?.props?.label)).toMatch(/^◉/)
+  await ui.press({ key: 'wizard-next' })
+  expect(String((await ui.find({ type: 'Button', key: 'wizard-convention-languages' }))?.props?.label)).toMatch(/^✓/)
+  await ui.press({ key: 'wizard-next' })
+  expect((await ui.find({ type: 'Input', key: 'wizard-languages' }))?.props?.value).toBe('fr')
+  await ui.press({ key: 'wizard-next' })
+  expect(await ui.find({ type: 'Text', text: /^Récapitulatif$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^lié à ce vault, en vault principal$/ })).toBeTruthy()
+  expect(calls.some(c => c.tool === 'plan_vault')).toBe(false)
+  await ui.press({ key: 'wizard-create' })
+  const base = { name: 'games.kiviri.fr', path: 'C:\\VAULTS\\games', wikiMode: { mode: 'code' }, open: true, probe: true, bindToWorkspace: true }
+  expect(calls.find(c => c.tool === 'plan_vault')?.args).toEqual(base)
+  expect(calls.find(c => c.tool === 'provision_vault')?.args).toEqual({ ...base, approvedPlanSha256: 'f'.repeat(64) })
+  const installed = calls.find(c => c.tool === 'install_conventions')?.args
+  expect(installed?.vault).toBe('games.kiviri.fr')
+  expect(installed?.languages).toEqual(['fr'])
+  // The checklist: every step done, nothing left to the person.
+  expect(await ui.find({ type: 'Text', text: /^Mise en place de games\.kiviri\.fr$/ })).toBeTruthy()
+  for (const line of [/^Vault créé et ouvert dans Obsidian$/, /^Wiki initialisé$/, /^Lié comme vault principal du projet$/, /^Conventions installées$/]) {
+    expect(await ui.find({ type: 'Text', text: line })).toBeTruthy()
+  }
+  expect(await ui.find({ type: 'Text', text: /^✗$/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Button', key: 'setup-recheck' })).toBeFalsy()
+  await ui.press({ key: 'setup-close' })
+  expect(await ui.find({ type: 'Text', text: /^Mise en place de/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('the wizard goes back step by step, to the first-run choice', async ($, on) => {
+  wire(on, { list: { ...LIST, workspaceBinding: null } })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'setup-create-press' })
+  await ui.press({ key: 'wizard-next' })
+  expect(await ui.find({ type: 'Input', key: 'wizard-path' })).toBeTruthy()
+  await ui.press({ key: 'wizard-back' })
+  expect(await ui.find({ type: 'Input', key: 'wizard-name' })).toBeTruthy()
+  await ui.press({ key: 'wizard-back' })
+  expect(await ui.find({ type: 'Button', key: 'setup-create-press' })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('with a primary, /vault-setup creates a vault without binding it: the project keeps its primary', async ($, on) => {
+  const state = { list: LIST as unknown, answers: { plan_vault: { approvedPlanSha256: 'f'.repeat(64) }, provision_vault: { ok: true, slug: 'n' } } }
+  const calls = wire(on, state)
+  await $.session.start(START)
+  await $.command.run(VAULT_SETUP)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.input({ key: 'wizard-name', text: 'N', kind: 'change' })
+  await ui.press({ key: 'wizard-next' })
+  await ui.input({ key: 'wizard-path', text: 'C:\\VAULTS\\N', kind: 'change' })
+  await ui.press({ key: 'wizard-next' })
+  await ui.press({ key: 'wizard-next' })
+  await ui.press({ key: 'wizard-conventions-none' })
+  await ui.press({ key: 'wizard-next' })
+  expect(await ui.find({ type: 'Text', text: /^garde main comme vault principal$/ })).toBeTruthy()
+  await ui.press({ key: 'wizard-create' })
+  expect(calls.find(c => c.tool === 'provision_vault')?.args?.bindToWorkspace).toBe(false)
+  expect(calls.some(c => c.tool === 'install_conventions')).toBe(false)
+  expect(await ui.find({ type: 'Text', text: /^Lié comme vault principal du projet$/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('what only the person can do is said plainly, and "Revérifier" tries the conventions again', async ($, on) => {
+  const state = {
+    list: { ...LIST, workspaceBinding: null } as unknown,
+    // The plugins are not trusted yet: the probe is red, the REST API does not answer.
+    answers: { plan_vault: { approvedPlanSha256: 'f'.repeat(64) }, provision_vault: { ok: false, slug: 'main' } },
+    refuse: 'install_conventions',
+    refuseText: 'vault not reachable yet',
+  }
+  const calls = wire(on, state)
+  await $.session.start(START)
+  await $.command.run(VAULT_SETUP)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.input({ key: 'wizard-name', text: 'main', kind: 'change' })
+  for (let i = 0; i < 5; i += 1) {
+    await ui.press({ key: 'wizard-next' })
+  }
+  await ui.press({ key: 'wizard-create' })
+  expect(await ui.find({ type: 'Text', text: /^À toi :$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /désactive le mode restreint/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^✗$/ })).toBeTruthy()
+  // Roland reloads Obsidian: the vault answers, bound, and the conventions go in.
+  state.refuse = ''
+  state.list = LIST
+  const before = calls.filter(c => c.tool === 'install_conventions').length
+  await ui.press({ key: 'setup-recheck' })
+  expect(calls.filter(c => c.tool === 'install_conventions').length).toBe(before + 1)
+  expect(await ui.find({ type: 'Text', text: /^À toi :$/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /^✗$/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+// scripts/find-vaults.mjs, as the panel runs it with node: a container's
+// vault answering over WireGuard, and a closed one on a server.
+function findScript(on: On, state: { list: unknown; runs: (readonly string[])[] }, after: unknown) {
+  on('session.cwd', () => ({ value: '/srv/Projets/games.kiviri.fr' }))
+  on('process.run', (_, e) => {
+    if (e.argv[0] !== 'node' || !String(e.argv[1]).endsWith('find-vaults.mjs')) {
+      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    state.runs.push(e.argv)
+    const isAdopt = e.argv[2] === 'adopt'
+    if (isAdopt) {
+      state.list = after
+    }
+    const stdout = JSON.stringify(
+      isAdopt
+        ? { registered: true, name: 'games.kiviri.fr' }
+        : {
+            platform: 'linux',
+            vaults: [
+              {
+                name: 'games.kiviri.fr',
+                path: '/srv/Vaults/games.kiviri.fr',
+                hasRestApi: true,
+                hasBridge: false,
+                hasWiki: false,
+                missingPlugins: ['mcp-router-bridge'],
+                address: { baseUrl: 'https://10.8.0.1:27187', tlsInsecure: true, isLocal: false },
+                key: 'accepted',
+              },
+              { name: 'asleep', path: '/srv/Vaults/asleep', hasRestApi: true, hasBridge: true, hasWiki: true, missingPlugins: [], address: null, key: 'unanswered' },
+            ],
+          },
+    )
+
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+}
+
+test('a vault found on this machine is added in one click: registered by the script, bound, and what is left said', async ($, on) => {
+  const unbound = { ...LIST, workspaceBinding: null, configPath: '/router/config.json' }
+  const registered = { ...unbound, vaults: [...LIST.vaults, { name: 'games.kiviri.fr', type: 'remote', online: true }] }
+  const state = { list: unbound as unknown, runs: [] as (readonly string[])[] }
+  const calls = wire(on, state)
+  findScript(on, state, registered)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'setup-existing-press' })
+  // The scan: the router's config and the project folder; never a key on screen.
+  expect(state.runs[0]?.slice(2)).toEqual(['scan', '--config', '/router/config.json', '--workspace', '/srv/Projets/games.kiviri.fr'])
+  expect(await ui.find({ type: 'Text', text: /^répond sur 10\.8\.0\.1:27187 · clé OK$/ })).toBeTruthy()
+  // A closed vault on a server: nothing to open it with here, so no button, a hint instead.
+  expect(await ui.find({ type: 'Button', key: 'setup-adopt-/srv/Vaults/asleep' })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /^Ouvre ce vault dans Obsidian, ou démarre son conteneur/ })).toBeTruthy()
+  await ui.press({ key: 'setup-adopt-/srv/Vaults/games.kiviri.fr' })
+  expect(state.runs[1]?.slice(2)).toEqual([
+    'adopt', '--config', '/router/config.json', '--folder', '/srv/Vaults/games.kiviri.fr', '--base-url', 'https://10.8.0.1:27187',
+  ])
+  expect(calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args?.vault).toBe('games.kiviri.fr')
+  expect(calls.find(c => c.tool === 'install_conventions')?.args?.vault).toBe('games.kiviri.fr')
+  // A container's plugins and wiki: said, with what to do.
+  expect(await ui.find({ type: 'Text', text: /^À installer dans l'Obsidian du conteneur : mcp-router-bridge\.$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /\/obsidian-router:wiki/ })).toBeTruthy()
   await ui.unmount()
 })

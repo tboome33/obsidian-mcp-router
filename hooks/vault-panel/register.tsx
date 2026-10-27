@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { AdminForm, CreateForm, Secondary, SecondaryMode, Snapshot, Tab, VaultActivity, VaultRow, WireguardState, WorkspaceHooks } from '../../types'
+import type { AdminForm, CreateForm, FoundVault, Secondary, SetupItem, SetupState, SecondaryMode, Snapshot, Tab, VaultActivity, VaultRow, WireguardState, WorkspaceHooks } from '../../types'
 import { FR } from './locale-fr'
 
 const PANE = 'vault-panel'
@@ -81,6 +81,10 @@ const primaryConventions = atom({ plugin: 'obsidian-router', key: 'primaryConven
 // read that failed once stayed in red on every tab after the next one worked
 // (Roland, on the Hermès VM, v0.119.1).
 const readFailures = atom({ plugin: 'obsidian-router', key: 'readFailures' } as const, { hooks: null, conventions: null })
+// The first-run screen (no primary yet): its step, the vaults found on this
+// machine, and the checklist of a creation or an adoption.
+const EMPTY_SETUP: SetupState = { step: 'choose', found: null, progress: null }
+const setup = atom({ plugin: 'obsidian-router', key: 'setup' } as const, EMPTY_SETUP)
 
 // ---- Texts ----------------------------------------------------------------
 // Every text the pane and the band show comes from locales/<code>.json in the
@@ -959,6 +963,7 @@ async function refresh($: EngineInterface): Promise<boolean> {
     const data = JSON.parse(await withTimeout($, call($, 'list_vaults'))) as ListVaults
     const next = toSnapshot(data, await $.clock.now())
     next.defaultRoot = data.configPath ? await defaultVaultRoot($, data.configPath) : null
+    next.configPath = data.configPath ?? null
     await keepPausedOpeners($, next, data.configPath)
     await fillUnknown($, next, data.configPath)
     await markObsidianKnown($, next, data.configPath)
@@ -1152,7 +1157,7 @@ async function rebind(
 // Picks the primary of an unbound workspace, only if it is still unbound: the
 // digest of the absent entry is a precondition like any other.
 async function choosePrimary($: EngineInterface, name: string) {
-  await act($, {
+  return act($, {
     doing: t('action.choosePrimary.doing', { name }),
     done: t('action.choosePrimary.done', { name }),
     tool: 'confirm_workspace_binding',
@@ -2021,6 +2026,8 @@ async function installConventions($: EngineInterface, vault: string, ids: string
     await update($, pendingConventions, () => ({ vault, ids, languages }))
     await update($, failure, () => t('create.conventionsPending', { name: vault, error: why }))
   }
+
+  return outcome
 }
 
 // A new local vault: the router's sealed preview (plan_vault), then the
@@ -2096,6 +2103,345 @@ async function createVault($: EngineInterface, defaultRoot: string | null | unde
   }
 }
 
+// ---- First run: a project with no primary vault --------------------------------
+// The "Vaults en cours" tab, while the project has no primary, is a choice:
+// a vault that exists (registered, or found on this machine), or a new one,
+// asked one question at a time. What used to be done by hand after it (the
+// games.kiviri.fr episode: registering the key, attaching the folder, the
+// plugins, the wiki, the conventions) runs as one checklist.
+type WizardStep = SetupState['step']
+const WIZARD_STEPS: WizardStep[] = ['name', 'path', 'mode', 'conventions', 'languages', 'recap']
+
+// The languages question is asked only when its convention is chosen.
+function wizardSteps(form: CreateForm) {
+  return WIZARD_STEPS.filter(step => step !== 'languages' || form.conventions.includes('languages'))
+}
+
+async function setupStep($: EngineInterface, step: WizardStep) {
+  await update($, setup, now => ({ ...now, step }))
+}
+
+async function wizardMove($: EngineInterface, by: 1 | -1) {
+  const form = await read($, createForm)
+  const now = (await read($, setup)).step
+  const steps = wizardSteps(form)
+  const at = steps.indexOf(now)
+  await setupStep($, at < 0 ? steps[0]! : by < 0 && at === 0 ? 'choose' : steps[Math.min(steps.length - 1, at + by)]!)
+}
+
+// The wizard opens on its defaults: the project folder's name, the recommended
+// conventions, the pane's language — what was already typed is kept.
+async function startWizard($: EngineInterface) {
+  const code = await read($, language)
+  const ids = await conventionIds($)
+  await update($, createForm, now => ({
+    ...now,
+    name: now.name || workspaceName(),
+    mode: now.name ? now.mode : 'code',
+    conventions: now.conventions.length > 0 ? now.conventions : RECOMMENDED_CONVENTIONS.filter(id => ids.includes(id)),
+    languages: now.languages || code,
+    bind: true,
+  }))
+  await setupStep($, 'name')
+}
+
+// scripts/find-vaults.mjs: it reads the keys, the pane never sees them.
+async function findVaultsCli($: EngineInterface, args: string[]) {
+  const root = pluginRoot($)
+  if (!root) {
+    throw new Error(t('hooks.noRoot'))
+  }
+  const ran = await $.process.run(['node', `${root}/scripts/find-vaults.mjs`, ...args], { timeoutMs: 30_000 })
+  const answer = JSON.parse(ran.stdout.trim() || '{}') as Record<string, unknown> & { error?: string }
+  if (ran.exitCode !== 0 || answer.error) {
+    throw new Error(answer.error ?? (ran.stderr.trim() || t('error.launcherExit', { program: 'node', code: ran.exitCode })))
+  }
+
+  return answer
+}
+
+async function scanVaults($: EngineInterface) {
+  await update($, setup, now => ({
+    ...now,
+    step: 'existing',
+    found: { state: 'scanning', vaults: now.found?.vaults ?? [], platform: now.found?.platform },
+  }))
+  try {
+    const configPath = (await read($, snapshot))?.configPath
+    if (!configPath) {
+      throw new Error(t('setup.noConfig'))
+    }
+    const answer = await findVaultsCli($, ['scan', '--config', configPath, '--workspace', await $.session.cwd()])
+    const vaults = (Array.isArray(answer.vaults) ? answer.vaults : []) as FoundVault[]
+    const platform = typeof answer.platform === 'string' ? answer.platform : undefined
+    await update($, setup, now => ({ ...now, found: { state: 'done', vaults, platform } }))
+  } catch (err) {
+    await update($, setup, now => ({ ...now, found: { state: 'failed', vaults: [], error: plainly(message(err)) } }))
+  }
+}
+
+async function beginChecklist(
+  $: EngineInterface,
+  vault: string,
+  ids: SetupItem['id'][],
+  conventions: string[],
+  languages: string[],
+) {
+  await update($, setup, now => ({
+    ...now,
+    progress: { vault, items: ids.map(id => ({ id, state: 'todo' })), isRunning: true, conventions, languages, needsYou: null },
+  }))
+}
+
+async function markItem($: EngineInterface, id: SetupItem['id'], state: SetupItem['state'], detail?: string) {
+  await update($, setup, now =>
+    now.progress
+      ? {
+          ...now,
+          progress: {
+            ...now.progress,
+            items: now.progress.items.map(item => (item.id === id ? { id, state, ...(detail ? { detail } : {}) } : item)),
+          },
+        }
+      : now,
+  )
+}
+
+async function endChecklist($: EngineInterface, needsYou: string | null) {
+  await update($, setup, now => (now.progress ? { ...now, progress: { ...now.progress, isRunning: false, needsYou } } : now))
+}
+
+// The conventions of the checklist's vault; a REST API not up yet (Obsidian
+// still asking to trust the plugins) is what the person is asked to fix.
+async function checklistConventions($: EngineInterface, vault: string, ids: string[], languages: string[]) {
+  if (ids.length === 0) {
+    return true
+  }
+  await markItem($, 'conventions', 'doing')
+  const outcome = await installConventions($, vault, ids, languages)
+  await markItem($, 'conventions', outcome === 'done' ? 'done' : 'failed', outcome === 'done' ? undefined : ((await read($, failure)) ?? undefined))
+
+  return outcome === 'done'
+}
+
+// A new vault (from the wizard), or a folder found on this machine whose
+// Obsidian runs here: the router's sealed preview, then the creation with that
+// seal — which adopts a folder that exists (its plugins completed, its app
+// settings kept), scaffolds the wiki and binds the project — then the
+// conventions.
+async function provisionChecklist(
+  $: EngineInterface,
+  opts: { name: string; path: string; mode: CreateForm['mode']; conventions: string[]; languages: string[]; isFound: boolean; bind: boolean },
+) {
+  if (await read($, busy)) {
+    return
+  }
+  const ids: SetupItem['id'][] = ['create', 'plugins', 'wiki', ...(opts.bind ? (['bind'] as const) : []), ...(opts.conventions.length > 0 ? (['conventions'] as const) : [])]
+  await beginChecklist($, opts.name, ids, opts.conventions, opts.languages)
+  await markItem($, 'create', 'doing')
+  const base = {
+    name: opts.name,
+    ...(opts.path ? { path: opts.path } : {}),
+    wikiMode: { mode: opts.mode },
+    open: true,
+    probe: true,
+    bindToWorkspace: opts.bind,
+    // A folder the person picked among those found: it may sit outside the
+    // roots the router creates vaults in, which is no reason to refuse it.
+    ...(opts.isFound ? { allowOutsideRoots: true } : {}),
+  }
+  let seal: string | null = null
+  try {
+    const plan = JSON.parse(await call($, 'plan_vault', base)) as { approvedPlanSha256?: string }
+    seal = typeof plan.approvedPlanSha256 === 'string' ? plan.approvedPlanSha256 : null
+  } catch (err) {
+    await markItem($, 'create', 'failed', plainly(message(err)))
+    await endChecklist($, null)
+
+    return
+  }
+  if (!seal) {
+    await markItem($, 'create', 'failed', t('create.noSeal'))
+    await endChecklist($, null)
+
+    return
+  }
+  const sealed = seal
+  let created = opts.name
+  let needsYou: string | null = null
+  const outcome = await act($, {
+    doing: t(opts.isFound ? 'setup.adoptDoing' : 'create.doing', { name: opts.name }),
+    done: t(opts.isFound ? 'setup.adoptDone' : 'create.done', { name: opts.name }),
+    tool: 'provision_vault',
+    args: () => ({ ...base, approvedPlanSha256: sealed }),
+    answer: text => {
+      try {
+        const result = JSON.parse(text) as { slug?: unknown; ok?: unknown; openInstruction?: unknown }
+        created = typeof result.slug === 'string' && result.slug !== '' ? result.slug : opts.name
+        if (typeof result.openInstruction === 'string' && result.openInstruction) {
+          needsYou = result.openInstruction
+        } else if (result.ok !== true) {
+          needsYou = t('setup.trustPlugins')
+        }
+      } catch {
+        created = opts.name
+      }
+    },
+  })
+  if (outcome !== 'done') {
+    await markItem($, 'create', 'failed', (await read($, failure)) ?? undefined)
+    await endChecklist($, null)
+
+    return
+  }
+  await update($, setup, now => (now.progress ? { ...now, progress: { ...now.progress, vault: created } } : now))
+  for (const id of ['create', 'plugins', 'wiki', ...(opts.bind ? (['bind'] as const) : [])]) {
+    await markItem($, id, 'done')
+  }
+  if (!opts.isFound) {
+    await update($, createForm, () => ({ ...EMPTY_CREATE }))
+  }
+  readSoon($)
+  const isConventionsDone = await checklistConventions($, created, opts.conventions, opts.languages)
+  await endChecklist($, needsYou ?? (isConventionsDone ? null : t('setup.trustPlugins')))
+}
+
+// The wizard's last button.
+async function createFromWizard($: EngineInterface) {
+  const form = await read($, createForm)
+  const name = form.name.trim()
+  if (!name) {
+    await update($, failure, () => t('create.invalidName'))
+
+    return
+  }
+  const codes = form.conventions.includes('languages') ? languagesOf(form.languages) : []
+  if (!codes) {
+    await update($, failure, () => t('create.invalidLanguages'))
+
+    return
+  }
+  const snap = await read($, snapshot)
+  const root = snap?.defaultRoot
+  const sep = root?.includes('\\') ? '\\' : '/'
+  const path = form.path.trim() || (root ? `${root}${sep}${name}` : '')
+  // A project that has a primary keeps it: the new vault is created, not bound.
+  await provisionChecklist($, { name, path, mode: form.mode, conventions: form.conventions, languages: codes, isFound: false, bind: !snap?.primary })
+}
+
+// The conventions a found vault gets: the recommended ones, in the pane's language.
+async function foundDefaults($: EngineInterface) {
+  const ids = await conventionIds($)
+  const code = await read($, language)
+
+  return { conventions: RECOMMENDED_CONVENTIONS.filter(id => ids.includes(id)), languages: languagesOf(code) ?? ['fr'] }
+}
+
+// The router reloads its config a moment after a write: the vault is bound
+// only once this session's router lists it.
+async function waitRegistered($: EngineInterface, name: string) {
+  for (let i = 0; i < 8; i += 1) {
+    await refresh($)
+    const snap = await read($, snapshot)
+    if (snap?.primary?.name === name || snap?.available.some(v => v.name === name) || snap?.secondaries.some(v => v.name === name)) {
+      return true
+    }
+    await $.clock.sleep(1_500)
+  }
+
+  return false
+}
+
+// A found vault whose Obsidian answers on another machine's address (a
+// container over WireGuard): registered with its key read by the script, its
+// folder declared as its local path, then bound; what the panel cannot do for
+// a container (its plugins, its wiki) is said in the checklist.
+async function adoptRemote($: EngineInterface, found: FoundVault) {
+  if (!found.address || (await read($, busy))) {
+    return
+  }
+  const { conventions, languages } = await foundDefaults($)
+  await beginChecklist($, found.name, ['register', 'bind', 'plugins', 'wiki', 'conventions'], conventions, languages)
+  await markItem($, 'register', 'doing')
+  await update($, busy, () => t('setup.registerDoing', { name: found.name }))
+  await update($, failure, () => null)
+  let name = found.name
+  try {
+    const configPath = (await read($, snapshot))?.configPath
+    if (!configPath) {
+      throw new Error(t('setup.noConfig'))
+    }
+    const answer = await findVaultsCli($, ['adopt', '--config', configPath, '--folder', found.path, '--base-url', found.address.baseUrl])
+    name = typeof answer.name === 'string' && answer.name ? answer.name : found.name
+  } catch (err) {
+    await update($, busy, () => null)
+    await markItem($, 'register', 'failed', plainly(message(err)))
+    await endChecklist($, null)
+
+    return
+  }
+  await update($, busy, () => null)
+  await update($, setup, now => (now.progress ? { ...now, progress: { ...now.progress, vault: name } } : now))
+  await markItem($, 'register', 'done')
+  await markItem($, 'bind', 'doing')
+  if (!(await waitRegistered($, name))) {
+    await markItem($, 'bind', 'failed', t('setup.notLoaded'))
+    await endChecklist($, t('setup.restartClaude'))
+
+    return
+  }
+  const bound = await choosePrimary($, name)
+  await markItem($, 'bind', bound === 'done' ? 'done' : 'failed', bound === 'done' ? undefined : ((await read($, failure)) ?? undefined))
+  await markItem(
+    $,
+    'plugins',
+    found.missingPlugins.length === 0 ? 'done' : 'manual',
+    found.missingPlugins.length === 0 ? undefined : t('setup.pluginsManual', { plugins: found.missingPlugins.join(', ') }),
+  )
+  await markItem($, 'wiki', found.hasWiki ? 'done' : 'manual', found.hasWiki ? undefined : t('setup.wikiManual'))
+  const isConventionsDone = bound === 'done' && (await checklistConventions($, name, conventions, languages))
+  await endChecklist($, isConventionsDone ? null : t('setup.trustPlugins'))
+}
+
+async function adoptFound($: EngineInterface, found: FoundVault) {
+  if (found.address && !found.address.isLocal) {
+    await adoptRemote($, found)
+
+    return
+  }
+  const { conventions, languages } = await foundDefaults($)
+  await provisionChecklist($, { name: found.name, path: found.path, mode: 'code', conventions, languages, isFound: true, bind: true })
+}
+
+// "Revérifier": after the person reloaded Obsidian, the router is read again
+// and what failed for want of its REST API (the conventions) is tried again.
+async function recheckSetup($: EngineInterface) {
+  await refresh($)
+  const progress = (await read($, setup)).progress
+  if (!progress || progress.isRunning) {
+    return
+  }
+  await update($, setup, now => (now.progress ? { ...now, progress: { ...now.progress, isRunning: true } } : now))
+  const conventions = progress.items.find(item => item.id === 'conventions')
+  const isDone =
+    conventions?.state === 'failed'
+      ? await checklistConventions($, progress.vault, progress.conventions, progress.languages)
+      : conventions?.state !== 'todo'
+  const snap = await read($, snapshot)
+  const isOnline = snap?.primary?.name === progress.vault && snap.primary.online === true
+  await endChecklist($, isDone && isOnline ? null : (progress.needsYou ?? t('setup.trustPlugins')))
+}
+
+// The console's link to the wizard: the vaults tab, on its first question.
+async function openWizard($: EngineInterface) {
+  await startWizard($)
+  await showView($, 'vaults')
+}
+
+async function closeChecklist($: EngineInterface) {
+  await update($, setup, now => ({ ...now, step: 'choose', progress: null }))
+}
+
 // The pane is gone: its polling stops, and the band's toggle offers it again.
 async function markClosed($: EngineInterface) {
   paneEpoch += 1
@@ -2136,13 +2482,6 @@ const isBandOn = () => isEnvKnown && !isOptedOut && !isBandOptedOut
 // folded drops a key typed but not sent; opened, it reads WireGuard. The
 // Configuration tab, opened, reads this workspace's hooks.
 type PaneView = 'vaults' | 'add' | 'config' | 'admin'
-// The administration shown, unfolded on one of its sections: what a flow that
-// leads there (no primary yet → creating a vault, an update → the general) does.
-async function showAdminSection($: EngineInterface, section: string) {
-  await update($, adminSection, () => section)
-  await update($, showConfig, () => false)
-  await update($, showAdmin, () => true)
-}
 // Each press of the menu: a later one supersedes it, whose scroll then stands.
 let navGeneration = 0
 async function showView($: EngineInterface, view: PaneView) {
@@ -2339,11 +2678,15 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // /vault-setup: the pane, with its administration unfolded on creating or
-  // registering a vault — not a conversation with the model.
+  // /vault-setup: the pane on its creation wizard, one question per screen —
+  // not a conversation with the model. "← Retour" on its first question
+  // leads to the choice between an existing vault and a new one.
   on('command.run', { command: 'vault-setup' }, async $ => {
     isStartupCancelled = false
-    await showAdminSection($, 'create')
+    await update($, showAdmin, () => false)
+    await update($, showConfig, () => false)
+    await update($, showAdd, () => false)
+    await startWizard($)
     await openPane($)
     await refresh($)
     void checkWireguard($).catch(() => undefined)
@@ -2433,7 +2776,9 @@ export const register: Register = on => {
     const upd = await read($, updateState)
     const creating = await read($, createForm)
     const pending = await read($, pendingConventions)
-    const conventions = isAdminShown ? await conventionIds($) : []
+    const setupNow = await read($, setup)
+    // The console's create section, and the wizard's conventions step.
+    const conventions = isAdminShown || setupNow.step === 'conventions' ? await conventionIds($) : []
     // A glyph per state, the colour on top: a closed local vault is no fault
     // (opening it is one click), an unreachable remote one is. A surface that
     // draws SVG gets the marks at one size; the terminal keeps the characters.
@@ -3306,6 +3651,17 @@ export const register: Register = on => {
                 </Text>
               ) : (
                 <Box key="admin-create-form" flexDirection="column" gap={1}>
+                  <Box key="create-wizard-link" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+                    <Text size="caption" dimColor>
+                      {t('create.wizardNote')}
+                    </Text>
+                    <Button
+                      key="create-open-wizard"
+                      label={t('create.openWizard')}
+                      variant="secondary"
+                      onPress={() => void openWizard($)}
+                    />
+                  </Box>
                   <Box key="create-name" flexDirection="column">
                     <Text size="caption" dimColor>
                       {t('create.name')}
@@ -4107,12 +4463,7 @@ export const register: Register = on => {
               ),
             },
           )
-        ) : (
-          <Box key="primary-none" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
-            <Text color="warning">{t('primary.none')}</Text>
-            <Button key="primary-setup" label={t('primary.setup')} variant="primary" onPress={() => void showAdminSection($, 'create')} />
-          </Box>
-        )}
+        ) : null}
         {snap.isImported && snap.primary && (
           <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
             <Text size="caption" color="warning">
@@ -4663,6 +5014,348 @@ export const register: Register = on => {
       return configPage([enrich, ...primarySettings, ...(conventionsSection ? [conventionsSection] : [])])
     }
 
+    // ---- First run: no primary yet ----------------------------------------
+    // Two big choices, then either the vaults that exist (registered, or found
+    // on this machine) or the wizard, one question per screen. A big choice is
+    // a frame with a title and a line under it; on the desktop, which draws a
+    // Button's label in its own weight and colour, the texts stand on their own
+    // and a blank Button is laid over the frame, as `menuTab` does.
+    const bigChoice = (key: string, title: string, note: string, onPress: () => void) => (
+      <Box key={key} flexDirection="column" borderStyle="round" borderColor={ROUTER_PURPLE} paddingX={2} paddingY={1} width={34} flexShrink={1}>
+        {Mark ? (
+          <Box key={`${key}-texts`} flexDirection="column">
+            <Text weight="bold" color={ROUTER_PURPLE}>
+              {title}
+            </Text>
+            <Text size="caption" dimColor>
+              {note}
+            </Text>
+            <Box position="absolute" top={0} left={0} right={0} bottom={0} overflow="hidden">
+              <Button key={`${key}-press`} label={' '.repeat(120)} plain onPress={onPress} />
+            </Box>
+          </Box>
+        ) : (
+          <Box key={`${key}-texts`} flexDirection="column">
+            <Button key={`${key}-press`} label={title} variant="primary" onPress={onPress} />
+            <Text size="caption" dimColor>
+              {note}
+            </Text>
+          </Box>
+        )}
+      </Box>
+    )
+    const back = (key: string, onPress: () => void) => (
+      <Button key={key} label={t('setup.back')} plain dimColor onPress={onPress} />
+    )
+    const foundLine = (v: FoundVault) =>
+      v.address
+        ? t('setup.foundAt', { address: v.address.baseUrl.replace(/^https?:\/\//, '') })
+        : v.key === 'refused'
+          ? t('setup.foundRefused')
+          : v.key === 'absent'
+            ? t('setup.foundNoRest')
+            : t('setup.foundClosed')
+    // A closed vault is adopted (and opened) only where an Obsidian desktop can open it.
+    const canOpenHere = setupNow.found?.platform === 'win32' || setupNow.found?.platform === 'darwin'
+    const canAdopt = (v: FoundVault) => !!v.address || (v.key === 'unanswered' && canOpenHere)
+    const choosing = (
+      <Box key="setup-choose" flexDirection="column" gap={1}>
+        <Text weight="semibold">{t('setup.title')}</Text>
+        <Text size="caption" dimColor>
+          {t('setup.lead', { workspace: workspaceName() || '…' })}
+        </Text>
+        <Box key="setup-choices" flexDirection="row" flexWrap="wrap" gap={2}>
+          {bigChoice('setup-existing', t('setup.existing'), t('setup.existingNote'), () => void scanVaults($))}
+          {bigChoice('setup-create', t('setup.create'), t('setup.createNote'), () => void startWizard($))}
+        </Box>
+      </Box>
+    )
+    const found = setupNow.found
+    const existing = (
+      <Box key="setup-existing-list" flexDirection="column" gap={1}>
+        <Box key="setup-existing-head" flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+          {back('setup-existing-back', () => void setupStep($, 'choose'))}
+          <Text weight="semibold">{t('setup.existing')}</Text>
+        </Box>
+        {section(t('setup.known'))}
+        {snap.available.length === 0 ? (
+          <Text size="caption" dimColor>
+            {t('setup.knownNone')}
+          </Text>
+        ) : (
+          snap.available.map(v => (
+            <Box key={`setup-known-${v.name}`} flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+              <Text color={v.online === true ? 'success' : undefined} dimColor={v.online !== true}>
+                ●
+              </Text>
+              <Text>{v.name}</Text>
+              <Text size="caption" dimColor>
+                {placeOf(v)}
+              </Text>
+              <Button key={`setup-use-${v.name}`} label={t('setup.use')} variant="secondary" onPress={() => void choosePrimary($, v.name)} />
+            </Box>
+          ))
+        )}
+        <Box key="setup-found-head" flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+          {section(t('setup.found'))}
+          <Button key="setup-rescan" label={t('setup.rescan')} plain dimColor onPress={() => void scanVaults($)} />
+        </Box>
+        {found?.state === 'scanning' && (
+          <Text size="caption" dimColor>
+            {t('setup.scanning')}
+          </Text>
+        )}
+        {found?.state === 'failed' && (
+          <Text size="caption" color="error">
+            {found.error ?? ''}
+          </Text>
+        )}
+        {found?.state === 'done' && found.vaults.length === 0 && (
+          <Text size="caption" dimColor>
+            {t('setup.foundNone')}
+          </Text>
+        )}
+        {(found?.vaults ?? []).map(v => (
+          <Box key={`setup-found-${v.path}`} flexDirection="column">
+            <Box key={`setup-found-${v.path}-line`} flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+              <Text color={v.address ? 'success' : undefined} dimColor={!v.address}>
+                ○
+              </Text>
+              <Text>{v.name}</Text>
+              <Text size="caption" color={v.key === 'refused' ? 'warning' : undefined} dimColor={v.key !== 'refused'}>
+                {foundLine(v)}
+              </Text>
+              {canAdopt(v) && (
+                <Button
+                  key={`setup-adopt-${v.path}`}
+                  label={v.address ? t('setup.adopt') : t('setup.adoptOpen')}
+                  variant="primary"
+                  onPress={() => void adoptFound($, v)}
+                />
+              )}
+            </Box>
+            <Text size="caption" dimColor>
+              {v.path}
+            </Text>
+            {!canAdopt(v) && v.key !== 'absent' && (
+              <Text size="caption" dimColor>
+                {v.key === 'refused' ? t('setup.foundRefusedHint') : t('setup.foundClosedHint')}
+              </Text>
+            )}
+          </Box>
+        ))}
+      </Box>
+    )
+    // The wizard: where it stands, the one question, and its two keys.
+    const steps = wizardSteps(creating)
+    const stepAt = Math.max(0, steps.indexOf(setupNow.step))
+    const defaultPath = snap.defaultRoot
+      ? `${snap.defaultRoot}${snap.defaultRoot.includes('\\') ? '\\' : '/'}${creating.name.trim() || '…'}`
+      : ''
+    const wizardField = (key: string, value: string, placeholder: string, write: (value: string) => void) =>
+      Input ? (
+        <Input
+          key={key}
+          value={value}
+          placeholder={placeholder}
+          submitLabel={t('setup.next')}
+          onInput={(typed: string) => write(typed)}
+          onSubmit={(typed: string) => {
+            write(typed)
+            void wizardMove($, 1)
+          }}
+        />
+      ) : (
+        <Text>{value || placeholder}</Text>
+      )
+    const modes = ['code', 'personal', 'research', 'business'] as const
+    const question =
+      setupNow.step === 'name' ? (
+        <Box key="wizard-q-name" flexDirection="column" gap={1}>
+          <Text weight="semibold">{t('setup.q.name')}</Text>
+          {wizardField('wizard-name', creating.name, workspaceName(), value => void update($, createForm, now => ({ ...now, name: value })))}
+          <Text size="caption" dimColor>
+            {t('setup.q.nameNote')}
+          </Text>
+        </Box>
+      ) : setupNow.step === 'path' ? (
+        <Box key="wizard-q-path" flexDirection="column" gap={1}>
+          <Text weight="semibold">{t('setup.q.path')}</Text>
+          {wizardField('wizard-path', creating.path, defaultPath, value => void update($, createForm, now => ({ ...now, path: value })))}
+          <Text size="caption" dimColor>
+            {defaultPath ? t('setup.q.pathNote', { path: defaultPath }) : t('setup.q.pathNoRoot')}
+          </Text>
+        </Box>
+      ) : setupNow.step === 'mode' ? (
+        <Box key="wizard-q-mode" flexDirection="column" gap={1}>
+          <Text weight="semibold">{t('setup.q.mode')}</Text>
+          {modes.map(mode => (
+            <Box key={`wizard-mode-${mode}`} flexDirection="column">
+              <Button
+                key={`wizard-mode-${mode}-press`}
+                label={`${creating.mode === mode ? '◉' : '○'} ${t(`create.mode.${mode}`)}`}
+                plain
+                dimColor={creating.mode !== mode}
+                onPress={() => void update($, createForm, now => ({ ...now, mode }))}
+              />
+              <Box paddingLeft={2}>
+                <Text size="caption" dimColor>
+                  {t(`setup.mode.${mode}`)}
+                </Text>
+              </Box>
+            </Box>
+          ))}
+        </Box>
+      ) : setupNow.step === 'conventions' ? (
+        <Box key="wizard-q-conventions" flexDirection="column" gap={1}>
+          <Text weight="semibold">{t('setup.q.conventions')}</Text>
+          <Box key="wizard-conventions-head" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+            <Text size="caption">
+              {t('create.conventionsCount', {
+                count: creating.conventions.filter(id => conventions.includes(id)).length,
+                total: conventions.length,
+              })}
+            </Text>
+            <Button
+              key="wizard-conventions-recommended"
+              label={t('setup.recommended')}
+              plain
+              dimColor
+              onPress={() =>
+                void update($, createForm, now => ({ ...now, conventions: RECOMMENDED_CONVENTIONS.filter(id => conventions.includes(id)) }))
+              }
+            />
+            <Button
+              key="wizard-conventions-none"
+              label={t('create.conventionsNone')}
+              plain
+              dimColor
+              onPress={() => void update($, createForm, now => ({ ...now, conventions: [] }))}
+            />
+          </Box>
+          <Box key="wizard-conventions" flexDirection="row" flexWrap="wrap" columnGap={2}>
+            {conventions.map(id => (
+              <Button
+                key={`wizard-convention-${id}`}
+                label={`${creating.conventions.includes(id) ? '✓' : '·'} ${id}`}
+                plain
+                dimColor={!creating.conventions.includes(id)}
+                onPress={() =>
+                  void update($, createForm, now => ({
+                    ...now,
+                    conventions: now.conventions.includes(id) ? now.conventions.filter(c => c !== id) : [...now.conventions, id],
+                  }))
+                }
+              />
+            ))}
+          </Box>
+          <Text size="caption" dimColor>
+            {t('setup.q.conventionsNote')}
+          </Text>
+        </Box>
+      ) : setupNow.step === 'languages' ? (
+        <Box key="wizard-q-languages" flexDirection="column" gap={1}>
+          <Text weight="semibold">{t('setup.q.languages')}</Text>
+          {wizardField('wizard-languages', creating.languages, languageCode, value => void update($, createForm, now => ({ ...now, languages: value })))}
+          <Text size="caption" dimColor>
+            {t('setup.q.languagesNote')}
+          </Text>
+        </Box>
+      ) : (
+        <Box key="wizard-q-recap" flexDirection="column" gap={1}>
+          <Text weight="semibold">{t('setup.q.recap')}</Text>
+          {(
+            [
+              [t('setup.recap.name'), creating.name.trim() || '…'],
+              [t('setup.recap.path'), creating.path.trim() || defaultPath || '…'],
+              [t('setup.recap.mode'), t(`create.mode.${creating.mode}`)],
+              [t('setup.recap.conventions'), creating.conventions.length > 0 ? creating.conventions.join(', ') : t('setup.recap.noConventions')],
+              ...(creating.conventions.includes('languages') ? [[t('setup.recap.languages'), creating.languages || languageCode]] : []),
+              [t('setup.recap.bind'), snap.primary ? t('setup.recap.keepPrimary', { vault: snap.primary.name }) : t('setup.recap.asPrimary')],
+            ] as [string, string][]
+          ).map(([name, value]) => (
+            <Box key={`wizard-recap-${name}`} flexDirection="row" gap={1} flexWrap="wrap">
+              <Text size="caption" dimColor>
+                {name}
+              </Text>
+              <Text>{value}</Text>
+            </Box>
+          ))}
+        </Box>
+      )
+    const wizard = (
+      <Box key="setup-wizard" flexDirection="column" gap={1} borderStyle="round" borderColor="inactive" paddingX={2} paddingY={1}>
+        <Text size="caption" dimColor>
+          {t('setup.stepOf', { step: stepAt + 1, total: steps.length })}
+        </Text>
+        {question}
+        <Box key="wizard-keys" flexDirection="row" gap={1} flexWrap="wrap" alignItems="center">
+          {back('wizard-back', () => void wizardMove($, -1))}
+          {setupNow.step === 'recap' ? (
+            <Button key="wizard-create" label={t('setup.createButton')} variant="primary" onPress={() => void createFromWizard($)} />
+          ) : (
+            <Button
+              key="wizard-next"
+              label={t('setup.next')}
+              variant="primary"
+              onPress={() => void wizardMove($, 1)}
+            />
+          )}
+        </Box>
+      </Box>
+    )
+    // The checklist of a creation or an adoption: each step, its state, and
+    // what only the person can do, with the button that looks again.
+    const progress = setupNow.progress
+    const itemMark = (state: SetupItem['state']) =>
+      state === 'done' ? (
+        <Text color="success">✓</Text>
+      ) : state === 'failed' ? (
+        <Text color="error">✗</Text>
+      ) : state === 'manual' ? (
+        <Text color="warning">⚠</Text>
+      ) : state === 'doing' ? (
+        <Text color={ROUTER_PURPLE}>⟳</Text>
+      ) : (
+        <Text dimColor>○</Text>
+      )
+    const checklist = progress ? (
+      <Box key="setup-checklist" flexDirection="column" gap={1} borderStyle="round" borderColor={ROUTER_PURPLE} paddingX={2} paddingY={1}>
+        <Text weight="semibold">{t('setup.checklistTitle', { vault: progress.vault })}</Text>
+        {progress.items.map(item => (
+          <Box key={`setup-item-${item.id}`} flexDirection="column">
+            <Box key={`setup-item-${item.id}-line`} flexDirection="row" gap={1} alignItems="center">
+              {itemMark(item.state)}
+              <Text dimColor={item.state === 'todo'}>{t(`setup.item.${item.id}`)}</Text>
+            </Box>
+            {item.detail && (
+              <Box paddingLeft={2}>
+                <Text size="caption" color={item.state === 'failed' ? 'error' : undefined} dimColor={item.state !== 'failed'}>
+                  {item.detail}
+                </Text>
+              </Box>
+            )}
+          </Box>
+        ))}
+        {!progress.isRunning && progress.needsYou && (
+          <Box key="setup-needs-you" flexDirection="column" gap={1} borderStyle="round" borderColor="warning" paddingX={1}>
+            <Text color="warning" weight="semibold">
+              {t('setup.yourTurn')}
+            </Text>
+            <Text size="caption">{progress.needsYou}</Text>
+          </Box>
+        )}
+        {!progress.isRunning && (
+          <Box key="setup-checklist-keys" flexDirection="row" gap={1} flexWrap="wrap">
+            {progress.needsYou && <Button key="setup-recheck" label={t('setup.recheck')} variant="primary" onPress={() => void recheckSetup($)} />}
+            <Button key="setup-close" label={t('setup.close')} plain dimColor onPress={() => void closeChecklist($)} />
+          </Box>
+        )}
+      </Box>
+    ) : null
+    const isWizard = (WIZARD_STEPS as string[]).includes(setupNow.step)
+    const firstRun = isWizard ? wizard : setupNow.step === 'existing' ? existing : choosing
+
     return (
       <Box flexDirection="column" gap={1}>
         {navMenu('')}
@@ -4695,9 +5388,13 @@ export const register: Register = on => {
             </Box>
           </Box>
         )}
-        {primary}
-        {secondaries}
-        {!snap.primary && adding}
+        {checklist}
+        {snap.primary && !isWizard ? primary : null}
+        {snap.primary && !isWizard ? secondaries : null}
+        {/* No primary: the first-run screen — unless a checklist is under way
+            or left to read. A wizard asked for by /vault-setup is drawn even
+            when the project has a primary (the new vault is then not bound). */}
+        {(!snap.primary && !progress) || isWizard ? firstRun : null}
         {sticky}
       </Box>
     )
