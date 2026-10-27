@@ -31,7 +31,7 @@ import { isBackupName, makeRootDocsFilter, existingConventionsFiles } from '../s
 import { auditVaultConventions, backupKey, sha256Text, RECOMMENDED_CONVENTION_IDS } from '../src/helpers/conventions-audit.mjs';
 import { loadConventionCatalogue } from '../src/helpers/convention-catalogue.mjs';
 import { checkWrittenPage } from '../src/helpers/write-time-page-checks.mjs';
-import { createConventionsBriefing, readVaultConventionsOverRest, buildConventionsBrief } from '../src/tools/vault-conventions.mjs';
+import { createConventionsBriefing, readVaultConventionsOverRest, buildConventionsBrief, auditVaultConventionsTool } from '../src/tools/vault-conventions.mjs';
 import {
   recordHookHeartbeat, readHookHeartbeat, sessionHooksStatus, heartbeatPath,
 } from '../src/helpers/hooks-heartbeat.mjs';
@@ -673,5 +673,27 @@ describe('the running build is identified by its files, not its version string',
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('audit_vault_conventions gives a picker the whole state, read-only', () => {
+  test('`library` lists the offered conventions, retired ones left out, beside the file\'s own', async () => {
+    const registry = { resolveVault: (name) => ({ name: name ?? 'main' }) };
+    const deps = {
+      listFilesIn: async (_vault, dir) => {
+        if (dir === '') return { files: ['CLAUDE.md'] };
+        const err = new Error('not found');
+        err.status = 404;
+        throw err;
+      },
+      getFileContent: async () => '# Rules\n',
+    };
+    const audit = await auditVaultConventionsTool(registry, { vault: 'main' }, {}, deps);
+    const offered = catalogue.filter((c) => !c.retired).map((c) => c.id);
+    assert.deepEqual(audit.library, offered);
+    assert.ok(audit.library.length > 0);
+    assert.equal(audit.library.includes('bilingual'), false, 'a retired convention is never offered');
+    assert.equal(audit.conventionsFile, 'CLAUDE.md');
+    assert.deepEqual(audit.candidates.find((c) => c.path === 'CLAUDE.md')?.conventions, []);
   });
 });

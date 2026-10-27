@@ -4180,7 +4180,7 @@ test('a surface without the menu shows the picked one named, with a dim count of
 
 // The workspace's hooks, as scripts/workspace-hooks.mjs answers them: the
 // console runs it with node, for the session's folder.
-function hooksScript(on: On, state: { enabled: string[]; global: string[]; runs: (readonly string[])[]; launched?: (readonly string[])[] }) {
+function hooksScript(on: On, state: { enabled: string[]; global: string[]; runs: (readonly string[])[]; launched?: (readonly string[])[]; fail?: string }) {
   const OPT_IN = ['wiki-query-first-nudge', 'session-auto-journal', 'wiki-autocommit', 'vault-link-linter']
   on('session.cwd', () => ({ value: '/work/project' }))
   on('process.run', (_, e) => {
@@ -4190,6 +4190,10 @@ function hooksScript(on: On, state: { enabled: string[]; global: string[]; runs:
       return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
     state.runs.push(e.argv)
+    // The script failing: its error, as it prints one.
+    if (state.fail) {
+      return { value: { exitCode: 1, stdout: JSON.stringify({ error: state.fail }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
     const args = e.argv.slice(2)
     if (args[0] === 'set') {
       const name = args[args.indexOf('--hook') + 1]!
@@ -4271,20 +4275,21 @@ test('the hooks section links to its help: the guide of the hooks on GitHub', as
 
 test('the Configuration tab sets the enrichment mode, the primary rights, the lock and the conventions, for this workspace', async ($, on) => {
   const list = { ...LIST, autoEnrichMode: 'ClaudeAsk', workspaceBinding: { ...LIST.workspaceBinding, primaryMode: 'writable' } }
-  const installed = new Set(['source-type'])
+  const installed = new Set(['source-type', 'bilingual'])
   const calls = wire(on, {
     list,
     answers: {
-      install_conventions: (args: { ids: string[]; dryRun?: boolean }) => {
-        if (!args.dryRun) {
-          args.ids.forEach(id => installed.add(id))
-        }
+      // Read-only: the library (retired ones left out) and the file in force.
+      audit_vault_conventions: () => ({
+        library: ['source-type', 'heading-hierarchy', 'languages'],
+        conventionsFile: 'CLAUDE.md',
+        candidates: [{ path: 'CLAUDE.md', conventions: [...installed] }],
+        languages: ['fr'],
+      }),
+      install_conventions: (args: { ids: string[] }) => {
+        args.ids.forEach(id => installed.add(id))
 
-        return {
-          detection: ['source-type', 'heading-hierarchy', 'languages', 'bilingual'].map(id => ({ id, installed: installed.has(id) })),
-          catalogue: [{ id: 'bilingual', retired: true }],
-          vaultLanguages: { languages: ['fr'] },
-        }
+        return { installed: args.ids, verified: true }
       },
     },
   })
@@ -4312,14 +4317,102 @@ test('the Configuration tab sets the enrichment mode, the primary rights, the lo
   await eventually(async () => (await ui.find({ key: 'lock-box-primary' }))?.props?.backgroundColor === 'diffAddedDimmed')
   await ui.press({ key: 'lock-all' })
   expect(calls.find(c => c.tool === 'unlock_vaults')?.args).toEqual({ persist: true })
-  // The conventions: read with a dry run on the primary, the retired one left out; "languages"
-  // is told, not installed from here; a missing one installs, and the list is read again.
-  expect(calls.find(c => c.tool === 'install_conventions')?.args).toEqual({ vault: 'main', ids: [], dryRun: true })
+  // The conventions: read with audit_vault_conventions, a read-only tool (auto mode refused the
+  // dry run of install_conventions, a write tool, Roland on v0.119.1) — no dry run is sent;
+  // the retired one left out; "languages" is told, not installed from here; a missing one
+  // installs, and the list is read again.
+  expect(calls.find(c => c.tool === 'audit_vault_conventions')?.args).toEqual({ vault: 'main' })
+  expect(calls.some(c => c.tool === 'install_conventions' && c.args.dryRun)).toBe(false)
   expect(await ui.find({ key: 'conv-bilingual' })).toBeFalsy()
   expect(await ui.find({ type: 'Button', key: 'conv-install-languages' })).toBeFalsy()
   expect(await ui.find({ type: 'Button', key: 'conv-install-source-type' })).toBeFalsy()
   await ui.press({ key: 'conv-install-heading-hierarchy' })
-  expect(calls.some(c => c.tool === 'install_conventions' && !c.args.dryRun && (c.args.ids as string[])[0] === 'heading-hierarchy')).toBe(true)
+  expect(calls.find(c => c.tool === 'install_conventions')?.args).toEqual({ vault: 'main', ids: ['heading-hierarchy'] })
   await eventually(async () => !(await ui.find({ type: 'Button', key: 'conv-install-heading-hierarchy' })))
+  await ui.unmount()
+})
+
+test('a router older than `library` is still read with the dry run of install_conventions', async ($, on) => {
+  const calls = wire(on, {
+    list: LIST,
+    answers: {
+      // An older router: the audit has no `library`.
+      audit_vault_conventions: { conventionsFile: 'CLAUDE.md', candidates: [{ path: 'CLAUDE.md', conventions: ['source-type'] }], languages: null },
+      install_conventions: { detection: [{ id: 'source-type', installed: true }, { id: 'heading-hierarchy', installed: false }], catalogue: [] },
+    },
+  })
+  hooksScript(on, { enabled: [], global: [], runs: [] })
+  await begin($)
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  await ui.press({ key: 'nav-config' })
+  await eventually(() => ui.find({ type: 'Button', key: 'conv-install-heading-hierarchy' }))
+  expect(calls.find(c => c.tool === 'install_conventions')?.args).toEqual({ vault: 'main', ids: [], dryRun: true })
+  expect(await ui.find({ type: 'Button', key: 'conv-install-source-type' })).toBeFalsy()
+  await ui.unmount()
+})
+
+test("a failed read of the conventions or the hooks is said in its section, and cleared by the next read that works — never in the pane's red line", async ($, on) => {
+  const state: Parameters<typeof wire>[1] = {
+    list: LIST,
+    refuseOnce: 'audit_vault_conventions',
+    refuseText: 'the vault did not answer',
+    answers: { audit_vault_conventions: { library: ['source-type'], conventionsFile: 'CLAUDE.md', candidates: [{ path: 'CLAUDE.md', conventions: ['source-type'] }], languages: null } },
+  }
+  wire(on, state)
+  const hooks = { enabled: [] as string[], global: [] as string[], runs: [] as string[][], fail: 'no node here' }
+  hooksScript(on, hooks)
+  await begin($)
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  await ui.press({ key: 'nav-config' })
+  // Each failure in its own section, in red; the pane's red line stays empty, on every tab.
+  expect(await eventually(() => ui.find({ type: 'Text', text: /^Conventions illisibles : .*the vault did not answer/ }))).toBeTruthy()
+  expect(await eventually(() => ui.find({ type: 'Text', text: /^Hooks illisibles : no node here/ }))).toBeTruthy()
+  await showTab(ui, 'nav-vaults')
+  expect(await ui.find({ type: 'Text', text: /illisibles/ })).toBeFalsy()
+  // The next opening reads again: both work, both messages are gone.
+  delete (hooks as { fail?: string }).fail
+  await showTab(ui, 'nav-config')
+  await eventually(async () => !(await ui.find({ type: 'Text', text: /illisibles/ })))
+  expect(await ui.find({ type: 'Text', text: /illisibles/ })).toBeFalsy()
+  expect(await eventually(() => ui.find({ type: 'Text', text: /^Hooks de ce workspace|toujours actif/ }))).toBeTruthy()
+  await ui.unmount()
+})
+
+test('the start says "no vault for this project" only on a list it read: /vaults typed while the start reads makes it drop its answer, and no toast is said', async ($, on) => {
+  let releaseStart = () => {}
+  let releaseCommand = () => {}
+  const toasts: string[] = []
+  const state: Parameters<typeof wire>[1] = {
+    list: LIST,
+    toasts,
+    // The start's own read of the router is held.
+    held: new Promise<void>(resolve => {
+      releaseStart = resolve
+    }),
+  }
+  const calls = wire(on, state)
+  on('tool.call', () => ({ result: 'ok' }))
+  const tick = async () => {
+    await $.tool.call({ tool: 'Read', file_path: 'a.md' })
+  }
+  await $.session.start(START)
+  expect(await eventually(async () => (await tick(), calls.some(c => c.tool === 'list_vaults') || undefined))).toBe(true)
+  // /vaults while the start reads: its own read is held too, and is the latest.
+  state.held = new Promise<void>(resolve => {
+    releaseCommand = resolve
+  })
+  const command = $.command.run({ command: 'vaults', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(await eventually(async () => (await tick(), calls.filter(c => c.tool === 'list_vaults').length >= 2 || undefined))).toBe(true)
+  // The start's read lands first, and drops its answer: the pane has no list yet.
+  releaseStart()
+  for (let i = 0; i < 20; i += 1) {
+    await tick()
+  }
+  expect(toasts.filter(text => /Aucun vault pour ce projet/.test(text))).toEqual([])
+  releaseCommand()
+  await command
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await eventually(() => ui.find({ type: 'Text', text: /^PRINCIPAL :$/ }))).toBeTruthy()
+  expect(toasts.filter(text => /Aucun vault pour ce projet/.test(text))).toEqual([])
   await ui.unmount()
 })
