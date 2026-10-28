@@ -10,9 +10,11 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
-### The panel's mark moves right; a footer holds GitHub, the version and an automatic update switch
+## [0.120.0] — 2026-10-28 — the panel's mark moves right; a footer holds GitHub, the version and an automatic update switch
 
 Asked by Roland on v0.119.2.
+
+### The panel's mark moves right; a footer holds GitHub, the version and an automatic update switch
 
 - **The router's mark stands at the right end of the menu**, after the gear, on the wide menu and on
   the one folded into "☰" — the pinned copy that follows the scroll included.
