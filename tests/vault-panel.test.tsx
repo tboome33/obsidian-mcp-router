@@ -2361,7 +2361,7 @@ function versions(on: On, installed: string, latest: string, extra: (path: strin
   })
 }
 
-test('the menu holds the router mark, the version, the repository and, when GitHub has a newer one, the badge', async ($, on) => {
+test('the menu holds the gear and, at its right end, the router mark; the footer, under a rule, holds GitHub, the version, the badge when GitHub has a newer one, and the automatic update switch', async ($, on) => {
   const launched: (readonly string[])[] = []
   wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
   versions(on, '0.107.0', '0.108.0')
@@ -2376,17 +2376,39 @@ test('the menu holds the router mark, the version, the repository and, when GitH
   const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
   expect(await eventually(() => ui.find({ type: 'Text', text: /^v0\.107\.0$/ }))).toBeTruthy()
   expect(await eventually(() => ui.find({ type: 'Button', key: 'update-badge' }))).toBeTruthy()
-  const nodes = nodesOf(await ui.drawn())
-  const menu = nodes.find(n => keyOf(n) === 'nav')
-  // The router's mark at the left, the version, the badge and GitHub's mark at the right.
-  expect(nodesOf(menu as never).some(n => n.type === 'Svg' && n.props?.alt === 'obsidian-mcp-router')).toBe(true)
+  const tree = await ui.drawn()
+  const nodes = nodesOf(tree)
+  const menu = nodes.find(n => keyOf(n) === 'nav') as Drawn & { children?: Drawn[] }
+  // The menu's row: the workspace's line and the tabs, then the router's mark, last — at the right.
+  const row = childrenOf(childrenOf(menu)[1])
+  expect(keyOf(row[row.length - 1] as Drawn)).toBe('nav-brand')
+  expect(nodesOf(row[row.length - 1] as never).some(n => n.type === 'Svg' && n.props?.alt === 'obsidian-mcp-router')).toBe(true)
+  // The gear alone at the tabs' right; nothing of the version, the badge or GitHub in the menu.
   const end = nodesOf(menu as never).find(n => keyOf(n) === 'nav-end')
-  expect(['update-badge', 'nav-admin', 'github'].every(key => nodesOf(end as never).some(n => keyOf(n) === key))).toBe(true)
-  expect(nodesOf(end as never).some(n => n.type === 'Svg' && n.props?.alt === 'GitHub')).toBe(true)
-  // The gear (the console's key) just before GitHub's mark; no footer any more.
-  const endMarks = nodesOf(end as never).filter(n => n.type === 'Svg').map(n => n.props?.alt)
-  expect(endMarks.slice(-2)).toEqual(['Administration', 'GitHub'])
-  expect(nodes.some(n => keyOf(n) === 'pane-footer' || keyOf(n) === 'toggle-admin')).toBe(false)
+  expect(nodesOf(end as never).filter(n => n.type === 'Svg').map(n => n.props?.alt)).toEqual(['Administration'])
+  expect(nodesOf(menu as never).some(n => ['update-badge', 'github'].includes(keyOf(n) ?? '') || (n.type === 'Text' && /^v\d/.test(textOf(n))))).toBe(false)
+  // The footer, the pane's last part in the flow: a rule, then GitHub's mark, the version and the badge at the
+  // left, the automatic update's switch at the right, off by default.
+  const top = childrenOf(tree as Drawn)
+  const footer = nodes.find(n => keyOf(n) === 'pane-footer') as Drawn
+  expect(footer).toBeTruthy()
+  expect(top.filter(n => keyOf(n) !== 'sticky-bar').pop()).toBe(footer)
+  expect(keyOf(childrenOf(footer)[0] as Drawn)).toBe('pane-footer-rule')
+  expect(nodesOf(childrenOf(footer)[0] as never).some(n => n.type === 'Text' && /^─+$/.test(textOf(n)))).toBe(true)
+  const about = nodesOf(footer as never).find(n => keyOf(n) === 'pane-footer-about')
+  expect(nodesOf(about as never).some(n => n.type === 'Svg' && n.props?.alt === 'GitHub')).toBe(true)
+  expect(nodesOf(about as never).some(n => n.type === 'Text' && textOf(n) === 'v0.107.0')).toBe(true)
+  expect(nodesOf(about as never).some(n => keyOf(n) === 'update-badge')).toBe(true)
+  const auto = nodesOf(footer as never).find(n => keyOf(n) === 'pane-footer-auto')
+  expect(nodesOf(auto as never).some(n => n.type === 'Text' && textOf(n) === 'Mise à jour automatique')).toBe(true)
+  expect(nodesOf(auto as never).find(n => keyOf(n) === 'auto-update-off')?.props?.dimColor).toBe(false)
+  expect(nodesOf(auto as never).find(n => keyOf(n) === 'auto-update-on')?.props?.dimColor).toBe(true)
+  // The footer stands on every view: the console's and the Configuration tab's too.
+  await ui.press({ key: 'nav-admin' })
+  expect(await ui.find({ key: 'pane-footer' })).toBeTruthy()
+  await ui.press({ key: 'nav-config' })
+  expect(await ui.find({ key: 'pane-footer' })).toBeTruthy()
+  await ui.press({ key: 'nav-vaults' })
   await ui.press({ key: 'github' })
   expect(launched).toContainEqual(['rundll32', 'url.dll,FileProtocolHandler', 'https://github.com/tboome33/obsidian-mcp-router'])
   // The badge unfolds the console, where the update is.
@@ -2455,6 +2477,73 @@ test('the console updates the plugin through Claude Code: the marketplace, then 
   ])
   expect(await ui.find({ type: 'Text', text: /^Plugin mis à jour en v0\.108\.0/ })).toBeTruthy()
   expect(await ui.find({ type: 'Button', key: 'update-badge' })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('the footer switch turns the automatic update on: kept in the store, applied at once while a newer version waits', async ($, on) => {
+  const runs: (readonly string[])[] = []
+  const toasts: string[] = []
+  const stored: Record<string, unknown> = {}
+  on('store.get', (_, e) => ({ value: stored[e.key] }))
+  on('store.set', (_, e) => {
+    stored[e.key] = e.value
+
+    return { value: undefined }
+  })
+  wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' }, toasts })
+  versions(on, '0.107.0', '0.108.0')
+  claudeCli(on, runs, '0.108.0')
+  await begin($)
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  await eventually(() => ui.find({ type: 'Button', key: 'update-badge' }))
+  // Off by default: the check ran, nothing was updated.
+  expect(runs).toEqual([])
+  await ui.press({ key: 'auto-update-on' })
+  expect(stored.autoUpdate).toBe(true)
+  expect(toasts).toContain("Mise à jour automatique activée : le panneau installera chaque nouvelle version au démarrage d'une session.")
+  expect(runs[0]).toEqual(['cmd', '/c', 'claude', 'plugin', 'marketplace', 'update', 'obsidian-mcp-router-marketplace'])
+  expect(await ui.find({ type: 'Button', key: 'update-badge' })).toBeFalsy()
+  expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'auto-update-on')?.props?.dimColor).toBe(false)
+  // Off again: kept, and nothing more runs.
+  const ran = runs.length
+  await ui.press({ key: 'auto-update-off' })
+  expect(stored.autoUpdate).toBe(false)
+  expect(toasts).toContain('Mise à jour automatique désactivée.')
+  expect(runs.length).toBe(ran)
+  await ui.unmount()
+})
+
+test('with the automatic update kept on, a session that finds a newer version on GitHub applies it on its own', async ($, on) => {
+  const runs: (readonly string[])[] = []
+  const toasts: string[] = []
+  on('store.get', (_, e) => ({ value: e.key === 'autoUpdate' ? true : undefined }))
+  wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' }, toasts })
+  versions(on, '0.107.0', '0.108.0')
+  claudeCli(on, runs, '0.108.0')
+  await begin($)
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  // No press: the start's check found 0.108.0 and ran the update, read back to the end and said.
+  expect(await eventually(async () => (toasts.some(text => text.startsWith('Plugin mis à jour en v0.108.0')) ? true : undefined))).toBe(true)
+  expect(runs[runs.length - 1]).toEqual(['cmd', '/c', 'claude', 'plugin', 'list', '--json'])
+  expect(runs.slice(0, 3)).toEqual([
+    ['cmd', '/c', 'claude', 'plugin', 'marketplace', 'update', 'obsidian-mcp-router-marketplace'],
+    ['cmd', '/c', 'claude', 'plugin', 'update', 'obsidian-router@obsidian-mcp-router-marketplace', '--scope', 'project'],
+    ['cmd', '/c', 'claude', 'plugin', 'update', 'obsidian-router@obsidian-mcp-router-marketplace', '--scope', 'user'],
+  ])
+  expect(nodesOf(await ui.drawn()).find(n => keyOf(n) === 'auto-update-on')?.props?.dimColor).toBe(false)
+  await ui.unmount()
+})
+
+test('with the automatic update kept on, nothing runs when GitHub has the installed version', async ($, on) => {
+  const runs: (readonly string[])[] = []
+  on('store.get', (_, e) => ({ value: e.key === 'autoUpdate' ? true : undefined }))
+  wire(on, { list: LIST, env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } })
+  versions(on, '0.107.0', '0.107.0')
+  claudeCli(on, runs, '0.107.0')
+  await begin($)
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  await eventually(() => ui.find({ type: 'Text', text: /^v0\.107\.0$/ }))
+  expect(runs).toEqual([])
   await ui.unmount()
 })
 
@@ -3274,7 +3363,7 @@ test('the menu stays at the top while the pane scrolls: a copy, no frame, over t
     const gear = at.find(n => keyOf(n) === 'nav-admin')
     expect(gear?.props?.label).toBe(surface === 'terminal' ? '⚙' : '  ')
     const endKeys = nodesOf(at.find(n => keyOf(n) === 'nav-end') as never).filter(n => n.type === 'Button').map(keyOf)
-    expect(endKeys.slice(-2)).toEqual(['nav-admin', 'github'])
+    expect(endKeys).toEqual(['nav-admin'])
     const inView = at.find(n => keyOf(n) === 'nav-vaults')
     expect(inView?.props?.plain).toBe(true)
     expect(inView?.props?.variant).toBeUndefined()
@@ -3554,16 +3643,23 @@ test('the console turns each way of opening a vault on or off: its mark, its leg
   await ui.unmount()
 })
 
-test('folded into "☰", the menu keeps the router mark at the left and GitHub at the right, no version', async ($, on) => {
+test('folded into "☰", the menu keeps the gear and the router mark at the right; GitHub and the version stay in the footer', async ($, on) => {
   wire(on, { list: LIST })
   versions(on, '0.107.0', '0.108.0')
   await begin($)
   const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 40 }, surface: 'desktop' })
-  const menu = nodesOf(await ui.drawn()).find(n => keyOf(n) === 'nav')
+  await eventually(() => ui.find({ type: 'Text', text: /^v0\.107\.0$/ }))
+  const nodes = nodesOf(await ui.drawn())
+  const menu = nodes.find(n => keyOf(n) === 'nav')
   expect(nodesOf(menu as never).some(n => keyOf(n) === 'nav-burger')).toBe(true)
-  expect(nodesOf(menu as never).some(n => n.type === 'Svg' && n.props?.alt === 'obsidian-mcp-router')).toBe(true)
-  expect(nodesOf(menu as never).some(n => keyOf(n) === 'github')).toBe(true)
+  const end = nodesOf(menu as never).find(n => keyOf(n) === 'nav-end')
+  expect(nodesOf(end as never).filter(n => n.type === 'Svg').map(n => n.props?.alt)).toEqual(['Administration', 'obsidian-mcp-router'])
+  expect(nodesOf(menu as never).some(n => keyOf(n) === 'github')).toBe(false)
   expect(nodesOf(menu as never).some(n => n.type === 'Text' && /^v\d/.test(textOf(n)))).toBe(false)
+  const footer = nodes.find(n => keyOf(n) === 'pane-footer')
+  expect(nodesOf(footer as never).some(n => keyOf(n) === 'github')).toBe(true)
+  expect(nodesOf(footer as never).some(n => n.type === 'Text' && textOf(n) === 'v0.107.0')).toBe(true)
+  expect(nodesOf(footer as never).some(n => keyOf(n) === 'auto-update-on')).toBe(true)
   await ui.unmount()
 })
 
@@ -4064,35 +4160,41 @@ test("the wide menu draws its keys as tabs on a shelf: round frames cut short of
   await narrow.unmount()
 })
 
-test('the menu keeps its shape when the router, the version and the update check answer: their room is counted from the first drawing', async ($, on) => {
+test('the menu keeps its shape when the router answers: the third key\'s room is counted from the first drawing; the version and the badge go to the footer', async ($, on) => {
   wire(on, { list: LIST })
-  // A version behind the installed one: once read, the version and the update badge stand at the right.
+  // A version behind the installed one: once read, the version and the update badge stand in the footer.
   versions(on, '0.107.0', '0.108.0')
-  const shape = (tree: unknown) => ({
-    burger: nodesOf(tree).some(n => keyOf(n) === 'nav-burger'),
-    tabs: nodesOf(tree).filter(n => (keyOf(n) ?? '').startsWith('navtab-')).map(n => keyOf(n)),
-    badge: nodesOf(tree).some(n => keyOf(n) === 'update-badge'),
-    version: nodesOf(tree).some(n => n.type === 'Text' && /^v\d/.test(textOf(n))),
-  })
-  // Before the router is read: no "+ Ajouter un vault", no version, no badge — an 80-column
-  // terminal pane would hold what is drawn, even with the rest to come, yet it folds, as it
-  // will once all of them are there (83 cells, as the terminal counts them: two tabs, the
-  // version's room, the badge, the gear and GitHub, with their gaps).
-  const narrow = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 80 }, surface: 'terminal' })
+  const shape = (tree: unknown) => {
+    const menu = nodesOf(tree).find(n => keyOf(n) === 'nav')
+    const footer = nodesOf(tree).find(n => keyOf(n) === 'pane-footer')
+
+    return {
+      burger: nodesOf(menu as never).some(n => keyOf(n) === 'nav-burger'),
+      tabs: nodesOf(menu as never).filter(n => (keyOf(n) ?? '').startsWith('navtab-')).map(n => keyOf(n)),
+      badge: nodesOf(footer as never).some(n => keyOf(n) === 'update-badge'),
+      version: nodesOf(footer as never).some(n => n.type === 'Text' && /^v\d/.test(textOf(n))),
+      inMenu: nodesOf(menu as never).some(n => keyOf(n) === 'update-badge' || keyOf(n) === 'github' || (n.type === 'Text' && /^v\d/.test(textOf(n)))),
+    }
+  }
+  // Before the router is read: no "+ Ajouter un vault" — a 65-column terminal pane would hold
+  // the two tabs drawn, yet it folds, as it will once the third is there (70 cells, as the
+  // terminal counts them: three tabs and the gear, with their gaps).
+  const narrow = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 65 }, surface: 'terminal' })
   const wide = await $.ui.mount({ ...WIDE, surface: 'desktop' })
-  expect(shape(await narrow.drawn())).toEqual({ burger: true, tabs: [], badge: false, version: false })
-  expect(shape(await wide.drawn())).toEqual({ burger: false, tabs: ['navtab-vaults', 'navtab-config'], badge: false, version: false })
-  // Read: the same panes, drawn again with the third key, the version and the badge, keep their shape.
+  expect(shape(await narrow.drawn())).toEqual({ burger: true, tabs: [], badge: false, version: false, inMenu: false })
+  expect(shape(await wide.drawn())).toEqual({ burger: false, tabs: ['navtab-vaults', 'navtab-config'], badge: false, version: false, inMenu: false })
+  // Read: the same panes, drawn again with the third key, keep their shape; the version and the badge are in the footer.
   await begin($)
-  expect(shape(await narrow.drawn())).toEqual({ burger: true, tabs: [], badge: false, version: false })
-  expect(shape(await wide.drawn())).toEqual({ burger: false, tabs: ['navtab-vaults', 'navtab-add', 'navtab-config'], badge: true, version: true })
+  await eventually(() => wide.find({ type: 'Button', key: 'update-badge' }))
+  expect(shape(await narrow.drawn())).toEqual({ burger: true, tabs: [], badge: true, version: true, inMenu: false })
+  expect(shape(await wide.drawn())).toEqual({ burger: false, tabs: ['navtab-vaults', 'navtab-add', 'navtab-config'], badge: true, version: true, inMenu: false })
   await narrow.press({ key: 'nav-burger' })
   expect(await narrow.find({ type: 'Button', key: 'nav-add' })).toBeTruthy()
   await narrow.unmount()
   await wide.unmount()
-  // The thresholds themselves, French, with three tabs: the terminal folds at 110 and spreads at
-  // 111; the desktop (its mark six cells, three rows tall; its gear and GitHub three each) at 111 and 112.
-  for (const [surface, columns, isFolded] of [['terminal', 110, true], ['terminal', 111, false], ['desktop', 111, true], ['desktop', 112, false]] as const) {
+  // The thresholds themselves, French, with three tabs: the terminal folds at 69 and spreads at
+  // 70; the desktop (its mark six cells, three rows tall; its gear three) at 76 and 77.
+  for (const [surface, columns, isFolded] of [['terminal', 69, true], ['terminal', 70, false], ['desktop', 76, true], ['desktop', 77, false]] as const) {
     const pane = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: columns }, surface })
     expect(shape(await pane.drawn()).burger).toBe(isFolded)
     await pane.unmount()

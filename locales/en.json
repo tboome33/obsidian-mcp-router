@@ -102,6 +102,9 @@
   "add.sortZa": "Z → A",
   "add.localOpen": "Local · open",
   "footer.github": "GitHub ↗",
+  "footer.autoUpdate": "Automatic updates",
+  "footer.autoUpdateOn": "On",
+  "footer.autoUpdateOff": "Off",
   "mode.headTitle": "read/write:",
   "legend.open": "Open:",
   "legend.obsidian": "Obsidian",
@@ -257,6 +260,8 @@
   "update.unchanged": "Nothing changed: Claude Code still has v{version}. Its marketplace may not offer the latest yet.",
   "update.unverified": "The update commands succeeded, but the installed version could not be read back: check with \"claude plugin list\".",
   "update.scopeFailed": "The update ({scope}) failed: {error}",
+  "update.autoOn": "Automatic updates on: the panel will install each new version when a session starts.",
+  "update.autoOff": "Automatic updates off.",
 
   "command.setupDescription": "Set up a vault: create an Obsidian vault with its conventions, or register one",
   "command.setupOpened": "Vault setup opened in the pane.",

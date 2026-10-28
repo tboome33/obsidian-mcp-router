@@ -60,6 +60,9 @@ const adminForm = atom({ plugin: 'obsidian-router', key: 'adminForm' } as const,
 const confirmRemove = atom({ plugin: 'obsidian-router', key: 'confirmRemove' } as const, null)
 const removePick = atom({ plugin: 'obsidian-router', key: 'removePick' } as const, null)
 const updateState = atom({ plugin: 'obsidian-router', key: 'update' } as const, null)
+// Whether the pane applies a newer version on its own when a session starts:
+// the footer's switch, kept in the plugin's store. Off until switched on.
+const autoUpdate = atom({ plugin: 'obsidian-router', key: 'autoUpdate' } as const, false)
 const EMPTY_CREATE: CreateForm = { name: '', path: '', mode: 'personal', conventions: [], languages: '', bind: true }
 const createForm = atom({ plugin: 'obsidian-router', key: 'createForm' } as const, EMPTY_CREATE)
 // The band's pick: the secondary whose controls stand on the line while the
@@ -1834,6 +1837,30 @@ async function checkUpdate($: EngineInterface) {
   }))
 }
 
+// The footer's switch, read from the plugin's store when a session starts.
+async function startAutoUpdate($: EngineInterface) {
+  const stored = await $.store.get('autoUpdate').catch(() => undefined)
+  await update($, autoUpdate, () => stored === true)
+}
+
+// Switched from the footer, kept for the next sessions. Switched on while a
+// newer version waits, it is applied at once rather than at the next start.
+async function setAutoUpdate($: EngineInterface, isOn: boolean) {
+  await update($, autoUpdate, () => isOn)
+  await $.store.set('autoUpdate', isOn).catch(() => undefined)
+  $.ui.toast(t(isOn ? 'update.autoOn' : 'update.autoOff'))
+  await applyIfAuto($)
+}
+
+// The switch on and GitHub announcing a newer version: the pane runs the
+// update its "Mettre à jour" key runs, once the check has answered.
+async function applyIfAuto($: EngineInterface) {
+  const state = await read($, updateState)
+  if ((await read($, autoUpdate)) && state?.isAvailable && !state.isRunning) {
+    await updatePlugin($)
+  }
+}
+
 // The marketplace the plugin was installed from, read off its folder
 // (…/cache/<marketplace>/obsidian-router/<version>); the project's own else.
 function marketplaceOf($: EngineInterface) {
@@ -2248,6 +2275,7 @@ export const register: Register = on => {
     isEnvKnown = true
     await startLanguage($).catch(() => undefined)
     await startOpeners($).catch(() => undefined)
+    await startAutoUpdate($).catch(() => undefined)
     if (isOptedOut) {
       // A pane an earlier start opened while this one read its environment
       // is closed: the earlier start's own check ran before this answer.
@@ -2264,8 +2292,11 @@ export const register: Register = on => {
       name: 'vault-setup',
       description: t('command.setupDescription'),
     })
-    // The plugin's version against GitHub's, once per session.
-    void checkUpdate($).catch(() => undefined)
+    // The plugin's version against GitHub's, once per session; applied then
+    // when the footer's switch is on.
+    void checkUpdate($)
+      .then(() => applyIfAuto($))
+      .catch(() => undefined)
     // WireGuard, once per session in the background: the pane says whether
     // the remote vaults can be reached, and asks for the tunnel when not.
     void checkWireguard($, start).catch(() => undefined)
@@ -2431,6 +2462,7 @@ export const register: Register = on => {
     const readFailed = await read($, readFailures)
     const languages = isAdminShown ? await availableLanguages($) : []
     const upd = await read($, updateState)
+    const isAutoUpdate = await read($, autoUpdate)
     const creating = await read($, createForm)
     const pending = await read($, pendingConventions)
     const conventions = isAdminShown ? await conventionIds($) : []
@@ -2666,22 +2698,21 @@ export const register: Register = on => {
       ) : (
         <Button key={key} label={glyph} plain dimColor={!pressed} onPress={onPress} />
       )
-    // The router's mark at the menu's left; the version, the update badge and
-    // the repository at its right. On a pane too narrow for the three on one
-    // line, they fold into "☰" and the view in sight (a press unfolds them one
-    // under the other), with only the mark and the repository beside it.
+    // The tabs at the menu's left; the gear and the router's mark at its
+    // right (Roland, v0.119.2: the mark moved right, the version, the update
+    // badge and GitHub's mark down to the pane's footer). On a pane too narrow
+    // for the tabs on one line, they fold into "☰" and the view in sight (a
+    // press unfolds them one under the other), the gear and the mark beside it.
     // Counted as the terminal draws them: each label in "[ ]" (4 cells) in
-    // its tab's frame (2), 2-cell gaps, the mark (3) and what stands at the
-    // right. Nothing to add before the router is read: no "+ Ajouter un
-    // vault" then — but its room, a version's (ten cells, or the version's
-    // own once read and longer) and the update badge's are counted from the
-    // first drawing, so the menu keeps its shape, for a given width and
-    // labels, when the router, the version and the update check answer: a
-    // menu drawn wide and then folded left the frame of its first tab behind
-    // on the terminal, whose painter does not clear a cell nothing draws on
-    // (seen on v0.116.1, a "╮" after "☰ Vaults").
-    // Two tabs: the administration is no tab but a key at the right, the gear
-    // beside GitHub's mark (v0.116.11); the console in sight opens no tab.
+    // its tab's frame (2), 2-cell gaps, the mark (6) and the gear. Nothing to
+    // add before the router is read: no "+ Ajouter un vault" then — but its
+    // room is counted from the first drawing, so the menu keeps its shape,
+    // for a given width and labels, when the router answers: a menu drawn
+    // wide and then folded left the frame of its first tab behind on the
+    // terminal, whose painter does not clear a cell nothing draws on (seen on
+    // v0.116.1, a "╮" after "☰ Vaults").
+    // The administration is no tab but a key at the right, the gear
+    // (v0.116.11); the console in sight opens no tab.
     // Three tabs (Roland, from a sketch): the vaults in use, adding one, and
     // this workspace's configuration. Nothing to add before the router is read.
     const menuLabels: [PaneView, string][] = [
@@ -2692,8 +2723,8 @@ export const register: Register = on => {
     const foldLabels = [t('nav.vaults'), t('nav.add'), t('nav.config')]
     const menuColumns = e.props.bodyColumns ?? 60
     const version = upd?.installed ? `v${upd.installed}` : ''
-    // The version, the badge, the gear and GitHub's mark, with their gaps.
-    const endCells = Math.max(cells(version), 10) + 2 + cells(t('update.badge')) + 2 + (Mark ? 3 : 2) + 2 + (Mark ? 3 : cells(t('footer.github')) + 1)
+    // The gear.
+    const endCells = Mark ? 3 : 2
     const isBurger = foldLabels.reduce((sum, label) => sum + cells(label) + 4 + 2 + 2, 0) + (Mark ? 6 : 0) + endCells > menuColumns
     const rule = (
       <Text dimColor wrap="truncate-end">
@@ -2701,7 +2732,7 @@ export const register: Register = on => {
       </Text>
     )
     // As tall as the workspace's line and the tabs under it together (Roland,
-    // from a sketch): three rows.
+    // from a sketch): three rows. At the menu's right end.
     const brand = Mark ? <Mark source={ROUTER_MARK} alt={markAlt(ROUTER_MARK)} width={44} height={44} /> : null
     // The workspace the pane speaks for, on a line of its own above the tabs.
     const workspaceLine = (prefix: string) => (
@@ -2714,31 +2745,15 @@ export const register: Register = on => {
         </Text>
       </Box>
     )
-    const repository = (prefix: string) =>
-      iconKey(GITHUB_MARK, t('footer.github'), `${prefix}github`, () => void openUrl($, REPO_URL))
     // The gear: the console shown, or the vaults again while it is; drawn
     // held down while the console is in sight (no tab is open then).
     const console_ = (prefix: string) =>
       iconKey(isAdminShown ? GEAR_MARK_LIT : GEAR_MARK, '⚙', `${prefix}nav-admin`, () => void showView($, isAdminShown ? 'vaults' : 'admin'), isAdminShown)
-    // Two rows tall, as a closed tab is, so the version and the marks stand
-    // level with the keys on the wide menu.
+    // Two rows tall, as a closed tab is, so the gear stands level with the
+    // keys on the wide menu.
     const menuEnd = (prefix: string) => (
       <Box key={`${prefix}nav-end`} flexDirection="row" gap={2} alignItems="center" flexShrink={0} height={2}>
-        {version && (
-          <Text size="caption" dimColor>
-            {version}
-          </Text>
-        )}
-        {upd?.isAvailable && (
-          <Button
-            key={`${prefix}update-badge`}
-            label={t('update.badge')}
-            plain
-            onPress={() => void update($, adminSection, () => 'general').then(() => showView($, 'admin'))}
-          />
-        )}
         {console_(prefix)}
-        {repository(prefix)}
       </Box>
     )
     const navMenu = (prefix: string) =>
@@ -2746,18 +2761,15 @@ export const register: Register = on => {
         <Box key={`${prefix}nav`} flexDirection="column">
           {workspaceLine(prefix)}
           <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
-            <Box flexDirection="row" gap={1} alignItems="center">
-              {brand}
-              <Button
-                key={`${prefix}nav-burger`}
-                label={`☰ ${menuLabels.find(([id]) => id === view)?.[1] ?? t('nav.admin')}`}
-                plain
-                onPress={() => void update($, navOpen, open => !open)}
-              />
-            </Box>
+            <Button
+              key={`${prefix}nav-burger`}
+              label={`☰ ${menuLabels.find(([id]) => id === view)?.[1] ?? t('nav.admin')}`}
+              plain
+              onPress={() => void update($, navOpen, open => !open)}
+            />
             <Box key={`${prefix}nav-end`} flexDirection="row" gap={2} alignItems="center" flexShrink={0}>
               {console_(prefix)}
-              {repository(prefix)}
+              {brand}
             </Box>
           </Box>
           {isNavOpen && (
@@ -2780,11 +2792,6 @@ export const register: Register = on => {
             <Box position="absolute" top={0} left={-1} right={-1} height={2} borderStyle="single" borderColor="inactive" />
           </Box>
           <Box flexDirection="row" gap={2} alignItems="flex-start">
-            {brand && (
-              <Box key={`${prefix}nav-brand`} height={3} alignItems="center" justifyContent="center" flexShrink={0}>
-                {brand}
-              </Box>
-            )}
             <Box flexDirection="column" flexGrow={1} flexShrink={1}>
               {workspaceLine(prefix)}
               <Box flexDirection="row" justifyContent="space-between" alignItems="flex-start" gap={2}>
@@ -2794,6 +2801,11 @@ export const register: Register = on => {
                 {menuEnd(prefix)}
               </Box>
             </Box>
+            {brand && (
+              <Box key={`${prefix}nav-brand`} height={3} alignItems="center" justifyContent="center" flexShrink={0}>
+                {brand}
+              </Box>
+            )}
           </Box>
         </Box>
       )
@@ -3080,6 +3092,47 @@ export const register: Register = on => {
       </Box>
     )
     const isUpToDate = !!upd?.installed && !!upd.latest && !upd.isAvailable
+    // The pane's foot, under a rule, on every view (Roland, v0.119.2):
+    // GitHub's mark and the plugin's version at the left, the update badge
+    // beside them when GitHub has a newer one (it unfolds the console, where
+    // the update is); the automatic update's switch at the right.
+    const footer = (
+      <Box key="pane-footer" flexDirection="column">
+        {sectionRule('pane-footer')}
+        <Box key="pane-footer-row" flexDirection="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={2}>
+          <Box key="pane-footer-about" flexDirection="row" gap={2} alignItems="center" flexShrink={0}>
+            {iconKey(GITHUB_MARK, t('footer.github'), 'github', () => void openUrl($, REPO_URL))}
+            {version && (
+              <Text size="caption" dimColor>
+                {version}
+              </Text>
+            )}
+            {upd?.isAvailable && (
+              <Button
+                key="update-badge"
+                label={t('update.badge')}
+                plain
+                onPress={() => void update($, adminSection, () => 'general').then(() => showView($, 'admin'))}
+              />
+            )}
+          </Box>
+          <Box key="pane-footer-auto" flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+            <Text size="caption" dimColor>
+              {t('footer.autoUpdate')}
+            </Text>
+            {toggle<'on' | 'off'>(
+              'auto-update',
+              [
+                { value: 'off', label: t('footer.autoUpdateOff') },
+                { value: 'on', label: t('footer.autoUpdateOn') },
+              ],
+              isAutoUpdate ? 'on' : 'off',
+              value => (value === 'on') !== isAutoUpdate && void setAutoUpdate($, value === 'on'),
+            )}
+          </Box>
+        </Box>
+      </Box>
+    )
     // The side list of the settings page: each section a row (its mark, its
     // name), the shown one framed, its name bold and plain. A grey ground
     // under it left the name unreadable (Roland, on screen, v0.119.0): a
@@ -3624,6 +3677,7 @@ export const register: Register = on => {
           )}
           {problems}
           {admin}
+          {footer}
           {sticky}
         </Box>
       )
@@ -3652,6 +3706,7 @@ export const register: Register = on => {
           {hooksBody}
         </Box>
         {extra as never}
+        {footer}
         {sticky}
       </Box>
     )
@@ -3664,6 +3719,7 @@ export const register: Register = on => {
           {navMenu('')}
           {statusLine}
           {problems}
+          {footer}
           {sticky}
         </Box>
       )
@@ -4508,6 +4564,7 @@ export const register: Register = on => {
           {statusLine}
           {problems}
           {transfer}
+          {footer}
           {sticky}
         </Box>
       )
@@ -4698,6 +4755,7 @@ export const register: Register = on => {
         {primary}
         {secondaries}
         {!snap.primary && adding}
+        {footer}
         {sticky}
       </Box>
     )
