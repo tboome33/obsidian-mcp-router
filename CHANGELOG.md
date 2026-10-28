@@ -10,6 +10,29 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### The panel's mark moves right; a footer holds GitHub, the version and an automatic update switch
+
+Asked by Roland on v0.119.2.
+
+- **The router's mark stands at the right end of the menu**, after the gear, on the wide menu and on
+  the one folded into "☰" — the pinned copy that follows the scroll included.
+- **A footer closes every view of the pane** (the vaults, adding one, the Configuration tab, the
+  console), under a rule: GitHub's mark and the plugin's version at the left, the "● maj
+  disponible" badge beside them when GitHub has a newer version (it still unfolds the console's
+  update), and the **automatic update switch** at the right. The menu no longer holds the version,
+  the badge or GitHub's mark, so it folds into "☰" later: at 69 columns on the terminal instead of
+  110, at 76 on the desktop instead of 111.
+- **The automatic update is the panel's own**, off by default and kept in the plugin's store. On,
+  the panel runs what its "Mettre à jour" key runs (`claude plugin marketplace update`, then
+  `claude plugin update` for this project and the user scope, read back with `claude plugin list`)
+  as soon as its once-per-session check finds a newer version on GitHub; switched on while an
+  update waits, it is applied at once. It is unrelated to `OBSIDIAN_ROUTER_AUTO_UPDATE` (the
+  opt-in `check-router-update` hook) and to the marketplace's own auto-update in `/plugin`.
+- Tests: `tests/vault-panel.test.tsx` 152 as the runner counts them (the menu's mark at its right
+  end, the footer's rule and contents on every view, the switch stored and applied at once, a
+  session that applies a waiting update on its own, nothing run when GitHub has the installed
+  version, the new fold thresholds); six mutations, each killed.
+
 ## [0.119.2] — 2026-10-27 — the panel reads the conventions read-only; read errors stay in their section; no false "no vault" toast
 
 Three panel problems seen on the Hermès VM in auto mode: the Configuration tab read the conventions
