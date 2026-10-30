@@ -476,6 +476,8 @@ de 4 fichiers, aucun n'a de sous-dossier plus profond qu'un niveau ; en tout, 22
 | Nombre de fichiers d'un skill | 64 | `too-many-files` |
 | Profondeur sous le dossier du skill | 4 niveaux de sous-dossiers | `too-deep` |
 | Nombre de skills par vault | 64 | inventaire « incomplet », `too-many-skills` |
+| Entrées d'un même dossier (fichiers, dossiers, liens), lues en flux et comptées avant tout tri | 1024 | dans un skill : skill « non approuvable », `too-many-entries` ; à la racine de `.claude/skills/` : inventaire « incomplet », `too-many-entries` |
+| Entrées de la racine qui ne sont pas des skills, listées dans la réponse | 256 | les suivantes sont comptées (`othersOmitted`), pas listées : rien n'est perdu en silence |
 | Taille de la réponse du bridge | 8 Mio | inventaire « incomplet », `response-too-large` |
 | Durée du parcours dans le bridge | 5 secondes | inventaire « incomplet », `timeout` |
 | Attente de la réponse par le routeur | 15 secondes | vault « injoignable » pour cet inventaire |
@@ -779,8 +781,11 @@ jamais comme du Markdown ni du HTML.
 émise.
 - Inventaire et vault : `offline`, `bridge-missing`, `bridge-too-old`, `unreachable`, `timeout`,
   `response-too-large`, `too-many-skills`, `digest-mismatch`.
-- Skill non approuvable : `file-too-large`, `skill-too-large`, `too-many-files`, `too-deep`, `bad-skill-id`,
-  `bad-path`, `path-collision`, `link-or-special`, `unreadable-file`, `no-frontmatter`.
+- Skill non approuvable : `file-too-large`, `skill-too-large`, `too-many-files`, `too-many-entries`, `too-deep`,
+  `bad-skill-id`, `bad-path`, `path-collision`, `link-or-special`, `unreadable-file`, `no-frontmatter`.
+  `link-or-special` couvre aussi un fichier à plusieurs liens durs (`nlink > 1`) : un lien dur vers un fichier hors
+  du vault serait sinon lu comme un fichier ordinaire. `too-many-entries` sert aussi d'inventaire « incomplet » quand
+  la racine de `.claude/skills/` dépasse son plafond d'entrées.
 - Commandes : `stale-digest`, `not-eligible`, `not-approved`, `risk-not-confirmed`, `scanner-missing`,
   `reviewer-unavailable`, `tampered`, `not-local`, `workspace-unbound`, `vault-not-bound`, `vault-paused`,
   `ambiguous-vault`, `io-error`.
