@@ -39,7 +39,8 @@ in Claude Desktop too.
 - **How the surface is told**, from facts only: `session.start`'s own `surface` (`terminal` under
   the CLI's REPL; null under Claude Desktop, an SDK host whose `desktop` surface attaches
   afterwards through `session.attach`), then `CLAUDE_CODE_ENTRYPOINT` (`cli` in a console,
-  `claude-desktop` under Claude Desktop), then `$.session.surfaces()`. Only `desktop` opens
+  `claude-desktop` under Claude Desktop), then `$.session.surfaces()`. The first two are final;
+  within the roster, and among the surfaces that attach while it is read, a terminal comes first. Only `desktop` opens
   anything on its own; `vscode`, `mobile` and a surface this build does not know draw what
   `/vaults` opened, never an automatic open (a phone attached to a CLI session draws nothing,
   the session being the CLI's). A session that says neither shows nothing until Claude

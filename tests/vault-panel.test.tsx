@@ -156,7 +156,7 @@ const notConnected = (server: string, tool: string) => ({
 // Answers every engine call the panel makes; `list` is read at each list_vaults.
 // `hold`, when set, holds the next list_vaults answer until the test calls
 // the function it returns: the way to make two reads overlap.
-function wire(on: On, state: { list: unknown; answers?: Record<string, unknown>; refuse?: string; refuseOnce?: string; unreachable?: string; refuseText?: string; writeAnswer?: unknown; held?: Promise<void>; env?: Record<string, string>; opens?: number; closes?: number; openHeld?: Promise<void>; blocked?: string[]; toasts?: string[]; registered?: string[]; unplaced?: boolean; clock?: ReturnType<typeof mock.clock> }) {
+function wire(on: On, state: { list: unknown; answers?: Record<string, unknown>; refuse?: string; refuseOnce?: string; unreachable?: string; refuseText?: string; writeAnswer?: unknown; held?: Promise<void>; env?: Record<string, string>; opens?: number; closes?: number; openHeld?: Promise<void>; blocked?: string[]; toasts?: string[]; registered?: string[]; closeHeld?: Promise<void>; unplaced?: boolean; clock?: ReturnType<typeof mock.clock> }) {
   const calls: { server: string; tool: string; args: Record<string, unknown> }[] = []
   on('env.get', (_, e) => ({ value: state.env?.[e.name] }))
   on('mcp.call', async (_, e) => {
@@ -211,8 +211,11 @@ function wire(on: On, state: { list: unknown; answers?: Record<string, unknown>;
     // A narrow terminal answers an unasked open without drawing it.
     return { value: state.unplaced ? { isPlaced: false as const, reason: 'narrow terminal' } : { isPlaced: true as const } }
   })
-  on('ui.close', () => {
+  on('ui.close', async () => {
     state.closes = (state.closes ?? 0) + 1
+    const held = state.closeHeld
+    state.closeHeld = undefined
+    await held
 
     return { value: undefined }
   })
@@ -5041,9 +5044,12 @@ test('a /vaults still opening when a terminal attaches closes what it opened: no
   expect(await eventually(async () => (await $.tool.call({ tool: 'Read', file_path: 'a.md' }), (state.opens ?? 0) >= 1 || undefined))).toBe(true)
   await $.session.attach({ surface: 'terminal', clientId: 'terminal:default' })
   const closedBefore = state.closes ?? 0
+  const readsBefore = calls.filter(c => c.tool === 'list_vaults').length
   releaseOpen()
-  await command
+  // The command goes no further: the CLI's line, and no list read for it.
+  expect((await command).text).toMatch(/Claude Desktop/)
   await settle($)
+  expect(calls.filter(c => c.tool === 'list_vaults').length).toBe(readsBefore)
   // What the pending open opened is closed again, and nothing polls.
   expect(state.closes ?? 0).toBeGreaterThan(closedBefore)
   const reads = calls.filter(c => c.tool === 'list_vaults').length
@@ -5103,4 +5109,79 @@ test('a terminal attaching while the start reads a roster that says desktop make
   expect(state.opens ?? 0).toBe(0)
   expect(state.registered).toEqual([])
   expect(calls.some(c => c.tool === 'list_vaults')).toBe(false)
+})
+
+test('CLAUDE_CODE_ENTRYPOINT=claude-desktop is final: a terminal attaching during the detection does not make it the CLI', async ($, on) => {
+  const state: Parameters<typeof wire>[1] = { list: LIST, env: DESKTOP_ENV, registered: [] }
+  wire(on, state)
+  on('tool.call', () => ({ result: 'ok' }))
+  on('session.attach', (_, e) => ({ clientId: e.clientId }))
+  // The attach lands while the start is still reading its environment.
+  const started = $.session.start(DESKTOP_START)
+  await $.session.attach({ surface: 'terminal', clientId: 'terminal:default' })
+  await started
+  expect(await untilOpened($, state)).toBe(true)
+  expect(state.registered).toEqual(['vaults', 'vault-setup'])
+})
+
+test('Claude Desktop attaching while the start closes a pane for a host not known yet: the pane it opens is not undone', async ($, on) => {
+  let releaseClose = () => {}
+  const state: Parameters<typeof wire>[1] = {
+    list: LIST,
+    env: {},
+    closeHeld: new Promise<void>(resolve => {
+      releaseClose = resolve
+    }),
+  }
+  const calls = wire(on, state)
+  engineBand(on)
+  on('tool.call', () => ({ result: 'ok' }))
+  unknownHost(on)
+  const started = $.session.start(DESKTOP_START)
+  // The start's own close of a restored pane is held: Claude Desktop attaches meanwhile.
+  expect(await eventually(async () => (await $.tool.call({ tool: 'Read', file_path: 'a.md' }), (state.closes ?? 0) >= 1 || undefined))).toBe(true)
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  // Whatever the attach starts gets as far as it can while the close is held.
+  await settle($)
+  releaseClose()
+  await started
+  expect(await untilOpened($, state)).toBe(true)
+  await settle($)
+  // Adopted: the open was not undone by the start's clean-up — the band's
+  // toggle hides a pane that is there, and no close followed the held one.
+  expect(state.closes).toBe(1)
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const toggle = nodesOf(await band.drawn()).find(n => n.type === 'Button' && keyOf(n) === 'toggle-pane')
+  expect(toggle?.props?.label).toBe('◧ Masquer le panneau')
+  await band.unmount()
+  expect(calls.some(c => c.tool === 'list_vaults')).toBe(true)
+})
+
+test("an older terminal start whose close lands after a newer Claude Desktop start opened the pane leaves that pane alone", async ($, on) => {
+  let releaseClose = () => {}
+  const state: Parameters<typeof wire>[1] = {
+    list: LIST,
+    env: {},
+    closeHeld: new Promise<void>(resolve => {
+      releaseClose = resolve
+    }),
+  }
+  wire(on, state)
+  engineBand(on)
+  on('tool.call', () => ({ result: 'ok' }))
+  // The CLI's start: its close of a restored pane is held.
+  const older = $.session.start(CLI_START)
+  expect(await eventually(async () => (await $.tool.call({ tool: 'Read', file_path: 'a.md' }), (state.closes ?? 0) >= 1 || undefined))).toBe(true)
+  // A newer start, Claude Desktop's, opens the bound workspace's pane.
+  await $.session.start(START)
+  expect(await untilOpened($, state)).toBe(true)
+  await settle($)
+  releaseClose()
+  await older
+  await settle($)
+  // The newer pane is still this session's: the band's toggle hides it.
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const toggle = nodesOf(await band.drawn()).find(n => n.type === 'Button' && keyOf(n) === 'toggle-pane')
+  expect(toggle?.props?.label).toBe('◧ Masquer le panneau')
+  await band.unmount()
 })

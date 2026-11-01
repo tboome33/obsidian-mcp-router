@@ -2222,23 +2222,47 @@ const APP_SURFACES = new Set<string>(['desktop'])
 // whose surface attaches later), CLAUDE_CODE_ENTRYPOINT ('cli' in a console,
 // 'claude-desktop' under Claude Desktop), then the surfaces attached so far.
 // Nothing said is 'unknown': nothing then opens on its own.
-async function detectHost($: EngineInterface, surface: string | null): Promise<Host> {
+// `from` is the fact that decided: 'start' (session.start's surface), 'entry'
+// (CLAUDE_CODE_ENTRYPOINT), 'roster', or 'none'.
+type Detected = { host: Host; from: 'start' | 'entry' | 'roster' | 'none' }
+async function detectHost($: EngineInterface, surface: string | null): Promise<Detected> {
   if (surface === 'terminal') {
-    return 'terminal'
+    return { host: 'terminal', from: 'start' }
   }
   const entry = ((await $.env.get('CLAUDE_CODE_ENTRYPOINT').catch(() => undefined)) ?? '').trim()
   if (entry === 'cli') {
-    return 'terminal'
+    return { host: 'terminal', from: 'entry' }
   }
-  if ((surface && APP_SURFACES.has(surface)) || entry === 'claude-desktop') {
-    return 'app'
+  if (surface && APP_SURFACES.has(surface)) {
+    return { host: 'app', from: 'start' }
+  }
+  if (entry === 'claude-desktop') {
+    return { host: 'app', from: 'entry' }
   }
   const attached = await $.session.surfaces().catch(() => [] as readonly string[])
   if (attached.includes('terminal')) {
-    return 'terminal'
+    return { host: 'terminal', from: 'roster' }
   }
 
-  return attached.some(s => APP_SURFACES.has(s)) ? 'app' : 'unknown'
+  return attached.some(s => APP_SURFACES.has(s)) ? { host: 'app', from: 'roster' } : { host: 'unknown', from: 'none' }
+}
+
+// The host, from what detectHost found and the surfaces that attached while it
+// read the roster (earlyAttach). A start surface or CLAUDE_CODE_ENTRYPOINT is
+// final; below them, terminal first — the roster's own order — then Claude
+// Desktop's surface.
+function settleHost(detected: Detected): Host {
+  if (detected.from === 'start' || detected.from === 'entry') {
+    return detected.host
+  }
+  if (earlyAttach.has('terminal')) {
+    return 'terminal'
+  }
+  if (detected.host !== 'unknown') {
+    return detected.host
+  }
+
+  return [...earlyAttach].some(s => APP_SURFACES.has(s)) ? 'app' : 'unknown'
 }
 
 // Bound: a primary, or at least one secondary (a paused one included).
@@ -2515,37 +2539,35 @@ export const register: Register = on => {
     if (start !== generation) {
       return next(e)
     }
-    // Surfaces that attached while detectHost read the roster: a terminal
-    // makes it the CLI whatever the roster said (terminal first, as in
-    // detectHost), Claude Desktop's surface an app when nothing else did.
-    host = earlyAttach.has('terminal')
-      ? 'terminal'
-      : detected !== 'unknown'
-        ? detected
-        : [...earlyAttach].some(s => APP_SURFACES.has(s))
-          ? 'app'
-          : 'unknown'
+    // Not an app's (the CLI, or not known yet): nothing shows on its own, so a
+    // pane the app restored is closed — adopted or not: one drawn while
+    // detectHost read the roster was left unadopted, and nothing would draw it
+    // again. Closed BEFORE the host is published and before the commands
+    // exist: an attach meanwhile is only recorded (no startApp to undo), and
+    // no /vaults can land in between and lose its pane. Closing a pane that is
+    // not open does nothing.
+    if (settleHost(detected) !== 'app') {
+      await $.ui.close({ id: PANE }).catch(() => undefined)
+      // A newer start may have opened the pane while this close was pending:
+      // its state is not this start's to mark closed.
+      if (start !== generation) {
+        return next(e)
+      }
+      await markClosed($)
+      if (start !== generation) {
+        return next(e)
+      }
+    }
+    // Surfaces that attached meanwhile are folded in now (settleHost).
+    host = settleHost(detected)
     isHostDetected = true
     earlyAttach.clear()
     if (host === 'terminal') {
       // The CLI in a console draws no mod of the router's: no command, no
-      // pane — one the app restored from an earlier layout is closed — no
-      // router call for them, and no update the footer's switch would run
-      // (with its toast) behind a pane the CLI never shows. The tools and the
-      // other hooks are unchanged.
-      await $.ui.close({ id: PANE }).catch(() => undefined)
-
+      // pane, no router call for them, and no update the footer's switch
+      // would run (with its toast) behind a pane the CLI never shows. The
+      // tools and the other hooks are unchanged.
       return next(e)
-    }
-    // 'unknown' waits for Claude Desktop's surface to attach (session.attach)
-    // and shows nothing meanwhile: a pane the app restored is closed —
-    // adopted or not: one drawn while detectHost read the roster was left
-    // unadopted, and nothing would draw it again. Closed BEFORE the commands
-    // exist, so no /vaults can land in between and lose its pane. Closing a
-    // pane that is not open does nothing.
-    if (host !== 'app') {
-      await $.ui.close({ id: PANE }).catch(() => undefined)
-      await markClosed($)
     }
     await registerCommands($)
     if (host === 'app') {
@@ -2633,7 +2655,14 @@ export const register: Register = on => {
     checkUpdateOnce($, generation)
     await showAdminSection($, 'create')
     await openPane($)
+    if (host === 'terminal') {
+      return { text: t('command.terminal') }
+    }
     await refresh($)
+    // Or while the router was read: no WireGuard probe, the CLI's line.
+    if (host === 'terminal') {
+      return { text: t('command.terminal') }
+    }
     void checkWireguard($).catch(() => undefined)
 
     return { text: t('command.setupOpened') }
@@ -2650,7 +2679,16 @@ export const register: Register = on => {
     hasShown = true
     checkUpdateOnce($, generation)
     await openPane($)
+    // A terminal attached while the pane opened: openPane closed it again,
+    // and nothing is read for a session that is the CLI's now.
+    if (host === 'terminal') {
+      return { text: t('command.terminal') }
+    }
     await refresh($)
+    // Or while the router was read: the attach closed the pane, the CLI's line.
+    if (host === 'terminal') {
+      return { text: t('command.terminal') }
+    }
     const err = await read($, error)
 
     return {
