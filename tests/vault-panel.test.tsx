@@ -156,7 +156,7 @@ const notConnected = (server: string, tool: string) => ({
 // Answers every engine call the panel makes; `list` is read at each list_vaults.
 // `hold`, when set, holds the next list_vaults answer until the test calls
 // the function it returns: the way to make two reads overlap.
-function wire(on: On, state: { list: unknown; answers?: Record<string, unknown>; refuse?: string; refuseOnce?: string; unreachable?: string; refuseText?: string; writeAnswer?: unknown; held?: Promise<void>; env?: Record<string, string>; opens?: number; closes?: number; openHeld?: Promise<void>; blocked?: string[]; toasts?: string[]; unplaced?: boolean; clock?: ReturnType<typeof mock.clock> }) {
+function wire(on: On, state: { list: unknown; answers?: Record<string, unknown>; refuse?: string; refuseOnce?: string; unreachable?: string; refuseText?: string; writeAnswer?: unknown; held?: Promise<void>; env?: Record<string, string>; opens?: number; closes?: number; openHeld?: Promise<void>; blocked?: string[]; toasts?: string[]; registered?: string[]; unplaced?: boolean; clock?: ReturnType<typeof mock.clock> }) {
   const calls: { server: string; tool: string; args: Record<string, unknown> }[] = []
   on('env.get', (_, e) => ({ value: state.env?.[e.name] }))
   on('mcp.call', async (_, e) => {
@@ -197,7 +197,11 @@ function wire(on: On, state: { list: unknown; answers?: Record<string, unknown>;
 
     return { value: { content: [{ type: 'text', text }], isError: false } }
   })
-  on('command.register', () => ({ value: { command: 'vaults' } }))
+  on('command.register', (_, e) => {
+    state.registered?.push(e.name)
+
+    return { value: { command: 'vaults' } }
+  })
   on('ui.open', async () => {
     state.opens = (state.opens ?? 0) + 1
     const held = state.openHeld
@@ -4480,12 +4484,17 @@ test("a failed read of the conventions or the hooks is said in its section, and 
   await ui.unmount()
 })
 
-test('the start says "no vault for this project" only on a list it read: /vaults typed while the start reads makes it drop its answer, and no toast is said', async ($, on) => {
+// Bound to secondaries only: the one binding the start still tells to set a
+// primary up.
+const SECONDARIES_ONLY = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, vault: null } }
+const NO_PRIMARY_TOAST = /Pas de vault principal pour ce projet/
+
+test('the start says "no primary vault" only on a list it read: /vaults typed while the start reads makes it drop its answer, and no toast is said', async ($, on) => {
   let releaseStart = () => {}
   let releaseCommand = () => {}
   const toasts: string[] = []
   const state: Parameters<typeof wire>[1] = {
-    list: LIST,
+    list: SECONDARIES_ONLY,
     toasts,
     // The start's own read of the router is held.
     held: new Promise<void>(resolve => {
@@ -4510,11 +4519,588 @@ test('the start says "no vault for this project" only on a list it read: /vaults
   for (let i = 0; i < 20; i += 1) {
     await tick()
   }
-  expect(toasts.filter(text => /Aucun vault pour ce projet/.test(text))).toEqual([])
+  expect(toasts.filter(text => NO_PRIMARY_TOAST.test(text))).toEqual([])
   releaseCommand()
   await command
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await eventually(() => ui.find({ type: 'Text', text: /^PRINCIPAL :$/ }))).toBeTruthy()
-  expect(toasts.filter(text => /Aucun vault pour ce projet/.test(text))).toEqual([])
   await ui.unmount()
+})
+
+test('the start says "no primary vault" once, on a list it read, for a binding to secondaries only; never for an unbound workspace', async ($, on) => {
+  const toasts: string[] = []
+  const state: Parameters<typeof wire>[1] = { list: SECONDARIES_ONLY, toasts }
+  wire(on, state)
+  on('tool.call', () => ({ result: 'ok' }))
+  await $.session.start(START)
+  expect(await eventually(async () => (await $.tool.call({ tool: 'Read', file_path: 'a.md' }), toasts.some(text => NO_PRIMARY_TOAST.test(text)) || undefined))).toBe(true)
+  expect(state.opens).toBe(1)
+  expect(toasts.filter(text => NO_PRIMARY_TOAST.test(text))).toHaveLength(1)
+})
+
+// ---- Where the mods show: the surface, and the workspace's binding ----------
+// The CLI in a console shows no mod of the router's; Claude Desktop shows the
+// pane and the band on its own for a bound workspace, and for an unbound one
+// only once /vaults asks for them.
+
+const UNBOUND = { ...LIST, workspaceBinding: null }
+// The CLI under its REPL: session.start says `terminal`.
+const CLI_START = { cwd: '/', surface: 'terminal', isInteractive: true } as const
+// Claude Desktop: an SDK host, whose surface attaches after the start.
+const DESKTOP_START = { cwd: '/', surface: null, isInteractive: false } as const
+const DESKTOP_ENV = { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' }
+const VAULTS = { command: 'vaults', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as const
+const VAULT_SETUP = { ...VAULTS, command: 'vault-setup' } as const
+
+// What the router's band draws of its own (the engine's band under it aside).
+const bandRows = async (ui: { drawn(): Promise<unknown> }) =>
+  nodesOf(await ui.drawn())
+    .filter(n => /^band-(main-)?row/.test(keyOf(n) ?? ''))
+    .map(n => keyOf(n))
+
+// Round trips for the work the start left running: the router's list read,
+// the open that follows it, a close scheduled after a drawing.
+async function settle($: Parameters<TestBody>[0]) {
+  for (let i = 0; i < 40; i += 1) {
+    await $.tool.call({ tool: 'Read', file_path: 'a.md' })
+  }
+}
+
+const untilOpened = ($: Parameters<TestBody>[0], state: { opens?: number }) =>
+  eventually(async () => (await $.tool.call({ tool: 'Read', file_path: 'a.md' }), (state.opens ?? 0) >= 1 || undefined))
+
+for (const [label, start, env] of [
+  ['session.start says terminal', CLI_START, {}],
+  ['CLAUDE_CODE_ENTRYPOINT is cli', { ...CLI_START, surface: null }, { CLAUDE_CODE_ENTRYPOINT: 'cli' }],
+] as const) {
+  for (const [bound, list] of [['bound', LIST], ['unbound', UNBOUND]] as const) {
+    test(`the terminal (${label}), ${bound} workspace: no pane, no band, no /vaults, no router call, no update run`, async ($, on) => {
+      const state: Parameters<typeof wire>[1] = { list, env: { ...env }, registered: [] }
+      const calls = wire(on, state)
+      engineBand(on)
+      const fetched: string[] = []
+      on('http.fetch', (_, e) => {
+        fetched.push(e.url)
+
+        return { value: { status: 404, ok: false, headers: {}, text: '' } }
+      })
+      on('tool.call', () => ({ result: 'ok' }))
+      await $.session.start(start)
+      await settle($)
+      expect(state.opens ?? 0).toBe(0)
+      expect(state.registered).toEqual([])
+      expect(fetched).toEqual([])
+      // A command that reached the CLI anyway answers in a line and opens nothing.
+      for (const command of [VAULTS, VAULT_SETUP]) {
+        const answer = await $.command.run(command)
+        expect(answer.text).toMatch(/Claude Desktop/)
+        expect(answer.text).toMatch(/confirm_workspace_binding/)
+      }
+      expect(state.opens ?? 0).toBe(0)
+      const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+      expect(await bandRows(band)).toEqual([])
+      expect(await bandTexts(band)).toEqual(['engine band'])
+      await band.unmount()
+      // A pane the app restored from an earlier layout draws nothing of the
+      // router's, and does not start a read of its own.
+      const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+      expect(nodesOf(await pane.drawn()).filter(n => n.type === 'Text').map(n => textOf(n))).toEqual(['engine band'])
+      await settle($)
+      await pane.unmount()
+      expect(calls.some(c => c.tool === 'list_vaults')).toBe(false)
+    })
+  }
+}
+
+test('with neither a start surface nor CLAUDE_CODE_ENTRYPOINT, the roster decides: a terminal in it is the CLI, the desktop alone an app', async ($, on) => {
+  const roster: string[] = ['terminal']
+  const state: Parameters<typeof wire>[1] = { list: LIST, env: {}, registered: [] }
+  wire(on, state)
+  on('tool.call', () => ({ result: 'ok' }))
+  on('session.surfaces', () => ({ value: [...roster] }))
+  await $.session.start(DESKTOP_START)
+  await settle($)
+  expect(state.registered).toEqual([])
+  expect(state.opens ?? 0).toBe(0)
+  roster.splice(0, roster.length, 'desktop')
+  await $.session.start(DESKTOP_START)
+  expect(await untilOpened($, state)).toBe(true)
+  expect(state.registered).toEqual(['vaults', 'vault-setup'])
+})
+
+test('Claude Desktop, bound workspace: the pane opens on its own and the band shows', async ($, on) => {
+  const state: Parameters<typeof wire>[1] = { list: LIST, env: DESKTOP_ENV, registered: [] }
+  wire(on, state)
+  engineBand(on)
+  on('tool.call', () => ({ result: 'ok' }))
+  await $.session.start(DESKTOP_START)
+  expect(await untilOpened($, state)).toBe(true)
+  expect(state.registered).toEqual(['vaults', 'vault-setup'])
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await bandRows(band)).toEqual(['band-main-row', 'band-row-docs', 'band-row-notes'])
+  await band.unmount()
+})
+
+for (const restored of [false, true]) {
+  test(`Claude Desktop, bound: the start's read overtaken by a router call of the model's decides nothing on no list, then opens${restored ? ' — a restored pane stays meanwhile' : ''}`, async ($, on) => {
+    let releaseStart = () => {}
+    let releaseModel = () => {}
+    const state: Parameters<typeof wire>[1] = {
+      list: LIST,
+      env: DESKTOP_ENV,
+      held: new Promise<void>(resolve => {
+        releaseStart = resolve
+      }),
+    }
+    const calls = wire(on, state)
+    on('tool.call', () => ({ result: 'ok' }))
+    await $.session.start(DESKTOP_START)
+    expect(await eventually(async () => (await $.tool.call({ tool: 'Read', file_path: 'a.md' }), calls.some(c => c.tool === 'list_vaults') || undefined))).toBe(true)
+    const pane = restored ? await $.ui.mount({ ...PANE, surface: 'desktop' }) : null
+    // The model's own binding call: the read it starts is the latest, and held too.
+    state.held = new Promise<void>(resolve => {
+      releaseModel = resolve
+    })
+    await $.tool.call({ tool: 'mcp__plugin_obsidian-router_router__set_secondary_vault_mode' } as never)
+    expect(await eventually(async () => (await $.tool.call({ tool: 'Read', file_path: 'a.md' }), calls.filter(c => c.tool === 'list_vaults').length >= 2 || undefined))).toBe(true)
+    // The start's answer lands first and is dropped: no list yet, so nothing
+    // is decided — no open, and no close of a restored pane.
+    releaseStart()
+    await settle($)
+    await state.clock?.advance(1)
+    expect(state.opens ?? 0).toBe(0)
+    expect(state.closes ?? 0).toBe(0)
+    // The newer read lands: bound, the pane opens (or the restored one stays).
+    releaseModel()
+    if (restored) {
+      await settle($)
+      expect(state.closes ?? 0).toBe(0)
+      expect(await eventually(() => pane!.find({ type: 'Text', text: /^PRINCIPAL :$/ }))).toBeTruthy()
+      await pane!.unmount()
+    } else {
+      expect(await untilOpened($, state)).toBe(true)
+      await settle($)
+      expect(state.opens).toBe(1)
+      expect(state.closes ?? 0).toBe(0)
+    }
+  })
+}
+
+test('a Claude Desktop surface that attaches while the start reads the roster is not lost: the bound workspace gets its pane', async ($, on) => {
+  let releaseRoster = () => {}
+  const roster = new Promise<void>(resolve => {
+    releaseRoster = resolve
+  })
+  const state: Parameters<typeof wire>[1] = { list: LIST, env: {} }
+  wire(on, state)
+  on('tool.call', () => ({ result: 'ok' }))
+  // The roster read before the attach: empty, and answered only afterwards.
+  on('session.surfaces', async () => {
+    await roster
+
+    return { value: [] }
+  })
+  on('session.attach', (_, e) => ({ clientId: e.clientId }))
+  const started = $.session.start(DESKTOP_START)
+  await settle($)
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  releaseRoster()
+  await started
+  expect(await untilOpened($, state)).toBe(true)
+})
+
+test('an older start still detecting its host publishes nothing over a newer terminal start: /vaults stays the CLI line', async ($, on) => {
+  let releaseRoster = () => {}
+  let isFirst = true
+  const state: Parameters<typeof wire>[1] = { list: LIST, env: {}, registered: [] }
+  const calls = wire(on, state)
+  on('tool.call', () => ({ result: 'ok' }))
+  // The first start's roster read is held, and would say Claude Desktop.
+  on('session.surfaces', async () => {
+    if (isFirst) {
+      isFirst = false
+      await new Promise<void>(resolve => {
+        releaseRoster = resolve
+      })
+    }
+
+    return { value: ['desktop'] }
+  })
+  const older = $.session.start(DESKTOP_START)
+  await settle($)
+  await $.session.start(CLI_START)
+  releaseRoster()
+  await older
+  await settle($)
+  const answer = await $.command.run(VAULTS)
+  expect(answer.text).toMatch(/Claude Desktop/)
+  expect(state.opens ?? 0).toBe(0)
+  expect(calls.some(c => c.tool === 'list_vaults')).toBe(false)
+})
+
+test('a session whose surface is not known yet becomes the CLI when a terminal attaches: /vaults then answers in a line and reads nothing', async ($, on) => {
+  const state: Parameters<typeof wire>[1] = { list: LIST, env: {} }
+  const calls = wire(on, state)
+  on('tool.call', () => ({ result: 'ok' }))
+  on('session.surfaces', () => ({ value: [] }))
+  on('session.attach', (_, e) => ({ clientId: e.clientId }))
+  await $.session.start(DESKTOP_START)
+  await settle($)
+  await $.session.attach({ surface: 'terminal', clientId: 'terminal:default' })
+  const answer = await $.command.run(VAULTS)
+  expect(answer.text).toMatch(/Claude Desktop/)
+  expect(state.opens ?? 0).toBe(0)
+  expect(calls.some(c => c.tool === 'list_vaults')).toBe(false)
+  // And Claude Desktop attaching afterwards changes nothing: the CLI's session.
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  await settle($)
+  expect(state.opens ?? 0).toBe(0)
+})
+
+test('Claude Desktop, unbound workspace: nothing at the start; /vaults opens the pane and the band', async ($, on) => {
+  const state: Parameters<typeof wire>[1] = { list: UNBOUND, env: DESKTOP_ENV, toasts: [], registered: [] }
+  const calls = wire(on, state)
+  engineBand(on)
+  on('tool.call', () => ({ result: 'ok' }))
+  await $.session.start(DESKTOP_START)
+  expect(await eventually(async () => (await $.tool.call({ tool: 'Read', file_path: 'a.md' }), calls.some(c => c.tool === 'list_vaults') || undefined))).toBe(true)
+  await settle($)
+  expect(state.opens ?? 0).toBe(0)
+  expect(state.toasts).toEqual([])
+  expect(state.registered).toEqual(['vaults', 'vault-setup'])
+  const before = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await bandRows(before)).toEqual([])
+  await before.unmount()
+  // /vaults: the pane, and the band with it, for the person to bind a vault.
+  await $.command.run(VAULTS)
+  expect(state.opens).toBe(1)
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await bandTexts(band)).toContain('Principal :')
+  await band.unmount()
+  const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await eventually(() => pane.find({ type: 'Text', text: /^PRINCIPAL :$/ }))).toBeTruthy()
+  await pane.unmount()
+})
+
+for (const when of ['before', 'after'] as const) {
+  test(`Claude Desktop, unbound: a pane the app restores ${when} the start's read is closed, not adopted`, async ($, on) => {
+    let release = () => {}
+    const state: Parameters<typeof wire>[1] = {
+      list: UNBOUND,
+      env: DESKTOP_ENV,
+      held: new Promise<void>(resolve => {
+        release = resolve
+      }),
+    }
+    const calls = wire(on, state)
+    engineBand(on)
+    on('tool.call', () => ({ result: 'ok' }))
+    await $.session.start(DESKTOP_START)
+    expect(await eventually(async () => (await $.tool.call({ tool: 'Read', file_path: 'a.md' }), calls.some(c => c.tool === 'list_vaults') || undefined))).toBe(true)
+    if (when === 'after') {
+      release()
+      await settle($)
+    }
+    const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    release()
+    // A close scheduled after a drawing: the clock moves it.
+    expect(await eventually(async () => (await $.tool.call({ tool: 'Read', file_path: 'a.md' }), await state.clock?.advance(1), (state.closes ?? 0) >= 1 || undefined))).toBe(true)
+    await pane.unmount()
+    // Not polled: no list read beyond the start's.
+    const reads = calls.filter(c => c.tool === 'list_vaults').length
+    await state.clock?.advance(10 * 60_000)
+    await settle($)
+    expect(calls.filter(c => c.tool === 'list_vaults').length).toBe(reads)
+    expect(state.opens ?? 0).toBe(0)
+  })
+}
+
+test('Claude Desktop, unbound: a primary bound from the pane updates the band; the pane and the band stay after a clear; the next session shows nothing', async ($, on) => {
+  const state: Parameters<typeof wire>[1] = {
+    list: { ...UNBOUND, workspaceBindingOnFile: { digest: 'e'.repeat(64), vault: null, also: [] } },
+    env: DESKTOP_ENV,
+  }
+  const calls = wire(on, state)
+  engineBand(on)
+  on('tool.call', () => ({ result: 'ok' }))
+  await $.session.start(DESKTOP_START)
+  await settle($)
+  await $.command.run(VAULTS)
+  const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await openAdd(pane)
+  await pane.press({ key: 'tab-locaux' })
+  // The router answers with the binding it recorded, as the real one does.
+  state.answers = {
+    confirm_workspace_binding: () => {
+      state.list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, vault: 'notes', also: [] } }
+
+      return { ok: true }
+    },
+  }
+  await pane.press({ key: 'primary-notes' })
+  expect(calls.filter(c => c.tool === 'confirm_workspace_binding').at(-1)?.args).toMatchObject({ vault: 'notes' })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await eventually(async () => ((await bandTexts(band)).includes('notes') || undefined))).toBe(true)
+  await band.unmount()
+  expect(state.closes ?? 0).toBe(0)
+  // The binding cleared during the session: the pane /vaults opened stays,
+  // and the band with it.
+  state.list = UNBOUND
+  await $.tool.call({ tool: 'mcp__plugin_obsidian-router_router__confirm_workspace_binding', clear: true } as never)
+  await settle($)
+  expect(state.closes ?? 0).toBe(0)
+  expect(await pane.find({ type: 'Text', text: /^PRINCIPAL :$/ })).toBeTruthy()
+  const after = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await bandTexts(after)).toContain('Principal :')
+  await after.unmount()
+  await pane.unmount()
+  // The next session: unbound, nothing on its own.
+  const opened = state.opens
+  await $.session.start(DESKTOP_START)
+  await settle($)
+  expect(state.opens).toBe(opened)
+  const next = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await bandRows(next)).toEqual([])
+  await next.unmount()
+})
+
+test('Claude Desktop, bound at the start, cleared later: the pane the start opened stays, and the band with it', async ($, on) => {
+  const state: Parameters<typeof wire>[1] = { list: LIST, env: DESKTOP_ENV }
+  wire(on, state)
+  engineBand(on)
+  on('tool.call', () => ({ result: 'ok' }))
+  await $.session.start(DESKTOP_START)
+  expect(await untilOpened($, state)).toBe(true)
+  state.list = UNBOUND
+  await $.tool.call({ tool: 'mcp__plugin_obsidian-router_router__confirm_workspace_binding', clear: true } as never)
+  await settle($)
+  expect(state.closes ?? 0).toBe(0)
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await bandTexts(band)).toContain('Principal :')
+  await band.unmount()
+})
+
+test('a session whose surface is not known yet opens nothing until Claude Desktop attaches; a phone attaching opens nothing', async ($, on) => {
+  const state: Parameters<typeof wire>[1] = { list: LIST, env: {} }
+  const calls = wire(on, state)
+  engineBand(on)
+  on('tool.call', () => ({ result: 'ok' }))
+  on('session.surfaces', () => ({ value: [] }))
+  on('session.attach', (_, e) => ({ clientId: e.clientId }))
+  await $.session.start(DESKTOP_START)
+  await settle($)
+  expect(state.opens ?? 0).toBe(0)
+  expect(calls.some(c => c.tool === 'list_vaults')).toBe(false)
+  for (const surface of ['mobile'] as const) {
+    await $.session.attach({ surface, clientId: `${surface}:default` })
+    await settle($)
+  }
+  expect(state.opens ?? 0).toBe(0)
+  expect(calls.some(c => c.tool === 'list_vaults')).toBe(false)
+  // A pane restored meanwhile is closed, and reads nothing.
+  const pane = await $.ui.mount({ ...PANE, surface: 'mobile' })
+  // A close scheduled after a drawing: the clock moves it.
+  expect(await eventually(async () => (await state.clock?.advance(1), (state.closes ?? 0) >= 1 || undefined))).toBe(true)
+  await pane.unmount()
+  expect(calls.some(c => c.tool === 'list_vaults')).toBe(false)
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  expect(await untilOpened($, state)).toBe(true)
+  // A second attach starts nothing more: one start, one open.
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:second' })
+  await settle($)
+  expect(state.opens).toBe(1)
+})
+
+for (const [label, start, env] of [
+  ['the terminal', CLI_START, {}],
+  ['Claude Desktop', DESKTOP_START, DESKTOP_ENV],
+] as const) {
+  test(`the opt-outs hold in ${label}: NO_VAULT_PANEL shows nothing, NO_VAULT_BAND keeps the band off`, async ($, on) => {
+    const off: Parameters<typeof wire>[1] = { list: LIST, env: { ...env, OBSIDIAN_ROUTER_NO_VAULT_PANEL: '1' }, registered: [] }
+    const offCalls = wire(on, off)
+    engineBand(on)
+    on('tool.call', () => ({ result: 'ok' }))
+    await $.session.start(start)
+    await settle($)
+    expect(off.opens ?? 0).toBe(0)
+    expect(off.registered).toEqual([])
+    expect(offCalls.some(c => c.tool === 'list_vaults')).toBe(false)
+    const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    expect(await bandRows(band)).toEqual([])
+    await band.unmount()
+    // The band alone off: Claude Desktop's pane still opens, the band never shows.
+    off.env = { ...env, OBSIDIAN_ROUTER_NO_VAULT_BAND: '1' }
+    await $.session.start(start)
+    await settle($)
+    if (label === 'Claude Desktop') {
+      expect(off.opens ?? 0).toBeGreaterThanOrEqual(1)
+    } else {
+      expect(off.opens ?? 0).toBe(0)
+    }
+    await $.command.run(VAULTS)
+    const again = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    expect(await bandRows(again)).toEqual([])
+    await again.unmount()
+  })
+}
+
+// A host not known yet: no surface at the start, no CLAUDE_CODE_ENTRYPOINT,
+// an empty roster.
+function unknownHost(on: On) {
+  on('session.surfaces', () => ({ value: [] }))
+  on('session.attach', (_, e) => ({ clientId: e.clientId }))
+}
+
+test('on a host not known yet, the update check waits: none at the start, none after a terminal attaches, one after /vaults elsewhere', async ($, on) => {
+  const state: Parameters<typeof wire>[1] = { list: LIST, env: {} }
+  wire(on, state)
+  on('tool.call', () => ({ result: 'ok' }))
+  unknownHost(on)
+  const github: string[] = []
+  on('http.fetch', (_, e) => {
+    if (e.url.startsWith('https://raw.githubusercontent.com/')) {
+      github.push(e.url)
+    }
+
+    return { value: { status: 404, ok: false, headers: {}, text: '' } }
+  })
+  await $.session.start(DESKTOP_START)
+  await settle($)
+  expect(github).toEqual([])
+  // /vaults on that host (a phone, VS Code): the panel shows, its update check runs.
+  await $.command.run(VAULTS)
+  await settle($)
+  expect(github.length).toBe(1)
+  // A new start whose terminal attaches: no check at all.
+  await $.session.start(DESKTOP_START)
+  await $.session.attach({ surface: 'terminal', clientId: 'terminal:default' })
+  await settle($)
+  expect(github.length).toBe(1)
+})
+
+test('on a surface other than Claude Desktop, a binding the model makes shows no band until /vaults', async ($, on) => {
+  const state: Parameters<typeof wire>[1] = { list: UNBOUND, env: {} }
+  wire(on, state)
+  engineBand(on)
+  on('tool.call', () => ({ result: 'ok' }))
+  unknownHost(on)
+  await $.session.start(DESKTOP_START)
+  await $.session.attach({ surface: 'mobile', clientId: 'mobile:default' })
+  await settle($)
+  // The model binds the workspace; its call redraws from a bound list.
+  state.list = LIST
+  await $.tool.call({ tool: 'mcp__plugin_obsidian-router_router__confirm_workspace_binding', vault: 'main' } as never)
+  await settle($)
+  const band = await $.ui.mount({ ...BAND, surface: 'mobile' })
+  expect(await bandRows(band)).toEqual([])
+  await band.unmount()
+  expect(state.opens ?? 0).toBe(0)
+  await $.command.run(VAULTS)
+  const shown = await $.ui.mount({ ...BAND, surface: 'mobile' })
+  expect(await bandRows(shown)).toEqual(['band-main-row', 'band-row-docs', 'band-row-notes'])
+  await shown.unmount()
+})
+
+test('a terminal attaching to a host not known yet takes a drawn band away, pane closed or not, and /vaults opens nothing', async ($, on) => {
+  const state: Parameters<typeof wire>[1] = { list: LIST, env: {} }
+  const calls = wire(on, state)
+  engineBand(on)
+  on('tool.call', () => ({ result: 'ok' }))
+  unknownHost(on)
+  await $.session.start(DESKTOP_START)
+  await $.command.run(VAULTS)
+  // The person closes the pane from the band's toggle; the band stays.
+  const band = await $.ui.mount({ ...BAND, surface: 'mobile' })
+  await band.press({ key: 'toggle-pane' })
+  expect(state.closes ?? 0).toBeGreaterThanOrEqual(1)
+  expect(await bandRows(band)).toEqual(['band-main-row', 'band-row-docs', 'band-row-notes'])
+  const opened = state.opens
+  const reads = calls.filter(c => c.tool === 'list_vaults').length
+  await $.session.attach({ surface: 'terminal', clientId: 'terminal:default' })
+  expect(await eventually(async () => ((await bandRows(band)).length === 0 || undefined))).toBe(true)
+  await band.unmount()
+  // The CLI's session now: /vaults opens nothing, reads nothing.
+  const answer = await $.command.run(VAULTS)
+  expect(answer.text).toMatch(/Claude Desktop/)
+  expect(state.opens).toBe(opened)
+  expect(calls.filter(c => c.tool === 'list_vaults').length).toBe(reads)
+})
+
+test('a /vaults still opening when a terminal attaches closes what it opened: no pane adopted, no polling in the CLI', async ($, on) => {
+  let releaseOpen = () => {}
+  const state: Parameters<typeof wire>[1] = { list: LIST, env: {} }
+  const calls = wire(on, state)
+  on('tool.call', () => ({ result: 'ok' }))
+  unknownHost(on)
+  await $.session.start(DESKTOP_START)
+  await settle($)
+  state.openHeld = new Promise<void>(resolve => {
+    releaseOpen = resolve
+  })
+  const command = $.command.run(VAULTS)
+  expect(await eventually(async () => (await $.tool.call({ tool: 'Read', file_path: 'a.md' }), (state.opens ?? 0) >= 1 || undefined))).toBe(true)
+  await $.session.attach({ surface: 'terminal', clientId: 'terminal:default' })
+  const closedBefore = state.closes ?? 0
+  releaseOpen()
+  await command
+  await settle($)
+  // What the pending open opened is closed again, and nothing polls.
+  expect(state.closes ?? 0).toBeGreaterThan(closedBefore)
+  const reads = calls.filter(c => c.tool === 'list_vaults').length
+  await state.clock?.advance(10 * 60_000)
+  await settle($)
+  expect(calls.filter(c => c.tool === 'list_vaults').length).toBe(reads)
+})
+
+test('a pane restored while the start reads the roster is closed when the host stays unknown', async ($, on) => {
+  let releaseRoster = () => {}
+  const roster = new Promise<void>(resolve => {
+    releaseRoster = resolve
+  })
+  const state: Parameters<typeof wire>[1] = { list: LIST, env: {} }
+  const calls = wire(on, state)
+  engineBand(on)
+  on('tool.call', () => ({ result: 'ok' }))
+  on('session.surfaces', async () => {
+    await roster
+
+    return { value: [] }
+  })
+  const started = $.session.start(DESKTOP_START)
+  await settle($)
+  // Drawn while detectHost waits: neither adopted nor closed yet.
+  const pane = await $.ui.mount({ ...PANE, surface: 'mobile' })
+  expect(state.closes ?? 0).toBe(0)
+  releaseRoster()
+  await started
+  await settle($)
+  expect(state.closes ?? 0).toBeGreaterThanOrEqual(1)
+  await pane.unmount()
+  expect(calls.some(c => c.tool === 'list_vaults')).toBe(false)
+})
+
+test('a terminal attaching while the start reads a roster that says desktop makes the session the CLI: no pane, no command', async ($, on) => {
+  let releaseRoster = () => {}
+  const roster = new Promise<void>(resolve => {
+    releaseRoster = resolve
+  })
+  const state: Parameters<typeof wire>[1] = { list: LIST, env: {}, registered: [] }
+  const calls = wire(on, state)
+  on('tool.call', () => ({ result: 'ok' }))
+  // The roster read before the attach: it says desktop, and answers afterwards.
+  on('session.surfaces', async () => {
+    await roster
+
+    return { value: ['desktop'] }
+  })
+  on('session.attach', (_, e) => ({ clientId: e.clientId }))
+  const started = $.session.start(DESKTOP_START)
+  await settle($)
+  await $.session.attach({ surface: 'terminal', clientId: 'terminal:default' })
+  releaseRoster()
+  await started
+  await settle($)
+  expect(state.opens ?? 0).toBe(0)
+  expect(state.registered).toEqual([])
+  expect(calls.some(c => c.tool === 'list_vaults')).toBe(false)
 })

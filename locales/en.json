@@ -8,6 +8,7 @@
   "command.opened": "Vault pane opened.",
   "command.openedBut": "Vault pane opened, but {error}",
   "command.openedUnreachable": "Vault pane opened, but the router does not answer: {error}",
+  "command.terminal": "The vault pane is not shown in the terminal: open this project in Claude Desktop, or bind the workspace with the MCP tool confirm_workspace_binding.",
 
   "startup.refusedToast": "Vault pane: Claude Code blocks its calls to the router (permissions). Type /vaults to see what to allow.",
 
@@ -266,7 +267,7 @@
   "command.setupDescription": "Set up a vault: create an Obsidian vault with its conventions, or register one",
   "command.setupOpened": "Vault setup opened in the pane.",
 
-  "setup.toast": "No vault for this project: type /vault-setup to create or register one.",
+  "setup.toast": "No primary vault for this project: type /vault-setup to create or register one.",
 
   "primary.setup": "Set up a vault",
 

@@ -369,6 +369,30 @@ let isStartupCancelled = false
 let isOptedOut = false
 // This session's opt-out has been read: until then a drawn pane reads nothing.
 let isEnvKnown = false
+// Where this session draws, as known before anything is drawn (see detectHost):
+// 'terminal', the CLI in a console — no pane, no band, no /vaults; 'app',
+// Claude Desktop or another graphical surface; 'unknown', nothing said yet —
+// nothing opens on its own until a graphical surface attaches.
+type Host = 'terminal' | 'app' | 'unknown'
+let host: Host = 'unknown'
+// This session showed the panel: the person asked for it (/vaults,
+// /vault-setup, the band's toggle), or the workspace was bound when the start
+// read it. The pane and the band then stay through a binding cleared in the
+// session; until then an unbound workspace shows neither.
+let hasShown = false
+// /vaults and /vault-setup are registered (once per session, terminal never).
+let areCommandsRegistered = false
+// detectHost has answered for this start. Until then a session.attach is
+// only recorded (earlyAttach): the roster detectHost reads may have been
+// taken before it, and the start folds those surfaces in once it answers.
+let isHostDetected = false
+const earlyAttach = new Set<string>()
+// The start whose app startup ran: it runs once per start, whichever of
+// session.start and session.attach gets there first.
+let appStartedFor = 0
+// The start whose update check ran: once per start, and only where the panel
+// may show — Claude Desktop's start, or a /vaults on a host not yet known.
+let updateCheckedFor = 0
 // Bumped by every open and close of the pane (see openPane).
 let paneEpoch = 0
 // Bumped by every session.start: work a previous start left running reads a
@@ -955,7 +979,19 @@ function withTimeout<T>($: EngineInterface, work: Promise<T>): Promise<T> {
   return Promise.race([work, late])
 }
 
-async function refresh($: EngineInterface): Promise<boolean> {
+// The newest read of the router, under way or done: what a caller whose own
+// answer was dropped for it waits for, rather than reading again (which would
+// drop that one in turn — a /vaults awaiting it would draw an empty pane).
+let latestRead: Promise<boolean> = Promise.resolve(false)
+
+function refresh($: EngineInterface): Promise<boolean> {
+  const work = readRouter($)
+  latestRead = work
+
+  return work
+}
+
+async function readRouter($: EngineInterface): Promise<boolean> {
   const id = ++lastRefresh
   reading += 1
   try {
@@ -1204,6 +1240,13 @@ async function openPane($: EngineInterface, start?: number) {
   }
   const mine = ++paneEpoch
   const opened = await $.ui.open({ id: PANE, title: t('pane.title') })
+  // The session turned out to be the CLI's while the open was pending (a
+  // terminal attached): what it opened is closed, never adopted or polled.
+  if (host === 'terminal') {
+    await $.ui.close({ id: PANE }).catch(() => undefined)
+
+    return
+  }
   if (mine !== paneEpoch) {
     return
   }
@@ -1855,6 +1898,9 @@ async function setAutoUpdate($: EngineInterface, isOn: boolean) {
 // The switch on and GitHub announcing a newer version: the pane runs the
 // update its "Mettre à jour" key runs, once the check has answered.
 async function applyIfAuto($: EngineInterface) {
+  if (host === 'terminal') {
+    return
+  }
   const state = await read($, updateState)
   if ((await read($, autoUpdate)) && state?.isAvailable && !state.isRunning) {
     await updatePlugin($)
@@ -2142,6 +2188,11 @@ async function markClosed($: EngineInterface) {
 // own open, before any await: a startup read still under way would otherwise
 // reopen what was just hidden.
 async function togglePane($: EngineInterface) {
+  // The CLI's session draws no band; a toggle drawn before a terminal
+  // attached opens nothing there.
+  if (host === 'terminal') {
+    return
+  }
   if (isPanePlaced) {
     isStartupCancelled = true
     await $.ui.close({ id: PANE }).catch(() => undefined)
@@ -2150,12 +2201,56 @@ async function togglePane($: EngineInterface) {
     return
   }
   isStartupCancelled = false
+  hasShown = true
   await openPane($)
   background($)
 }
 
-// The band is drawn in this session: neither the panel nor the band is off.
-const isBandOn = () => isEnvKnown && !isOptedOut && !isBandOptedOut
+// The band may be drawn in this session: neither the panel nor the band is
+// off, and the session is not the CLI's. Whether it shows also depends on the
+// binding (see isShownFor).
+const isBandOn = () => isEnvKnown && !isOptedOut && !isBandOptedOut && host !== 'terminal'
+
+// The surface that makes a session 'app' before anything is drawn: Claude
+// Desktop's, the one that opens the panel on its own. Any other graphical
+// surface (`vscode`, `mobile`, a name this build does not know) draws what the
+// person opened with /vaults, never an automatic open; `terminal` draws nothing.
+const APP_SURFACES = new Set<string>(['desktop'])
+
+// Where the session draws, from facts only, in this order: session.start's own
+// `surface` ('terminal' under the REPL; null under Claude Desktop, an SDK host
+// whose surface attaches later), CLAUDE_CODE_ENTRYPOINT ('cli' in a console,
+// 'claude-desktop' under Claude Desktop), then the surfaces attached so far.
+// Nothing said is 'unknown': nothing then opens on its own.
+async function detectHost($: EngineInterface, surface: string | null): Promise<Host> {
+  if (surface === 'terminal') {
+    return 'terminal'
+  }
+  const entry = ((await $.env.get('CLAUDE_CODE_ENTRYPOINT').catch(() => undefined)) ?? '').trim()
+  if (entry === 'cli') {
+    return 'terminal'
+  }
+  if ((surface && APP_SURFACES.has(surface)) || entry === 'claude-desktop') {
+    return 'app'
+  }
+  const attached = await $.session.surfaces().catch(() => [] as readonly string[])
+  if (attached.includes('terminal')) {
+    return 'terminal'
+  }
+
+  return attached.some(s => APP_SURFACES.has(s)) ? 'app' : 'unknown'
+}
+
+// Bound: a primary, or at least one secondary (a paused one included).
+function isBoundSnap(snap: Snapshot | null) {
+  return !!snap && (!!snap.primary?.name || snap.secondaries.length > 0 || (snap.paused?.length ?? 0) > 0)
+}
+
+// The pane and the band show once this session showed them (see hasShown),
+// and on their own only for a bound workspace in Claude Desktop: on another
+// surface (a phone alone, VS Code) a binding the model makes shows nothing
+// until /vaults.
+const isShownFor = (snap: Snapshot | null) => hasShown || (host === 'app' && isBoundSnap(snap))
 
 // The pane's menu: three tabs — the vaults in use, adding one, this
 // workspace's configuration — and the ⚙ console at the right, the router's own
@@ -2247,6 +2342,130 @@ async function traceScroll($: EngineInterface, entry: Record<string, unknown>) {
   }
 }
 
+// A pane drawn where this session shows nothing (see the Pane's drawing),
+// closed unless something showed it or moved the pane since that drawing. A
+// plugin's own close is not seen by its own hook: marked here.
+async function closeUnshown($: EngineInterface, drawnFor: number) {
+  if (hasShown || drawnFor !== paneEpoch) {
+    return
+  }
+  await $.ui.close({ id: PANE }).catch(() => undefined)
+  await markClosed($)
+}
+
+// The plugin's version against GitHub's, once per start; applied then when
+// the footer's switch is on. Never in the CLI, nor before the host is known:
+// a terminal may still turn out to be the session's.
+function checkUpdateOnce($: EngineInterface, start: number) {
+  if (updateCheckedFor === start || host === 'terminal') {
+    return
+  }
+  updateCheckedFor = start
+  void checkUpdate($)
+    .then(() => (host === 'terminal' ? undefined : applyIfAuto($)))
+    .catch(() => undefined)
+}
+
+// /vaults and /vault-setup, once per session; never in the CLI.
+async function registerCommands($: EngineInterface) {
+  if (areCommandsRegistered) {
+    return
+  }
+  areCommandsRegistered = true
+  await $.command.register({
+    name: 'vaults',
+    description: t('command.description'),
+  })
+  await $.command.register({
+    name: 'vault-setup',
+    description: t('command.setupDescription'),
+  })
+}
+
+// What an app's session does at its start: WireGuard read once, and the
+// router's list read until it answers. The pane opens on its own only for a
+// bound workspace; an unbound one shows nothing until /vaults, and a pane the
+// app restored from an earlier layout is closed.
+function startApp($: EngineInterface, start: number) {
+  if (appStartedFor === start) {
+    return
+  }
+  appStartedFor = start
+  checkUpdateOnce($, start)
+  // WireGuard, once per session in the background: the pane says whether
+  // the remote vaults can be reached, and asks for the tunnel when not.
+  void checkWireguard($, start).catch(() => undefined)
+  // Opens only where the router answers: the panel follows the MCP's install.
+  // The router may still be starting, so the read is tried again for a
+  // while before the panel gives up. A pane the person closed meanwhile
+  // stays closed, and a later start ends these tries.
+  void (async () => {
+    for (let attempt = 0; attempt < STARTUP_TRIES; attempt += 1) {
+      if (start !== generation || isStartupCancelled) {
+        return
+      }
+      if (await refresh($)) {
+        // No list yet is not "unbound": this read's answer was dropped for a
+        // later one (a router call of the model's, a restored pane's poll,
+        // /vaults). That one decides: it is waited for, not read again.
+        for (;;) {
+          const awaited = latestRead
+          await awaited.catch(() => false)
+          if ((await read($, snapshot)) || reading === 0 || start !== generation || awaited === latestRead) {
+            break
+          }
+        }
+      }
+      if (start !== generation) {
+        return
+      }
+      // This session's list (the start emptied the last one's), whichever
+      // read of this session wrote it.
+      const read_ = await read($, snapshot)
+      if (read_) {
+        if (!isBoundSnap(read_)) {
+          // Unbound: nothing on its own. A /vaults typed meanwhile keeps
+          // what it opened; a pane the app restored is closed — a plugin's
+          // own close is not seen by its own hook, so it is marked here.
+          if (!hasShown && isPaneOpen) {
+            await $.ui.close({ id: PANE }).catch(() => undefined)
+            await markClosed($)
+          }
+
+          return
+        }
+        // Bound: this session shows the panel, and keeps it through a
+        // binding cleared later on.
+        const wasAsked = hasShown
+        hasShown = true
+        // `/vaults` may have opened it meanwhile: it is not opened twice.
+        if (!isStartupCancelled && !isPaneOpen) {
+          await openPane($, start)
+        }
+        // Bound to secondaries only: where to set a primary up. Not when the
+        // person typed /vaults meanwhile: the pane it opened says it — the
+        // toast once said "no vault" over a pane that showed the primary
+        // (Roland, on the Hermès VM, v0.119.1).
+        if (!wasAsked && !read_.primary?.name) {
+          $.ui.toast(t('setup.toast'))
+        }
+
+        return
+      }
+      // Refused by Claude Code's permissions: no retry will change that.
+      // The pane stays shut, but a toast says why and where to look.
+      if (isRefusal(await read($, error))) {
+        if (start === generation && !isStartupCancelled && !isPaneOpen) {
+          await $.ui.toast(t('startup.refusedToast'))
+        }
+
+        return
+      }
+      await $.clock.sleep(STARTUP_RETRY_MS)
+    }
+  })().catch(() => undefined)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const start = ++generation
@@ -2259,9 +2478,16 @@ export const register: Register = on => {
     isPanePlaced = false
     isStartupCancelled = false
     isEnvKnown = false
+    host = 'unknown'
+    hasShown = false
+    areCommandsRegistered = false
+    isHostDetected = false
+    earlyAttach.clear()
     // A read the previous session left running writes nothing into this one,
-    // and the router is looked up afresh.
+    // and the router is looked up afresh: the last session's list is not
+    // this one's binding.
     lastRefresh += 1
+    await update($, snapshot, () => null)
     server = null
     connectTries = 0
     lastOnFile = null
@@ -2284,62 +2510,88 @@ export const register: Register = on => {
 
       return next(e)
     }
-    await $.command.register({
-      name: 'vaults',
-      description: t('command.description'),
-    })
-    await $.command.register({
-      name: 'vault-setup',
-      description: t('command.setupDescription'),
-    })
-    // The plugin's version against GitHub's, once per session; applied then
-    // when the footer's switch is on.
-    void checkUpdate($)
-      .then(() => applyIfAuto($))
-      .catch(() => undefined)
-    // WireGuard, once per session in the background: the pane says whether
-    // the remote vaults can be reached, and asks for the tunnel when not.
-    void checkWireguard($, start).catch(() => undefined)
-    // Opens only where the router answers: the panel follows the MCP's install.
-    // The router may still be starting, so the read is tried again for a
-    // while before the panel gives up. A pane the person closed meanwhile
-    // stays closed, and a later start ends these tries.
-    void (async () => {
-      for (let attempt = 0; attempt < STARTUP_TRIES; attempt += 1) {
-        if (start !== generation || isStartupCancelled) {
-          return
-        }
-        if (await refresh($)) {
-          // `/vaults` may have opened it meanwhile: it is not opened twice.
-          if (!isStartupCancelled && !isPaneOpen) {
-            await openPane($, start)
-          }
-          // No vault for this project yet: where to set one up. Only on a list
-          // read: a later read (`/vaults` typed while this one ran) makes this
-          // one drop its answer, and the snapshot it checked was still empty —
-          // the toast said "no vault" over a pane that showed the primary
-          // (Roland, on the Hermès VM, v0.119.1).
-          const read_ = await read($, snapshot)
-          if (start === generation && read_ && !read_.primary) {
-            $.ui.toast(t('setup.toast'))
-          }
+    const detected = await detectHost($, e.surface)
+    // A later start owns the host now: this one publishes nothing.
+    if (start !== generation) {
+      return next(e)
+    }
+    // Surfaces that attached while detectHost read the roster: a terminal
+    // makes it the CLI whatever the roster said (terminal first, as in
+    // detectHost), Claude Desktop's surface an app when nothing else did.
+    host = earlyAttach.has('terminal')
+      ? 'terminal'
+      : detected !== 'unknown'
+        ? detected
+        : [...earlyAttach].some(s => APP_SURFACES.has(s))
+          ? 'app'
+          : 'unknown'
+    isHostDetected = true
+    earlyAttach.clear()
+    if (host === 'terminal') {
+      // The CLI in a console draws no mod of the router's: no command, no
+      // pane — one the app restored from an earlier layout is closed — no
+      // router call for them, and no update the footer's switch would run
+      // (with its toast) behind a pane the CLI never shows. The tools and the
+      // other hooks are unchanged.
+      await $.ui.close({ id: PANE }).catch(() => undefined)
 
-          return
-        }
-        // Refused by Claude Code's permissions: no retry will change that.
-        // The pane stays shut, but a toast says why and where to look.
-        if (isRefusal(await read($, error))) {
-          if (start === generation && !isStartupCancelled && !isPaneOpen) {
-            await $.ui.toast(t('startup.refusedToast'))
-          }
-
-          return
-        }
-        await $.clock.sleep(STARTUP_RETRY_MS)
-      }
-    })().catch(() => undefined)
+      return next(e)
+    }
+    // 'unknown' waits for Claude Desktop's surface to attach (session.attach)
+    // and shows nothing meanwhile: a pane the app restored is closed —
+    // adopted or not: one drawn while detectHost read the roster was left
+    // unadopted, and nothing would draw it again. Closed BEFORE the commands
+    // exist, so no /vaults can land in between and lose its pane. Closing a
+    // pane that is not open does nothing.
+    if (host !== 'app') {
+      await $.ui.close({ id: PANE }).catch(() => undefined)
+      await markClosed($)
+    }
+    await registerCommands($)
+    if (host === 'app') {
+      startApp($, start)
+    }
 
     return next(e)
+  })
+
+  // Claude Desktop attaches its surface after session.start, which saw none:
+  // the session is then an app's, and what the start deferred runs now.
+  // Before detectHost has answered, the start reads this surface in the
+  // roster itself. The start is taken before `next`, so a late attach starts
+  // nothing for a later session.
+  //
+  // A host still 'unknown' is settled by the first surface that says what it
+  // is: Claude Desktop's makes it an app, a terminal the CLI — its commands
+  // then answer in a line, and a pane drawn meanwhile is closed.
+  on('session.attach', async ($, e, next) => {
+    const start = generation
+    const attached = await next(e)
+    if (start !== generation) {
+      return attached
+    }
+    if (!isHostDetected) {
+      earlyAttach.add(e.surface)
+
+      return attached
+    }
+    if (isOptedOut || host !== 'unknown') {
+      return attached
+    }
+    if (e.surface === 'terminal') {
+      host = 'terminal'
+      // Every pane goes, adopted or still opening: markClosed moves the epoch
+      // a pending open checks, stops the polling, and redraws the band — which
+      // reads no module variable reactively — so a drawn one goes away.
+      await $.ui.close({ id: PANE }).catch(() => undefined)
+      await markClosed($)
+    } else if (APP_SURFACES.has(e.surface)) {
+      host = 'app'
+      await registerCommands($).catch(() => undefined)
+      startApp($, start)
+    }
+
+    return attached
   })
 
   on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
@@ -2373,7 +2625,12 @@ export const register: Register = on => {
   // /vault-setup: the pane, with its administration unfolded on creating or
   // registering a vault — not a conversation with the model.
   on('command.run', { command: 'vault-setup' }, async $ => {
+    if (host === 'terminal') {
+      return { text: t('command.terminal') }
+    }
     isStartupCancelled = false
+    hasShown = true
+    checkUpdateOnce($, generation)
     await showAdminSection($, 'create')
     await openPane($)
     await refresh($)
@@ -2382,8 +2639,16 @@ export const register: Register = on => {
     return { text: t('command.setupOpened') }
   })
 
+  // /vaults opens the pane and the band, bound workspace or not: it is how an
+  // unbound one gets a primary or a secondary. The CLI registers it not; a
+  // registration that reached it anyway answers in a line and opens nothing.
   on('command.run', { command: 'vaults' }, async $ => {
+    if (host === 'terminal') {
+      return { text: t('command.terminal') }
+    }
     isStartupCancelled = false
+    hasShown = true
+    checkUpdateOnce($, generation)
     await openPane($)
     await refresh($)
     const err = await read($, error)
@@ -2410,7 +2675,12 @@ export const register: Register = on => {
     return ran
   })
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    // The CLI's console draws none of the router's mods, a pane restored
+    // from an earlier layout included.
+    if (host === 'terminal') {
+      return next(e)
+    }
     // A close (or a new start) during this drawing's reads bumps the epoch:
     // the drawing then adopts nothing.
     const drawnFor = paneEpoch
@@ -2430,7 +2700,20 @@ export const register: Register = on => {
     // read under way, it starts the read itself; its answer (data or error) is
     // written, so this fires once, not at every redraw. Neither happens before
     // this session's opt-out is known, nor in an opted-out session.
-    if (isEnvKnown && !isOptedOut && drawnFor === paneEpoch) {
+    //
+    // UNLESS NOBODY SHOWED IT. Restored where this session shows nothing on
+    // its own — a host that is not an app's, or a workspace the start found
+    // unbound — it is closed after this drawing (a drawing writes no state),
+    // whenever it is drawn: before the start's read or long after it. Drawn
+    // before the host is known, it is drawn and adopted by nobody yet: the
+    // start then either reads the binding (an app) or closes it.
+    const isUnshown = isEnvKnown && !isOptedOut && !hasShown && drawnFor === paneEpoch
+    if (isUnshown && isHostDetected && (host !== 'app' || (snap && !isBoundSnap(snap)))) {
+      $.clock.after(0, () => void closeUnshown($, drawnFor).catch(() => undefined))
+
+      return next(e)
+    }
+    if (isEnvKnown && !isOptedOut && drawnFor === paneEpoch && (hasShown || isHostDetected)) {
       adoptPane($)
       if (!snap && !err && reading === 0) {
         background($)
@@ -3962,17 +4245,17 @@ export const register: Register = on => {
     // A secondary's tier set from its radios: the router told, the tile drawn
     // with the new tier at once (and drawn back if the router refuses).
     const setMode =(s: Secondary, value: string) => {
-      const next = MODES.find(m => m.mode === value)
-      if (next && next.mode !== s.mode) {
+      const chosen = MODES.find(m => m.mode === value)
+      if (chosen && chosen.mode !== s.mode) {
         void act($, {
-          doing: t('action.mode.doing', { name: s.name, mode: modeLabel(next.mode).toLowerCase() }),
-          done: t('action.mode.done', { name: s.name, mode: modeLabel(next.mode).toLowerCase() }),
+          doing: t('action.mode.doing', { name: s.name, mode: modeLabel(chosen.mode).toLowerCase() }),
+          done: t('action.mode.done', { name: s.name, mode: modeLabel(chosen.mode).toLowerCase() }),
           tool: 'set_secondary_vault_mode',
-          args: () => ({ vault: s.name, mode: next.mode }),
+          args: () => ({ vault: s.name, mode: chosen.mode }),
           shows: snap => ({
             ...snap,
-            secondaries: snap.secondaries.map(r => (r.name === s.name ? { ...r, mode: next.mode } : r)),
-            paused: (snap.paused ?? []).map(r => (r.name === s.name ? { ...r, mode: next.mode } : r)),
+            secondaries: snap.secondaries.map(r => (r.name === s.name ? { ...r, mode: chosen.mode } : r)),
+            paused: (snap.paused ?? []).map(r => (r.name === s.name ? { ...r, mode: chosen.mode } : r)),
           }),
         })
       }
@@ -3981,14 +4264,14 @@ export const register: Register = on => {
     // the tile drawn with the new tier at once (and drawn back if it refuses).
     // A narrowing is the user's to ask for; the router refuses a stranger.
     const setPrimaryMode = (row: VaultRow, value: string) => {
-      const next = MODES.find(m => m.mode === value)
-      if (next && next.mode !== snap.primaryMode) {
+      const chosen = MODES.find(m => m.mode === value)
+      if (chosen && chosen.mode !== snap.primaryMode) {
         void act($, {
-          doing: t('action.mode.doing', { name: row.name, mode: modeLabel(next.mode).toLowerCase() }),
-          done: t('action.mode.done', { name: row.name, mode: modeLabel(next.mode).toLowerCase() }),
+          doing: t('action.mode.doing', { name: row.name, mode: modeLabel(chosen.mode).toLowerCase() }),
+          done: t('action.mode.done', { name: row.name, mode: modeLabel(chosen.mode).toLowerCase() }),
           tool: 'set_primary_vault_mode',
-          args: () => ({ vault: row.name, mode: next.mode }),
-          shows: snap => ({ ...snap, primaryMode: next.mode }),
+          args: () => ({ vault: row.name, mode: chosen.mode }),
+          shows: snap => ({ ...snap, primaryMode: chosen.mode }),
         })
       }
     }
@@ -4772,7 +5055,10 @@ export const register: Register = on => {
       return below
     }
     const snap = await read($, snapshot)
-    if (!snap) {
+    // Read before the binding's check: /vaults bumps it, and an unbound
+    // workspace's band then appears; the toggle reads it too.
+    await read($, paneVersion)
+    if (!snap || !isShownFor(snap)) {
       return below
     }
     const bandEls = $.ui.resolve(e)
@@ -4800,9 +5086,8 @@ export const register: Register = on => {
             ? 3
             : 0
     }
-    // Read for its redraws only: the toggle says what the module knows, and
-    // the texts follow the language.
-    await read($, paneVersion)
+    // Read for its redraws only: the texts follow the language (`paneVersion`,
+    // read above, redraws the toggle with what the module knows).
     await read($, language)
     const isShown = isPanePlaced
     const pick = await read($, bandPick)

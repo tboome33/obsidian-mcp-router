@@ -171,6 +171,8 @@ declare module 'claude-code' {
       primaryConventions: { vault: string; items: { id: string; installed: boolean }[]; languages: string[] | null } | null
       /** Why the last read of the hooks, or of the conventions, failed; cleared by the next read that works. */
       readFailures: { hooks: string | null; conventions: string | null }
+      /** The footer's automatic update switch, as stored across sessions. */
+      autoUpdate: boolean
     }
   }
 }
