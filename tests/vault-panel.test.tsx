@@ -862,7 +862,7 @@ test('with no primary yet, the add list is open without asking', async ($, on) =
   await ui.unmount()
 })
 
-test('unbound: "no primary", then the openVaults callable by name, and never a default (router v0.121.0)', async ($, on) => {
+test('unbound: "no primary", then the openVaults callable by name, and never a default (router v0.122.0)', async ($, on) => {
   wire(on, { list: { ...LIST, workspaceBinding: null, vaultReach: 'declared', openVaults: ['notes', 'extra', 'gone'] } })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })

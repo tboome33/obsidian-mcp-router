@@ -126,7 +126,7 @@ function registeredPortsFor(registry, vaultPath) {
 export const SETTING_ORIGINS = Object.freeze([
   'binding', 'workspace-dotenv', 'host', 'runtime', 'default', 'unset', 'unknown',
 ]);
-// REMOVED in v0.121.0, with the cascade tiers that produced them: 'config'
+// REMOVED in v0.122.0, with the cascade tiers that produced them: 'config'
 // (config.json's `defaultVault`), 'first-healthy' and 'first-active'. Kept as
 // a list so the description can say they are gone, and so a registry built by
 // an older path that still carries one is reported as `unknown`, not as truth.
@@ -420,7 +420,7 @@ export async function listVaults(registry, sharedConfig = null) {
   //                               MCP host's server declaration, a launcher, a shell)
   //          'runtime'          — set during this session by lock_vault /
   //                               set_auto_enrich_mode
-  //          ('config', 'first-healthy', 'first-active' — REMOVED in v0.121.0:
+  //          ('config', 'first-healthy', 'first-active' — REMOVED in v0.122.0:
   //                               nothing but a binding, the host or the cwd
   //                               being the vault chooses a default any more)
   //          'default'          — nothing set it; the documented default applies
@@ -564,7 +564,7 @@ export async function listVaults(registry, sharedConfig = null) {
 
   return ({
     // NULL, not absent, when nothing chose: an unbound session has no default
-    // vault (v0.121.0) and every call there names its vault.
+    // vault (v0.122.0) and every call there names its vault.
     defaultVault: registry.defaultVault ?? null,
     defaultVaultStatus,
     defaultVaultSource: sourceOr(registry.defaultVaultSource, registry.defaultVault ? UNKNOWN : UNSET),
@@ -590,7 +590,7 @@ export async function listVaults(registry, sharedConfig = null) {
     // same decision. Three states, and the difference matters to every caller
     // that phrases it for a human:
     //   an object          → bound to `vault`, plus `also[]` if several
-    //   null               → NO binding: NO default vault (v0.121.0, unless the
+    //   null               → NO binding: NO default vault (v0.122.0, unless the
     //                        host names one or the cwd is a vault), and the
     //                        reachable vaults — all registered ones, or only
     //                        `openVaults` under vaultReach "declared" — are
@@ -599,7 +599,7 @@ export async function listVaults(registry, sharedConfig = null) {
     // a --also b` wrote only `a` to the dotenv file, and `b` lived solely in a
     // CLAUDE.md prose block the router never read.
     workspaceBinding: bindingOrNull(registry.workspaceBinding),
-    // The reach switch and the vaults reachable WITHOUT a binding (v0.121.0),
+    // The reach switch and the vaults reachable WITHOUT a binding (v0.122.0),
     // so a caller — the vault panel first — can say "no primary; these can be
     // named explicitly" without re-reading config.json. `openVaults` is NOT a
     // source of default: it lists what a call may NAME.
@@ -607,14 +607,14 @@ export async function listVaults(registry, sharedConfig = null) {
     openVaults: Array.isArray(registry.openVaults)
       ? registry.openVaults.filter((n) => typeof n === 'string' && n !== '')
       : [],
-    // config.json keys that no longer do anything (v0.121.0), reported and never
+    // config.json keys that no longer do anything (v0.122.0), reported and never
     // removed: the file is the user's. Today only `defaultVault`, which stopped
     // choosing the default vault — `{ key, value, note }` per entry, [] when clean.
     obsoleteConfigKeys: typeof registry.configuredDefault === 'string' && registry.configuredDefault !== ''
       ? [{
         key: 'defaultVault',
         value: registry.configuredDefault,
-        note: 'Ignored since v0.121.0: config.json no longer chooses a default vault. Bind the workspace '
+        note: 'Ignored since v0.122.0: config.json no longer chooses a default vault. Bind the workspace '
           + '(confirm_workspace_binding), set OBSIDIAN_ROUTER_DEFAULT_VAULT in the MCP host server '
           + 'declaration, or name the vault in each call. The key can be deleted.',
       }]

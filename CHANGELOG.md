@@ -10,7 +10,7 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
-## [0.121.0] — 2026-11-01 — no implicit default vault: an unbound session names its vault, or is told to
+## [0.122.0] — 2026-11-01 — no implicit default vault: an unbound session names its vault, or is told to
 
 Asked by Roland after an unbound session in his home directory — `vaultReach: "declared"`, eleven
 `openVaults`, a `config.json` `defaultVault` naming a disabled vault — got DEDIBOX as its default

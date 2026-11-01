@@ -704,7 +704,7 @@ describe('CLASS SWEEP: the sibling keys, across every consumer surface', () => {
       delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
       try {
         const registry = await loadRegistry({ configPath: cfgPath });
-        // (null is also what "no default" reads as since v0.121.0, so the
+        // (null is also what "no default" reads as since v0.122.0, so the
         // identity check is meaningful for every other junk value only.)
         if (value !== null) {
           assert.notEqual(registry.defaultVault, value,

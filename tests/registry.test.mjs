@@ -430,7 +430,7 @@ describe('resolveDefaultVault — cascade (binding, host, cwd-is-the-vault; noth
     timeoutMs: 10000,
   });
 
-  // v0.121.0: tiers 3 (config.defaultVault), 4 (first healthy local) and 5
+  // v0.122.0: tiers 3 (config.defaultVault), 4 (first healthy local) and 5
   // (first active) are GONE. Past the host override and the cwd-is-the-vault
   // detection there is no default — never a vault picked "au hasard".
   test('no tier left: nothing set → NO default, whatever vaults exist', () => {
@@ -592,7 +592,7 @@ describe('loadRegistry — integration', () => {
     delete process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS;
   });
 
-  test('v0.121.0 — unbound + openVaults + config defaultVault: NO default, origin "unset"', async () => {
+  test('v0.122.0 — unbound + openVaults + config defaultVault: NO default, origin "unset"', async () => {
     // The bug this release closes: an unbound home-directory session with
     // vaultReach "declared", eleven openVaults and a config.json defaultVault
     // got whichever vault answered first ("first-healthy"). config.json's key
@@ -757,7 +757,7 @@ describe('loadRegistry — integration', () => {
 
   test('v0.9.0 ALLOWED_VAULTS — filtering precedes defaultVault resolution (R3 from codex-audit)', async () => {
     // config defaultVault = "alpha" but ALLOWED_VAULTS excludes alpha → the
-    // resolution cascade must NOT pick alpha. Since v0.121.0 it picks nothing
+    // resolution cascade must NOT pick alpha. Since v0.122.0 it picks nothing
     // at all (config.json's key is obsolete, no first-healthy fallback).
     const config = {
       portRegistry: {},

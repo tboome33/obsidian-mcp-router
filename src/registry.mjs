@@ -550,7 +550,7 @@ export async function loadRegistry({ configPath } = {}) {
   // filtered out right after, silently picking a vault the user filtered
   // away. See `2026-05-21-codex-audit.md` risk R3. (A multi-tenant instance
   // that wants a default names it with the host's OBSIDIAN_ROUTER_DEFAULT_VAULT
-  // since v0.121.0: config.json's `defaultVault` no longer chooses.)
+  // since v0.122.0: config.json's `defaultVault` no longer chooses.)
   const allowedVaultsEnv = process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS;
   if (allowedVaultsEnv && allowedVaultsEnv.trim().length > 0) {
     const allowed = new Set(
@@ -636,7 +636,7 @@ export async function loadRegistry({ configPath } = {}) {
   //   2. VAULT_PATH env var — only when it names the working directory itself:
   //      opening Claude Code in a vault directory is "I work in this vault".
   //
-  // NOTHING ELSE (v0.121.0). config.defaultVault, the first healthy local
+  // NOTHING ELSE (v0.122.0). config.defaultVault, the first healthy local
   // vault and the first active vault were removed as sources: they chose a
   // vault no one had named for the workspace. An unbound session has NO
   // default — every tool call names its vault, or resolveVault() refuses with
@@ -717,7 +717,7 @@ export async function loadRegistry({ configPath } = {}) {
     alsoWritable: alsoWritableEntries(config),
     alsoLocked: alsoLockedEntries(config),
     defaultVault,
-    // The config's own `defaultVault` — OBSOLETE since v0.121.0 and no longer
+    // The config's own `defaultVault` — OBSOLETE since v0.122.0 and no longer
     // a tier of the cascade. Carried only so `list_vaults` can tell the user
     // the key is still in their config.json and is ignored.
     configuredDefault,
@@ -1524,7 +1524,7 @@ function resolveDefaultVaultWithSource({ vaults, binding = null, reach = {} }) {
   //    registered vault. Otherwise a cloned repository's `.env` chose the
   //    default through this tier after tier 1 had just refused it.
   //
-  //    AND SINCE v0.121.0, FROM THE HOST TOO: the matched vault must BE the
+  //    AND SINCE v0.122.0, FROM THE HOST TOO: the matched vault must BE the
   //    working directory. A host-wide VAULT_PATH (Claude Desktop, a launcher)
   //    pointing at some vault while the session sits elsewhere is not "I am
   //    working in this vault" — it was one of the ways an unbound session got
@@ -1542,7 +1542,7 @@ function resolveDefaultVaultWithSource({ vaults, binding = null, reach = {} }) {
     // a non-match here is not necessarily a router config error.
   }
 
-  // NOTHING ELSE CHOOSES (v0.121.0). The three tiers that used to follow —
+  // NOTHING ELSE CHOOSES (v0.122.0). The three tiers that used to follow —
   // config.json's `defaultVault`, the first healthy local vault, the first
   // active vault — picked a vault nobody named for this workspace: an unbound
   // C:\Users\<me> session with eleven openVaults landed on whichever answered

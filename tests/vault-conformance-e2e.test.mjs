@@ -120,7 +120,7 @@ function writeConfig(port) {
       timeoutMs: 5000,
     }],
     // The session's default vault comes from a BINDING: config.json's
-    // `defaultVault` no longer chooses one (v0.121.0).
+    // `defaultVault` no longer chooses one (v0.122.0).
     workspaceBindings: {
       [canonicalWorkspaceKey(dir)]: { vault: 'probe', also: [], locked: false, confirmedAt: '2026-11-01', confirmedVia: 'test' },
     },

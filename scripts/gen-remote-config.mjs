@@ -92,7 +92,7 @@ gen-remote-config — config d'un routeur SANS disque de vault (profil HTTP-only
   --print-secrets      autoriser le clair sur stdout (pour tuyauter).
   --default-vault <s>  vault par défaut : vérifié, puis rappelé à déclarer en
                        OBSIDIAN_ROUTER_DEFAULT_VAULT côté hôte (la config ne le
-                       porte plus depuis la v0.121.0).
+                       porte plus depuis la v0.122.0).
   --config <chemin>    config source (défaut ~/.claude/obsidian-mcp-router/config.json)
 
 Sans --out ni --print-secrets, la sortie est RÉDIGÉE : même forme, clés

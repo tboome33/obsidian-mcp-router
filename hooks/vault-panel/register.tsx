@@ -350,9 +350,9 @@ type ListVaults = {
   workspaceBindingOnFile?: OnFile | null
   /** When each vault was last written through the router, and its last files (router v0.115.0+). */
   vaultActivity?: Record<string, VaultActivity>
-  /** The vaults reachable without a binding, by name only (router v0.121.0+). */
+  /** The vaults reachable without a binding, by name only (router v0.122.0+). */
   openVaults?: string[]
-  /** The session's default vault: null when nothing chose one (router v0.121.0+). */
+  /** The session's default vault: null when nothing chose one (router v0.122.0+). */
   defaultVault?: string | null
 }
 
@@ -759,11 +759,11 @@ function toSnapshot(data: ListVaults, fetchedAt: number): Snapshot {
     routerVersion: data.routerBuild?.version ?? null,
     order: (b?.also ?? []).filter(name => name !== b?.vault),
     // Unbound: what a call may NAME without a binding. No default among them:
-    // since router v0.121.0 an unbound session has none.
+    // since router v0.122.0 an unbound session has none.
     openReach: b ? [] : (data.openVaults ?? []).filter(name => byName.has(name)),
     // An unbound session can still have a default the HOST named: it is said,
     // never hidden behind "no default". Only from a router that reports
-    // `openVaults` (v0.121.0+): an older one still fell back to "the first
+    // `openVaults` (v0.122.0+): an older one still fell back to "the first
     // vault that answers", which is no host's choice and must not read as one.
     ...(!b && data.openVaults !== undefined ? { unboundDefault: data.defaultVault ?? null } : {}),
     activity: data.vaultActivity ?? {},

@@ -105,7 +105,7 @@ export function orderedVaultCandidates(cwd, cfg) {
   // OBSIDIAN_ROUTER_DEFAULT_VAULT slug set by `setup-vault.mjs
   // --link-workspace` is visible. Without this, every workspace-bound
   // setup fell through to the cfg.defaultVault (a tier removed in
-  // v0.121.0), picking the wrong vault as "the project's own".
+  // v0.122.0), picking the wrong vault as "the project's own".
   loadWorkspaceDotenv(cwd);
 
   const seen = new Set();
@@ -145,7 +145,7 @@ export function orderedVaultCandidates(cwd, cfg) {
     }
   }
 
-  // (2) config.json's `defaultVault` — no longer a source (v0.121.0): the
+  // (2) config.json's `defaultVault` — no longer a source (v0.122.0): the
   // router's cascade dropped it, and "the project's own vault" cannot be one
   // the router would refuse to default to.
 

@@ -569,7 +569,7 @@ describe('vault-link-linter — block cases', () => {
         message: { content: [{ type: 'text', text: 'See [log](wiki/log.md).' }] },
       };
       fs.writeFileSync(transcriptPath, JSON.stringify(entry) + '\n');
-      // Since v0.121.0 VAULT_PATH decides only when the session sits IN that
+      // Since v0.122.0 VAULT_PATH decides only when the session sits IN that
       // vault — from the host too — exactly as the router's cascade does.
       const run = (projectDir) => spawnSync(
         process.execPath,
@@ -604,7 +604,7 @@ describe('vault-link-linter — block cases', () => {
     // Create a second vault that ALSO contains wiki/log.md, and make it the
     // session's default through the HOST override. The linter should suggest
     // a URL pointing at the second vault's port (insecurePort 27143), not the
-    // first vault's (27142). (Until v0.121.0 config.json's `defaultVault` did
+    // first vault's (27142). (Until v0.122.0 config.json's `defaultVault` did
     // this; that key no longer chooses anything — see the next test.)
     const otherVault = path.join(workDir, 'other-vault');
     fs.mkdirSync(path.join(otherVault, 'wiki'), { recursive: true });

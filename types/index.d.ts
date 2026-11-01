@@ -101,7 +101,7 @@ export type Snapshot = {
   secondaries: Secondary[]
   available: VaultRow[]
   /** Unbound only: the vaults this session reaches WITHOUT a binding
-   * (list_vaults.openVaults, router v0.121.0+), callable by name only, never a
+   * (list_vaults.openVaults, router v0.122.0+), callable by name only, never a
    * default. Empty when bound, or from an older router. */
   openReach?: string[]
   /** Unbound only: the default the HOST named (list_vaults.defaultVault with no

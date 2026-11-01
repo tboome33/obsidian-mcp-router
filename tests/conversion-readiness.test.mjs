@@ -1036,11 +1036,11 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
       'disabled',
       'lockSource',
       'lockedTo',
-      // v0.121.0 — config.json keys that no longer do anything (today only
+      // v0.122.0 — config.json keys that no longer do anything (today only
       // `defaultVault`, which stopped choosing the default vault), reported
       // and never removed. Added here deliberately.
       'obsoleteConfigKeys',
-      // v0.121.0 — the vaults reachable WITHOUT a binding, by name only: an
+      // v0.122.0 — the vaults reachable WITHOUT a binding, by name only: an
       // unbound session has no default, so the panel lists what may be named.
       'openVaults',
       'portCollisions',
