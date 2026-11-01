@@ -10,6 +10,64 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.121.0] — 2026-11-01 — the vault panel shows where it belongs: never in the CLI, in Claude Desktop for a bound workspace or on /vaults
+
+Asked by Roland on v0.120.0: the panel and the band showed in the CLI in a console, and in Claude
+Desktop even for a workspace with no vault; the only way out was `OBSIDIAN_ROUTER_NO_VAULT_PANEL`
+in `~/.claude/settings.json`, a file the CLI and Claude Desktop share, so it turned the panel off
+in Claude Desktop too.
+
+### Behaviour change
+
+- **The CLI in a console shows no mod of the router's**: no pane (one the app restored from an
+  earlier layout included), no band, no `/vaults` or `/vault-setup`, and no router call for them.
+  A command that reached the CLI anyway answers in one line — open the project in Claude Desktop,
+  or bind the workspace with `confirm_workspace_binding` — and opens nothing. The MCP tools and
+  the SessionStart hooks are unchanged. The panel's own update check and its automatic update
+  (the footer's switch, with its toast) do not run there either: they belong to a pane the CLI
+  never shows, and the switch cannot be reached from it.
+- **Claude Desktop, bound workspace** (a primary, or at least one secondary): the pane and the
+  band open on their own, as before.
+- **Claude Desktop, unbound workspace**: nothing shows on its own, and no toast. A pane the app
+  restores from an earlier layout is closed, not adopted, whether it is drawn before or after the
+  start's read. `/vaults` opens the pane and the band together, to bind a primary or a
+  secondary; once bound from the pane the session behaves as bound. A binding cleared during the
+  session leaves the pane and the band shown until the pane is closed; the next session shows
+  nothing on its own.
+- **The start's toast** now reads "No primary vault for this project" and is said only for a
+  binding to secondaries only, the one case left where a pane opens without a primary.
+- **How the surface is told**, from facts only: `session.start`'s own `surface` (`terminal` under
+  the CLI's REPL; null under Claude Desktop, an SDK host whose `desktop` surface attaches
+  afterwards through `session.attach`), then `CLAUDE_CODE_ENTRYPOINT` (`cli` in a console,
+  `claude-desktop` under Claude Desktop), then `$.session.surfaces()`. The first two are final;
+  within the roster, and among the surfaces that attach while it is read, a terminal comes first. Only `desktop` opens
+  anything on its own; `vscode`, `mobile` and a surface this build does not know draw what
+  `/vaults` opened, never an automatic open (a phone attached to a CLI session draws nothing,
+  the session being the CLI's). A session that says neither shows nothing until Claude
+  Desktop's surface attaches; a terminal attaching first makes it the CLI's — `/vaults` then
+  answers in a line, an open pane is closed and a drawn band goes away. On a surface other than
+  Claude Desktop's, a binding the model makes shows nothing until `/vaults`.
+- **The panel's update check and automatic update** run only in Claude Desktop, or after a
+  `/vaults` or `/vault-setup` on a host not yet known; never in the CLI, nor before the host is known.
+- `OBSIDIAN_ROUTER_NO_VAULT_PANEL` and `OBSIDIAN_ROUTER_NO_VAULT_BAND` are unchanged and win on
+  every surface.
+
+### Fixed
+
+- **v0.120.0's module failed `claude plugin validate`**: the footer's automatic update switch
+  keeps an `obsidian-router.autoUpdate` value the module's state contract (`types/index.d.ts`)
+  did not declare. Declared.
+- **A start whose read was overtaken** (a router call of the model's, a restored pane's poll)
+  waits for the newer read instead of deciding on no list, so a bound workspace's pane is never
+  kept shut by the race.
+
+### Migration
+
+- If you set `OBSIDIAN_ROUTER_NO_VAULT_PANEL=1` in `~/.claude/settings.json` only to keep the
+  panel out of the CLI, remove it: the CLI no longer draws it, and the variable also hid the
+  panel in Claude Desktop.
+- A workspace that relied on the pane opening by itself without a binding now needs `/vaults`.
+
 ## [0.120.0] — 2026-10-28 — the panel's mark moves right; a footer holds GitHub, the version and an automatic update switch
 
 Asked by Roland on v0.119.2.
