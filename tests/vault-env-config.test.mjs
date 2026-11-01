@@ -376,7 +376,8 @@ describe('loadRegistry — VAULT_* 3rd source merge', () => {
     // No VAULT_* in env (wiped by beforeEach).
     const r = await loadRegistry({ configPath: cfgPath });
     assert.deepEqual(r.vaults.map((v) => v.name), ['alpha', 'beta']);
-    assert.equal(r.defaultVault, 'beta');
+    // config.json's defaultVault is obsolete since v0.121.0: no default.
+    assert.equal(r.defaultVault, null);
     assert.equal(r.skipped.length, 0);
   });
 

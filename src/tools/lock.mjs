@@ -786,7 +786,6 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
       registry.workspaceBinding = b;
       const again = resolveDefaultVaultWithSource({
         vaults: registry.vaults || [],
-        configuredDefault: registry.configuredDefault,
         binding: b,
         reach: registry,
       });

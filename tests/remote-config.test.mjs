@@ -210,6 +210,12 @@ describe('buildRemoteConfig', () => {
     assert.throws(() => buildRemoteConfig({ vaults, defaultVault: 'absent' }), /n'est pas dans la sélection/);
   });
 
+  test('un defaultVault valide n\'est PAS écrit (v0.121.0) : un avertissement dit de le nommer côté hôte', () => {
+    const { config, warnings } = buildRemoteConfig({ vaults, defaultVault: vaults[0].name });
+    assert.equal(config.defaultVault, undefined);
+    assert.ok(warnings.some((w) => w.includes(`OBSIDIAN_ROUTER_DEFAULT_VAULT=${vaults[0].name}`)), warnings.join(' | '));
+  });
+
   test('signale un hôte que la garde de transport refusera', () => {
     const { warnings } = buildRemoteConfig({ vaults, host: '192.168.0.11' });
     assert.equal(warnings.length, 1);
@@ -259,7 +265,10 @@ describe('ALLER-RETOUR avec le routeur — la protection contre la dérive', () 
       assert.equal(reg.vaults.length, 1);
       assert.equal(reg.vaults[0].type, 'remote', 'type remote = aucune lecture de data.json');
       assert.equal(reg.vaults[0].apiKey, fakeKey('roland'), 'la clé vient de la config');
-      assert.equal(reg.defaultVault, 'roland');
+      // v0.121.0 : la config ne porte plus de défaut — un avertissement dit
+      // de le nommer côté hôte, et le routeur n'en choisit aucun.
+      assert.equal(config.defaultVault, undefined);
+      assert.equal(reg.defaultVault, null);
       assert.equal(reg.vaults.filter((v) => v.type === 'local').length, 0);
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });

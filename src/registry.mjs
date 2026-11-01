@@ -546,9 +546,11 @@ export async function loadRegistry({ configPath } = {}) {
   // only Karine's, etc. — even though they all read the same central config.json.
   //
   // CRITICAL ordering: this MUST run BEFORE `resolveDefaultVault()` below,
-  // otherwise `configuredDefault` could resolve to a vault that gets filtered
-  // out right after, and tier-3 of the cascade would silently pick a vault
-  // the user filtered away. See `2026-05-21-codex-audit.md` risk R3.
+  // otherwise a tier of the cascade could resolve to a vault that gets
+  // filtered out right after, silently picking a vault the user filtered
+  // away. See `2026-05-21-codex-audit.md` risk R3. (A multi-tenant instance
+  // that wants a default names it with the host's OBSIDIAN_ROUTER_DEFAULT_VAULT
+  // since v0.121.0: config.json's `defaultVault` no longer chooses.)
   const allowedVaultsEnv = process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS;
   if (allowedVaultsEnv && allowedVaultsEnv.trim().length > 0) {
     const allowed = new Set(
@@ -625,33 +627,30 @@ export async function loadRegistry({ configPath } = {}) {
     }
   }
 
-  // --- 3. Default vault — 6-tier resolution cascade (tier 0 + five) ---
+  // --- 3. Default vault — resolution cascade (tier 0 + two) ---
   //
   // Priority (highest first):
-  //   1. OBSIDIAN_ROUTER_DEFAULT_VAULT env var — explicit per-process override.
-  //      Most useful in a project's .env when the auto-detection (step 2) picks
-  //      the wrong vault, or when the project isn't a vault directory.
-  //   2. VAULT_PATH env var — auto-detection from the project's .env.
-  //      `setup-vault.mjs` writes this into every bootstrapped vault, so opening
-  //      Claude Code in a vault directory "just works" with that vault as default.
-  //   3. config.defaultVault — explicit global default in
-  //      ~/.claude/obsidian-mcp-router/config.json.
-  //   4. First healthy local vault — historical fallback.
-  //   5. First active vault of any type — last resort.
+  //   0. The confirmed workspace binding's primary.
+  //   1. OBSIDIAN_ROUTER_DEFAULT_VAULT env var — explicit per-process override,
+  //      from the HOST only (a workspace .env proposes, see bindingHint).
+  //   2. VAULT_PATH env var — only when it names the working directory itself:
+  //      opening Claude Code in a vault directory is "I work in this vault".
+  //
+  // NOTHING ELSE (v0.121.0). config.defaultVault, the first healthy local
+  // vault and the first active vault were removed as sources: they chose a
+  // vault no one had named for the workspace. An unbound session has NO
+  // default — every tool call names its vault, or resolveVault() refuses with
+  // the list of vaults it may name.
   //
   // At each step we only honor a candidate if it's actually in the active
   // `vaults[]` set (i.e., not disabled and not removed since the override
-  // was written). Local vaults with `missingApiKey: true` ARE eligible for
-  // tiers 1, 2, 3 — the user explicitly named/configured them, so respect
-  // that choice and let resolveVault() raise a clear error at tool-call
-  // time. Tier 4 (the implicit fallback) DOES skip missing-key candidates,
-  // so a router with no explicit configuration prefers a healthy vault.
-  // Through the accessor (the `vaultNames` sweep). This tier was already safe
-  // — `isActive` compares against names this module produced, so a number
-  // could never win it — but reading the raw value made that safety
-  // accidental, and it is the reason the six readers DOWNSTREAM of the
-  // registry never had to care: `registry.defaultVault` is a resolved name,
-  // not the config's word.
+  // was written). Local vaults with `missingApiKey: true` ARE eligible — the
+  // user explicitly named them, so respect that choice and let resolveVault()
+  // raise a clear error at tool-call time.
+  //
+  // config.json's `defaultVault` is still READ — through the accessor (the
+  // `vaultNames` sweep) — but only so list_vaults can report the key as
+  // obsolete. It decides nothing.
   const configuredDefault = configuredDefaultVault(config);
   // Tier 0 of the cascade: what THIS user confirmed, for THIS workspace path,
   // in their own config. Read once here and carried on the registry so the
@@ -698,7 +697,6 @@ export async function loadRegistry({ configPath } = {}) {
   });
   const resolvedDefault = resolveDefaultVaultWithSource({
     vaults,
-    configuredDefault,
     binding: workspaceBinding,
     reach: { vaultReach: vaultReachMode(config), openVaults: openVaultEntries(config), workspaceBinding },
   });
@@ -719,10 +717,9 @@ export async function loadRegistry({ configPath } = {}) {
     alsoWritable: alsoWritableEntries(config),
     alsoLocked: alsoLockedEntries(config),
     defaultVault,
-    // The config's own `defaultVault`, carried so a caller that has to re-run
-    // the cascade after mutating tier 0 (clearing a binding, in
-    // `confirm_workspace_binding`) can pass it back in rather than reaching
-    // into the config file a second time.
+    // The config's own `defaultVault` — OBSOLETE since v0.121.0 and no longer
+    // a tier of the cascade. Carried only so `list_vaults` can tell the user
+    // the key is still in their config.json and is ignored.
     configuredDefault,
     // WHICH tier of the cascade answered, and — when it read an environment
     // variable — whether that variable came from the workspace `.env` or from
@@ -774,9 +771,7 @@ export async function loadRegistry({ configPath } = {}) {
     config,
     resolveVault(name) {
       const target = name || this.defaultVault;
-      if (!target) {
-        throw new Error('No vault specified and no default vault is configured.');
-      }
+      if (!target) throw new Error(noPrimaryVaultMessage(this));
       const v = this.vaults.find((x) => x.name === target);
       if (!v) {
         const known = this.vaults.map((x) => x.name).join(', ') || '(none)';
@@ -1425,17 +1420,46 @@ function declaredObsidianName(value, where, warn = (m) => console.error(`[regist
 // re-exported through `_internals` below, so existing tests reach it unchanged.
 
 /**
- * Five-tier default-vault resolution. See the call site in loadRegistry() for
- * the full priority order. This function only returns a name that is in the
- * active vaults[] set — disabled or missing-key candidates fall through.
+ * The refusal of a call that names no vault in a session with no default.
+ *
+ * NEVER A SILENT FALLBACK: it says there is no primary, names the vaults the
+ * call MAY name (the reachable ones — `openVaults` under vaultReach
+ * "declared", every loaded vault otherwise) and the way to get a primary. A
+ * bound workspace whose primary is not loaded is told that instead, since
+ * "bind this workspace" would be the wrong advice there.
+ *
+ * @param {object} registry
+ * @returns {string}
+ */
+function noPrimaryVaultMessage(registry) {
+  const reachable = (registry.vaults || [])
+    .filter((v) => isVaultReachable(v.name, registry))
+    .map((v) => v.name);
+  const list = reachable.length > 0 ? reachable.join(', ') : '(none)';
+  const bound = registry.workspaceBinding?.vault;
+  if (bound) {
+    return `No vault specified, and this workspace's primary vault "${bound}" is not loaded in this session `
+      + `(disabled, removed, or not answering at start-up), so there is no default. Name a vault explicitly with `
+      + `\`vault\` (reachable vaults: ${list}), or re-bind this workspace with confirm_workspace_binding.`;
+  }
+  return 'No vault specified, and this workspace has no primary vault, so there is no default: an unbound '
+    + `session never picks one on its own. Name a vault explicitly with \`vault\` (reachable vaults: ${list}), `
+    + 'or bind this workspace with confirm_workspace_binding.';
+}
+
+/**
+ * Default-vault resolution (binding, host override, cwd-is-the-vault). See the
+ * call site in loadRegistry() for the full priority order. This function only
+ * returns a name that is in the active vaults[] set — disabled or missing-key
+ * candidates fall through, and past the last tier there is NO default (null).
  *
  * Logs a one-line warning to stderr if `OBSIDIAN_ROUTER_DEFAULT_VAULT` is
  * set to a name that doesn't match any active vault, so the user notices
  * their override didn't take effect (typical cause: typo or a vault that
  * was disabled/removed since the override was written).
  */
-function resolveDefaultVault({ vaults, configuredDefault }) {
-  return resolveDefaultVaultWithSource({ vaults, configuredDefault }).name;
+function resolveDefaultVault({ vaults }) {
+  return resolveDefaultVaultWithSource({ vaults }).name;
 }
 
 /**
@@ -1448,9 +1472,9 @@ function resolveDefaultVault({ vaults, configuredDefault }) {
  * `resolveDefaultVault` stays the name-only function it always was: a dozen
  * cascade tests call it directly, and the cascade is not what changes here.
  *
- * @returns {{ name: string|undefined, origin: string, variable: string|null }}
+ * @returns {{ name: string|null, origin: string, variable: string|null }}
  */
-function resolveDefaultVaultWithSource({ vaults, configuredDefault, binding = null, reach = {} }) {
+function resolveDefaultVaultWithSource({ vaults, binding = null, reach = {} }) {
   vaults = vaults.filter((v) => isVaultReachable(v.name, reach));
   const isActive = (name) => name && vaults.some((v) => v.name === name);
   const fromEnv = (variable) => ({ origin: envKeyOrigin(variable), variable });
@@ -1499,30 +1523,32 @@ function resolveDefaultVaultWithSource({ vaults, configuredDefault, binding = nu
   //    "current directory IS a vault" case the spec meant — never another
   //    registered vault. Otherwise a cloned repository's `.env` chose the
   //    default through this tier after tier 1 had just refused it.
+  //
+  //    AND SINCE v0.121.0, FROM THE HOST TOO: the matched vault must BE the
+  //    working directory. A host-wide VAULT_PATH (Claude Desktop, a launcher)
+  //    pointing at some vault while the session sits elsewhere is not "I am
+  //    working in this vault" — it was one of the ways an unbound session got
+  //    a vault nobody asked for.
   const cwdVaultPath = authoritativeVaultPath(process.cwd());
   if (cwdVaultPath) {
     const target = normalizePathForCompare(cwdVaultPath);
+    const cwdKey = canonicalWorkspaceKey(process.cwd());
     const matched = vaults.find(
-      (v) => v.type === 'local' && v.path && normalizePathForCompare(v.path) === target,
+      (v) => v.type === 'local' && v.path && normalizePathForCompare(v.path) === target
+        && cwdKey && canonicalWorkspaceKey(v.path) === cwdKey,
     );
     if (matched) return { name: matched.name, ...fromEnv('VAULT_PATH') };
     // Don't warn — VAULT_PATH might be set by other tools for other purposes;
     // a non-match here is not necessarily a router config error.
   }
 
-  // 3. Global default from config file
-  if (isActive(configuredDefault)) return { name: configuredDefault, origin: 'config', variable: null };
-
-  // 4. First healthy local vault
-  const healthyLocal = vaults.find((v) => v.type === 'local' && !v.missingApiKey);
-  if (healthyLocal) return { name: healthyLocal.name, origin: 'first-healthy', variable: null };
-
-  // 5. First active vault of any type — last resort.
-  // Decided on the ARRAY, not on the truthiness of the name: the function this
-  // one replaces returned `vaults[0]?.name` verbatim, so an empty-string or
-  // null name must come back unchanged rather than collapse to undefined.
-  if (vaults.length > 0) return { name: vaults[0].name, origin: 'first-active', variable: null };
-  return { name: undefined, origin: 'unset', variable: null };
+  // NOTHING ELSE CHOOSES (v0.121.0). The three tiers that used to follow —
+  // config.json's `defaultVault`, the first healthy local vault, the first
+  // active vault — picked a vault nobody named for this workspace: an unbound
+  // C:\Users\<me> session with eleven openVaults landed on whichever answered
+  // first. A vault is now either bound, named by the host, the working
+  // directory itself, or named in the call; `resolveVault` says so when none is.
+  return { name: null, origin: 'unset', variable: null };
 }
 
 /**

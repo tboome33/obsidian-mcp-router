@@ -16,7 +16,7 @@ description: |
 Call the obsidian-router `list_vaults` MCP tool. It takes no arguments.
 
 The tool pings every ACTIVE vault in parallel and returns:
-- `defaultVault` — vault used when calls omit a `vault` argument (resolved by the 5-tier cascade)
+- `defaultVault` — vault used when calls omit a `vault` argument (binding, host override, or the cwd being a vault). **`null` in an unbound workspace** (router v0.121.0+): there is no default, every call must name its vault — say so, never pick one. `openVaults` lists what may be named; `obsoleteConfigKeys` flags a `defaultVault` key left in config.json (ignored)
 - `configPath` — where the registry is loaded from
 - `vaults[]` — active vaults, each with `name`, `type` (local|remote), `baseUrl`, `online`, `latencyMs`, `missingApiKey`, `error?`, `isDefault`
 - `disabled[]` — vaults this session cannot use right now. NOT pinged. Each entry: `name`, `type`, `reason`, `awaitingDeclaration` — and that last field is the one that matters, because the array holds two different absences:

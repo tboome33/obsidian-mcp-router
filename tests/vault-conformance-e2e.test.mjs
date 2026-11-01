@@ -26,6 +26,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { SEARCH_INDEX_PATH, indexProblem } from '../src/helpers/bm25-index.mjs';
+import { canonicalWorkspaceKey } from '../src/helpers/workspace-bindings.mjs';
 import { homeSafeEnv } from './_home-safe-spawn.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -118,7 +119,11 @@ function writeConfig(port) {
       apiKey: API_KEY,
       timeoutMs: 5000,
     }],
-    defaultVault: 'probe',
+    // The session's default vault comes from a BINDING: config.json's
+    // `defaultVault` no longer chooses one (v0.121.0).
+    workspaceBindings: {
+      [canonicalWorkspaceKey(dir)]: { vault: 'probe', also: [], locked: false, confirmedAt: '2026-11-01', confirmedVia: 'test' },
+    },
   }, null, 2), 'utf8');
   return { dir, configPath };
 }

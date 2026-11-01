@@ -287,8 +287,10 @@ describe('confirm_workspace_binding — clear: true releases the LIVE session, n
     const r = await confirmWorkspaceBinding(reg, { clear: true }, seam);
     assert.equal(r.cleared, true);
     assert.equal(reg.workspaceBinding, null);
-    assert.equal(reg.defaultVault, 'work', 'the config default answers now that tier 0 is gone');
-    assert.deepEqual(reg.defaultVaultSource, { origin: 'config', variable: null });
+    // v0.121.0: the config default (`work` above) is obsolete — with tier 0
+    // gone and no host override, the workspace has NO default any more.
+    assert.equal(reg.defaultVault, null, 'an unbound workspace never falls back to the config default');
+    assert.deepEqual(reg.defaultVaultSource, { origin: 'unset', variable: null });
   });
 
   test('a binding-imposed lock is released with the binding', async () => {

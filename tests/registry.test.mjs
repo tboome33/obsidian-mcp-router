@@ -391,7 +391,7 @@ describe('buildDefaultVaultStatus — default vault health summary', () => {
 // resolveDefaultVault — pure cascade tests with synthetic vault arrays
 // ---------------------------------------------------------------------------
 
-describe('resolveDefaultVault — 5-tier cascade', () => {
+describe('resolveDefaultVault — cascade (binding, host, cwd-is-the-vault; nothing else)', () => {
   // Save and restore env vars between tests
   const ENV_KEYS = ['OBSIDIAN_ROUTER_DEFAULT_VAULT', 'VAULT_PATH'];
   const saved = {};
@@ -430,61 +430,61 @@ describe('resolveDefaultVault — 5-tier cascade', () => {
     timeoutMs: 10000,
   });
 
-  test('tier 5 (last resort): returns first vault when nothing else is set', () => {
-    const vaults = [remoteVault('alpha'), remoteVault('beta')];
-    const result = resolveDefaultVault({ vaults, configuredDefault: undefined });
-    assert.equal(result, 'alpha');
+  // v0.121.0: tiers 3 (config.defaultVault), 4 (first healthy local) and 5
+  // (first active) are GONE. Past the host override and the cwd-is-the-vault
+  // detection there is no default — never a vault picked "au hasard".
+  test('no tier left: nothing set → NO default, whatever vaults exist', () => {
+    const vaults = [remoteVault('alpha'), localVault('beta', '/v/beta')];
+    assert.equal(resolveDefaultVault({ vaults }), null);
   });
 
-  test('tier 5: empty vault array returns undefined', () => {
-    const result = resolveDefaultVault({ vaults: [], configuredDefault: undefined });
-    assert.equal(result, undefined);
+  test('no tier left: empty vault array → null', () => {
+    assert.equal(resolveDefaultVault({ vaults: [] }), null);
   });
 
-  test('tier 4: prefers healthy local over missing-key local', () => {
-    const vaults = [
-      localVault('broken', 'C:\\VAULTS\\Broken', true),
-      localVault('healthy', 'C:\\VAULTS\\Healthy', false),
-    ];
-    const result = resolveDefaultVault({ vaults, configuredDefault: undefined });
-    assert.equal(result, 'healthy');
-  });
-
-  test('tier 3: honors config.defaultVault when active', () => {
+  test('config.defaultVault is NOT a tier any more, active or not', () => {
     const vaults = [localVault('alpha', '/v/alpha'), localVault('beta', '/v/beta')];
-    const result = resolveDefaultVault({ vaults, configuredDefault: 'beta' });
-    assert.equal(result, 'beta');
+    // The parameter is gone; passing it anyway must change nothing.
+    assert.equal(resolveDefaultVault({ vaults, configuredDefault: 'beta' }), null);
+    const full = _internals.resolveDefaultVaultWithSource({ vaults, configuredDefault: 'beta' });
+    assert.deepEqual(full, { name: null, origin: 'unset', variable: null });
   });
 
-  test('tier 3: ignores config.defaultVault when not in active set', () => {
-    const vaults = [localVault('alpha', '/v/alpha'), localVault('beta', '/v/beta')];
-    const result = resolveDefaultVault({ vaults, configuredDefault: 'gamma-disabled' });
-    assert.equal(result, 'alpha'); // falls through to tier 4
-  });
+  describe('tier 2 — VAULT_PATH only when the working directory IS that vault', () => {
+    let dir;
+    let otherDir;
+    let cwdBefore;
+    beforeEach(() => {
+      cwdBefore = process.cwd();
+      dir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'omr-tier2-'));
+      otherDir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'omr-tier2-other-'));
+    });
+    afterEach(() => {
+      process.chdir(cwdBefore);
+      fsSync.rmSync(dir, { recursive: true, force: true });
+      fsSync.rmSync(otherDir, { recursive: true, force: true });
+    });
 
-  test('tier 2: matches VAULT_PATH against vault.path → vault name', () => {
-    process.env.VAULT_PATH = 'C:\\VAULTS\\.template';
-    const vaults = [
-      localVault('template', 'C:\\VAULTS\\.template'),
-      localVault('tradingview', 'C:\\VAULTS\\TradingView'),
-    ];
-    const result = resolveDefaultVault({ vaults, configuredDefault: 'tradingview' });
-    assert.equal(result, 'template'); // tier 2 wins over tier 3
-  });
+    test('cwd = VAULT_PATH = a registered vault → that vault', () => {
+      process.chdir(dir);
+      process.env.VAULT_PATH = dir;
+      const vaults = [localVault('here', dir), localVault('other', otherDir)];
+      assert.equal(resolveDefaultVault({ vaults }), 'here');
+    });
 
-  test('tier 2: VAULT_PATH with case differences still matches on Windows-style', () => {
-    process.env.VAULT_PATH = 'c:/vaults/.template/';
-    const vaults = [localVault('template', 'C:\\VAULTS\\.template')];
-    const result = resolveDefaultVault({ vaults, configuredDefault: undefined });
-    assert.equal(result, 'template');
-  });
+    test('VAULT_PATH names a vault but the cwd is elsewhere → no default', () => {
+      process.chdir(otherDir);
+      process.env.VAULT_PATH = dir;
+      const vaults = [localVault('here', dir)];
+      assert.equal(resolveDefaultVault({ vaults }), null);
+    });
 
-  test('tier 2: VAULT_PATH that does not match any vault falls through silently', () => {
-    process.env.VAULT_PATH = 'C:\\VAULTS\\NotARegisteredVault';
-    const vaults = [localVault('template', 'C:\\VAULTS\\.template')];
-    const result = resolveDefaultVault({ vaults, configuredDefault: undefined });
-    // Falls through to tier 4 (first healthy local)
-    assert.equal(result, 'template');
+    test('VAULT_PATH that matches no vault → no default (no fallback)', () => {
+      process.chdir(dir);
+      process.env.VAULT_PATH = dir;
+      const vaults = [localVault('other', otherDir)];
+      assert.equal(resolveDefaultVault({ vaults }), null);
+    });
   });
 
   test('tier 1: OBSIDIAN_ROUTER_DEFAULT_VAULT wins over VAULT_PATH', () => {
@@ -494,7 +494,7 @@ describe('resolveDefaultVault — 5-tier cascade', () => {
       localVault('template', 'C:\\VAULTS\\.template'),
       localVault('tradingview', 'C:\\VAULTS\\TradingView'),
     ];
-    const result = resolveDefaultVault({ vaults, configuredDefault: 'template' });
+    const result = resolveDefaultVault({ vaults });
     assert.equal(result, 'tradingview');
   });
 
@@ -513,8 +513,8 @@ describe('resolveDefaultVault — 5-tier cascade', () => {
         localVault('template', 'C:\\VAULTS\\.template'),
         localVault('tradingview', 'C:\\VAULTS\\TradingView'),
       ];
-      const result = resolveDefaultVault({ vaults, configuredDefault: 'tradingview' });
-      assert.equal(result, 'tradingview'); // falls through to tier 3
+      const result = resolveDefaultVault({ vaults });
+      assert.equal(result, null); // falls through — and nothing below chooses
       assert.match(warning, /tradingvieww/);
       assert.match(warning, /falling through/);
       assert.match(warning, /Active vaults: template, tradingview/);
@@ -537,7 +537,7 @@ describe('resolveDefaultVault — 5-tier cascade', () => {
         localVault('template', 'C:\\VAULTS\\.template'),
         localVault('tradingview', 'C:\\VAULTS\\TradingView'),
       ];
-      const result = resolveDefaultVault({ vaults, configuredDefault: undefined });
+      const result = resolveDefaultVault({ vaults });
       assert.equal(result, 'template');
       assert.equal(warningEmitted, false);
     } finally {
@@ -546,15 +546,14 @@ describe('resolveDefaultVault — 5-tier cascade', () => {
   });
 
   test('tier 1: missing-key vault is still selectable as explicit override', () => {
-    // Per the documented policy: explicit overrides (tiers 1-3) honor
-    // missing-key vaults; the resolveVault() call later raises a clear
-    // error. Only tier 4 (the implicit fallback) prefers healthy.
+    // Per the documented policy: explicit overrides honor missing-key
+    // vaults; the resolveVault() call later raises a clear error.
     process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT = 'broken';
     const vaults = [
       localVault('broken', 'C:\\VAULTS\\Broken', true),
       localVault('healthy', 'C:\\VAULTS\\Healthy', false),
     ];
-    const result = resolveDefaultVault({ vaults, configuredDefault: undefined });
+    const result = resolveDefaultVault({ vaults });
     assert.equal(result, 'broken');
   });
 });
@@ -593,18 +592,37 @@ describe('loadRegistry — integration', () => {
     delete process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS;
   });
 
-  test('loadRegistry resolves defaultVault from config when no env is set', async () => {
+  test('v0.121.0 — unbound + openVaults + config defaultVault: NO default, origin "unset"', async () => {
+    // The bug this release closes: an unbound home-directory session with
+    // vaultReach "declared", eleven openVaults and a config.json defaultVault
+    // got whichever vault answered first ("first-healthy"). config.json's key
+    // is obsolete and openVaults is reach, never a default.
     const config = {
       portRegistry: {},
       remoteVaults: [
         { name: 'alpha', baseUrl: 'https://a.example.com', apiKey: 'k' },
         { name: 'beta', baseUrl: 'https://b.example.com', apiKey: 'k' },
       ],
+      vaultReach: 'declared',
+      openVaults: ['alpha', 'beta'],
       defaultVault: 'beta',
     };
     await fs.writeFile(cfgPath, JSON.stringify(config), 'utf8');
     const r = await loadRegistry({ configPath: cfgPath });
-    assert.equal(r.defaultVault, 'beta');
+    assert.equal(r.workspaceBinding, null);
+    assert.equal(r.defaultVault, null);
+    assert.deepEqual(r.defaultVaultSource, { origin: 'unset', variable: null });
+    // Still carried, for list_vaults to report as obsolete.
+    assert.equal(r.configuredDefault, 'beta');
+    // Omitting the vault is refused, naming what may be named instead.
+    assert.throws(() => r.resolveVault(), /no primary vault.*reachable vaults: alpha, beta.*confirm_workspace_binding/s);
+    assert.equal(r.resolveVault('alpha').name, 'alpha');
+    // And the same without vaultReach: every registered vault reachable, none chosen.
+    const { vaultReach, openVaults, ...openConfig } = config;
+    await fs.writeFile(cfgPath, JSON.stringify(openConfig), 'utf8');
+    const open = await loadRegistry({ configPath: cfgPath });
+    assert.equal(open.defaultVault, null);
+    assert.equal(open.defaultVaultSource.origin, 'unset');
   });
 
   test('loadRegistry honors OBSIDIAN_ROUTER_DEFAULT_VAULT env var', async () => {
@@ -738,10 +756,9 @@ describe('loadRegistry — integration', () => {
   });
 
   test('v0.9.0 ALLOWED_VAULTS — filtering precedes defaultVault resolution (R3 from codex-audit)', async () => {
-    // configuredDefault = "alpha" but ALLOWED_VAULTS excludes alpha → the
-    // resolution cascade must NOT pick alpha (it's not in the active set
-    // after filtering). It should fall through to tier 4/5 within the
-    // filtered set.
+    // config defaultVault = "alpha" but ALLOWED_VAULTS excludes alpha → the
+    // resolution cascade must NOT pick alpha. Since v0.121.0 it picks nothing
+    // at all (config.json's key is obsolete, no first-healthy fallback).
     const config = {
       portRegistry: {},
       remoteVaults: [
@@ -755,7 +772,7 @@ describe('loadRegistry — integration', () => {
     const r = await loadRegistry({ configPath: cfgPath });
     assert.equal(r.vaults.length, 1);
     assert.equal(r.vaults[0].name, 'beta');
-    assert.equal(r.defaultVault, 'beta', 'defaultVault must fall through to filtered set, not point at the wiped alpha');
+    assert.equal(r.defaultVault, null, 'defaultVault must not point at the wiped alpha, nor fall back to beta');
   });
 
   test('v0.9.0 ALLOWED_VAULTS — whitelist of unknown names yields empty active set', async () => {

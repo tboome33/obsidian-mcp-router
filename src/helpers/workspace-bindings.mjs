@@ -1576,8 +1576,12 @@ export function authoritativeDefaultVault(env = process.env) {
 export function authoritativeVaultPath(cwd, env = process.env) {
   const value = env?.VAULT_PATH;
   if (typeof value !== 'string' || value.trim() === '') return null;
-  if (envKeyOrigin('VAULT_PATH', env) !== ENV_ORIGINS.WORKSPACE_DOTENV) return value;
-  // From the workspace file: only a statement about the workspace itself.
+  // Only a statement about the workspace itself — from the workspace file
+  // since round 2 of the Codex review, and FROM THE HOST TOO since v0.121.0:
+  // a host-wide VAULT_PATH naming a vault the session does not sit in is
+  // "some vault", not "I work in this vault", and it chose an unbound
+  // session's default. One rule here, so the cascade and the link linter —
+  // the two readers — cannot disagree (Codex review of v0.121.0).
   const self = canonicalWorkspaceKey(cwd);
   return self && canonicalWorkspaceKey(value) === self ? value : null;
 }

@@ -146,8 +146,8 @@ describe('orderedVaultCandidates', () => {
     }
   });
 
-  test('defaultVault is preferred when no workspace binding', () => {
-    const cfg = {
+  test('config.json defaultVault no longer reorders anything (v0.121.0)', () => {
+    const base = {
       portRegistry: {
         [templateVaultDir]: 27124,
         [vaultDir]: 27125,
@@ -156,12 +156,14 @@ describe('orderedVaultCandidates', () => {
         [templateVaultDir]: 'template',
         [vaultDir]: 'my-project',
       },
-      defaultVault: 'my-project',
     };
     delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
     if (fs.existsSync(path.join(repoDir, '.env'))) fs.unlinkSync(path.join(repoDir, '.env'));
-    const ordered = orderedVaultCandidates(repoDir, cfg);
-    assert.equal(ordered[0], vaultDir);
+    const without = orderedVaultCandidates(repoDir, base);
+    for (const name of ['my-project', 'template']) {
+      assert.deepEqual(orderedVaultCandidates(repoDir, { ...base, defaultVault: name }), without,
+        `defaultVault: ${name} must not change the order — it is an obsolete key`);
+    }
   });
 
   test('returns [] on null config', () => {

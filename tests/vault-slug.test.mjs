@@ -704,10 +704,14 @@ describe('CLASS SWEEP: the sibling keys, across every consumer surface', () => {
       delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
       try {
         const registry = await loadRegistry({ configPath: cfgPath });
-        assert.notEqual(registry.defaultVault, value,
-          'the raw config value must never become the resolved default');
+        // (null is also what "no default" reads as since v0.121.0, so the
+        // identity check is meaningful for every other junk value only.)
+        if (value !== null) {
+          assert.notEqual(registry.defaultVault, value,
+            'the raw config value must never become the resolved default');
+        }
         assert.ok(
-          registry.defaultVault === undefined || typeof registry.defaultVault === 'string',
+          registry.defaultVault === null || typeof registry.defaultVault === 'string',
           'the resolved default is a name or nothing, never the config junk',
         );
       } finally {

@@ -350,6 +350,10 @@ type ListVaults = {
   workspaceBindingOnFile?: OnFile | null
   /** When each vault was last written through the router, and its last files (router v0.115.0+). */
   vaultActivity?: Record<string, VaultActivity>
+  /** The vaults reachable without a binding, by name only (router v0.121.0+). */
+  openVaults?: string[]
+  /** The session's default vault: null when nothing chose one (router v0.121.0+). */
+  defaultVault?: string | null
 }
 
 let server: string | null = null
@@ -754,6 +758,14 @@ function toSnapshot(data: ListVaults, fetchedAt: number): Snapshot {
     })),
     routerVersion: data.routerBuild?.version ?? null,
     order: (b?.also ?? []).filter(name => name !== b?.vault),
+    // Unbound: what a call may NAME without a binding. No default among them:
+    // since router v0.121.0 an unbound session has none.
+    openReach: b ? [] : (data.openVaults ?? []).filter(name => byName.has(name)),
+    // An unbound session can still have a default the HOST named: it is said,
+    // never hidden behind "no default". Only from a router that reports
+    // `openVaults` (v0.121.0+): an older one still fell back to "the first
+    // vault that answers", which is no host's choice and must not read as one.
+    ...(!b && data.openVaults !== undefined ? { unboundDefault: data.defaultVault ?? null } : {}),
     activity: data.vaultActivity ?? {},
     fetchedAt,
   }
@@ -4164,9 +4176,28 @@ export const register: Register = on => {
             },
           )
         ) : (
-          <Box key="primary-none" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
-            <Text color="warning">{t('primary.none')}</Text>
-            <Button key="primary-setup" label={t('primary.setup')} variant="primary" onPress={() => void showAdminSection($, 'create')} />
+          <Box key="primary-none" flexDirection="column" gap={1}>
+            <Box key="primary-none-line" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+              <Text color="warning">{t('primary.none')}</Text>
+              <Button key="primary-setup" label={t('primary.setup')} variant="primary" onPress={() => void showAdminSection($, 'create')} />
+            </Box>
+            {/* The vaults reachable without a binding are listed as what a call
+                may NAME, never as a default; where unnamed calls go is said on
+                its own line, open vaults or not (a host default included). */}
+            {((snap.openReach ?? []).length > 0 || (snap.unboundDefault !== undefined && !snap.lockedTo)) && (
+              <Box key="open-reach" flexDirection="column">
+                {(snap.openReach ?? []).length > 0 && (
+                  <Text size="caption">{t('primary.openReach', { names: (snap.openReach ?? []).join(', ') })}</Text>
+                )}
+                {/* Under a session lock, unnamed calls go to the LOCKED vault —
+                    said by the lock's own line below — so this one is not shown. */}
+                {snap.unboundDefault !== undefined && !snap.lockedTo && (
+                  <Text size="caption" dimColor>
+                    {snap.unboundDefault ? t('primary.hostDefault', { vault: snap.unboundDefault }) : t('primary.noDefault')}
+                  </Text>
+                )}
+              </Box>
+            )}
           </Box>
         )}
         {snap.isImported && snap.primary && (

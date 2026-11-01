@@ -1036,6 +1036,13 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
       'disabled',
       'lockSource',
       'lockedTo',
+      // v0.121.0 — config.json keys that no longer do anything (today only
+      // `defaultVault`, which stopped choosing the default vault), reported
+      // and never removed. Added here deliberately.
+      'obsoleteConfigKeys',
+      // v0.121.0 — the vaults reachable WITHOUT a binding, by name only: an
+      // unbound session has no default, so the panel lists what may be named.
+      'openVaults',
       'portCollisions',
       // v0.94.0, lot 1 — what each vault's OWN configuration says about its
       // ports versus what the router had recorded, plus the data.json files
@@ -1050,6 +1057,7 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
       // v0.115.0 — when each vault was last written through the router, and
       // its last files, from the sidecar beside the config (vault panel tiles).
       'vaultActivity',
+      'vaultReach',
       'vaults',
       // 2026-10-11 — whether this router instance can give READ LINKS for remote
       // vaults: the view agent's configuration and /health, and where to set it

@@ -38,7 +38,6 @@ import { loadWorkspaceDotenv, bindingIsActive } from './workspace-vault.mjs';
 import { resolveScaffold } from '../../src/helpers/wiki-meta-scaffolds.mjs';
 import { readBinding, authoritativeDefaultVault } from '../../src/helpers/workspace-bindings.mjs';
 import {
-  configuredDefaultVault,
   disabledVaultEntries,
   registeredVaultPaths,
   vaultSlug,
@@ -105,8 +104,8 @@ export function orderedVaultCandidates(cwd, cfg) {
   // dotenv loading — must autoload the workspace `.env` so the
   // OBSIDIAN_ROUTER_DEFAULT_VAULT slug set by `setup-vault.mjs
   // --link-workspace` is visible. Without this, every workspace-bound
-  // setup falls through to the cfg.defaultVault, picking the wrong
-  // vault as "the project's own".
+  // setup fell through to the cfg.defaultVault (a tier removed in
+  // v0.121.0), picking the wrong vault as "the project's own".
   loadWorkspaceDotenv(cwd);
 
   const seen = new Set();
@@ -146,19 +145,9 @@ export function orderedVaultCandidates(cwd, cfg) {
     }
   }
 
-  // (2) default vault
-  //
-  // `configuredDefaultVault` (v0.90.0) replaces `(cfg.defaultVault || '')`.
-  // A non-string there is TRUTHY, so `||` never caught it and `.toLowerCase()`
-  // threw a TypeError out of this function — which two hooks call, both of
-  // which must exit 0 whatever the config says. Same defect as the
-  // `vaultNames` one swept in c4291e8, one key over.
-  const defaultSlug = configuredDefaultVault(cfg) || '';
-  if (defaultSlug) {
-    for (const vp of all) {
-      if (vaultSlug(cfg, vp) === defaultSlug) { push(vp); break; }
-    }
-  }
+  // (2) config.json's `defaultVault` — no longer a source (v0.121.0): the
+  // router's cascade dropped it, and "the project's own vault" cannot be one
+  // the router would refuse to default to.
 
   // (3) basename-of-cwd match (heuristic for "the project's own vault")
   const cwdBase = path.basename(cwd).toLowerCase();

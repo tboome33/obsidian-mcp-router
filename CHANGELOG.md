@@ -10,6 +10,76 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.121.0] — 2026-11-01 — no implicit default vault: an unbound session names its vault, or is told to
+
+Asked by Roland after an unbound session in his home directory — `vaultReach: "declared"`, eleven
+`openVaults`, a `config.json` `defaultVault` naming a disabled vault — got DEDIBOX as its default
+(origin `"first-healthy"`) although nobody had asked for a vault there.
+
+### What changes
+
+- **A vault is never chosen on its own any more.** It is the workspace's confirmed binding (its
+  primary), the host's `OBSIDIAN_ROUTER_DEFAULT_VAULT`, the working directory itself when it IS a
+  registered vault (`VAULT_PATH`), or the one a call names. Nothing else: the cascade tiers
+  `config.defaultVault`, *first healthy local vault* and *first active vault* are removed, with
+  their origins `"config"`, `"first-healthy"` and `"first-active"`.
+- **`VAULT_PATH` decides only when the cwd is that vault** — from the host too, now. A host-wide
+  `VAULT_PATH` pointing at a vault while the session sits elsewhere chooses nothing. The rule lives
+  in the one shared helper (`authoritativeVaultPath`), so the cascade and the link linter agree.
+- **An unbound session has no default.** `list_vaults` reports `defaultVault: null` and
+  `defaultVaultSource.origin: "unset"`; no vault is `isDefault`.
+- **A call that omits `vault` with no default is refused, out loud**: "this workspace has no primary
+  vault … Name a vault explicitly with `vault` (reachable vaults: …), or bind this workspace with
+  confirm_workspace_binding." A bound workspace whose primary is not loaded is told that instead —
+  it no longer falls back to some other vault. `merge_frontmatter` raises the same single refusal
+  instead of one failed row per key.
+- **`openVaults` keeps its meaning** — the vaults reachable from an unbound session — and is never a
+  source of default. `list_vaults` now returns `vaultReach` and `openVaults` so a client can say so.
+- **`config.json`'s `defaultVault` is obsolete, reported, never removed**: `list_vaults` returns
+  `obsoleteConfigKeys: [{ key: "defaultVault", value, note }]` while the key is there.
+  `scripts/gen-remote-config.mjs --default-vault` still checks the name but no longer writes the
+  key; it warns to set `OBSIDIAN_ROUTER_DEFAULT_VAULT` on the host instead. The link linter and
+  the doc-drift detector stop preferring that key too.
+- **Hooks** already resolved their vault only from a binding, the cwd being a vault, or a host
+  override — an unbound session injects no `hot.md`, no decisions, no vault content. Now pinned by
+  tests. The hot-cache tool-prefix note no longer speaks of a "config-wide default vault".
+- **Vault panel**: unbound, it shows "Aucun vault principal", then the `openVaults` reachable by
+  name ("Joignables en les nommant (openVaults) : …"), then where a call that names no vault goes —
+  "Aucun vault par défaut", or the default the HOST set ("Défaut posé hors de ce projet (hôte) : …")
+  — said whether or not there are `openVaults` (and not under a session lock, whose own line says
+  where unnamed calls go), then the vaults offered for binding. An older
+  router (no `openVaults` in `list_vaults`) gets no such line, since its default may still be a
+  "first-healthy" pick.
+
+### Migration
+
+- A project you work in with a default vault: **bind it once** (`confirm_workspace_binding`, or
+  `/bind-workspace`). Already-bound workspaces are unchanged.
+- A router with no workspace that needs a default (Claude Desktop's own declaration, MCPHub, a
+  container): put **`OBSIDIAN_ROUTER_DEFAULT_VAULT=<name>`** in its host environment.
+- Opening Claude Code inside a vault folder whose `.env` carries `VAULT_PATH` (what `setup-vault`
+  writes) works as before.
+- The `defaultVault` key in `config.json` can be deleted; until then it is ignored and reported.
+- A client that compared `defaultVaultSource.origin` with `"config"` / `"first-healthy"` /
+  `"first-active"` must expect `"unset"` (and `defaultVault: null`) instead.
+
+### Tests
+
+- `tests/no-implicit-default-vault-e2e.test.mjs` (real binary over MCP stdio): unbound +
+  `openVaults` + `defaultVault` → `defaultVault` null, origin `"unset"`, key reported obsolete;
+  `get_file` without `vault` → the refusal listing the `openVaults`; with an `openVaults` vault →
+  served; with a vault outside them → the existing refusal with its `bindingProposal`; bound →
+  unchanged; a bound primary not loaded → refused, no fallback.
+- `tests/no-implicit-default-hooks.test.mjs`: unbound → `hot-cache-load`, `decisions-recall` and
+  `workspace-briefing` inject no vault content; the same vault bound → they do (positive control).
+- Cascade, provenance, `ALLOWED_VAULTS`, `VAULT_*`, linter, drift-detector, remote-config and
+  binding-tool tests rewritten to the new rule; `tests/vault-panel.test.tsx` +7 (the unbound lines
+  with and without `openVaults`, a host default, an older router, a session lock, none when
+  bound) — 159 under `claude plugin test .`.
+- Reviewed with Codex (`codex review --uncommitted`): four P2s, all fixed with tests — the panel hid
+  a host default behind "no default", hid the default status when `openVaults` was empty, and
+  ignored a session lock; the link linter still took a host `VAULT_PATH` pointing elsewhere.
+
 ## [0.120.0] — 2026-10-28 — the panel's mark moves right; a footer holds GitHub, the version and an automatic update switch
 
 Asked by Roland on v0.119.2.

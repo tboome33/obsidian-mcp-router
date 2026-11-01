@@ -283,6 +283,20 @@ precisely the default that lets a project write into it by accident. Note the
 interaction with the section above: a vault in `openVaults` is treated as
 **shared by hypothesis**, so its writes always need a precondition.
 
+**`openVaults` is reach, never a default (v0.121.0).** An unbound session — the
+Desktop chat, a home directory, any folder nobody bound — reaches the
+`openVaults` **only when a call names one**. It has no default vault:
+`list_vaults` reports `defaultVault: null` (`defaultVaultSource.origin:
+"unset"`), and a call that omits `vault` is refused with the list of vaults it
+may name and a pointer to `confirm_workspace_binding`. Before v0.121.0 the
+router fell back to `config.json`'s `defaultVault`, then to the first vault that
+answered — so a remote vault could become an unbound session's default without
+anyone choosing it. A router that belongs to no workspace and should have a
+default (MCPHub, a container) names it in its host environment with
+`OBSIDIAN_ROUTER_DEFAULT_VAULT`; `scripts/gen-remote-config.mjs --default-vault`
+now checks the name and reminds you to do exactly that instead of writing a
+`defaultVault` key nobody reads.
+
 A workspace's *secondary* vaults (`also`) are read-only by default, on three
 tiers — `locked` (refused outright), `soft` (a write must carry
 `confirmSecondaryWrite: true`, which Claude may set only after you said yes) and

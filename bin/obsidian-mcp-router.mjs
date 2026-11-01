@@ -155,8 +155,9 @@ ENVIRONMENT
   OBSIDIAN_ROUTER_DEFAULT_VAULT   From the host (shell, MCP declaration):
                                   the default vault for this process (vault
                                   name from list_vaults), winning over
-                                  VAULT_PATH and the defaultVault of
-                                  config.json. From a workspace .env: a
+                                  VAULT_PATH. config.json's defaultVault is
+                                  ignored since v0.121.0: an unbound session
+                                  has no default. From a workspace .env: a
                                   PROPOSAL, reported by list_vaults
                                   (bindingHint) and never applied — the
                                   workspace's confirmed binding decides.
