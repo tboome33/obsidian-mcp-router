@@ -65,6 +65,8 @@ import {
   rawEntryDigest,
   rawSecondaryTiers,
   bindingOnFileOf,
+  bindingEntryDigest,
+  inheritedBindingSource,
   bindingEntryAliases,
   registryIncoherences,
   registryFactsFor,
@@ -272,6 +274,10 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     let hadRawEntry = false;
     let hadIncoherentEntry = false;
     let refusals = null;
+    // WHAT REMAINS AFTER THE CLEAR. For an ordinary workspace, nothing. For a
+    // git worktree whose main checkout is bound, the main checkout's binding:
+    // removing the worktree's own entry hands it back to inheritance (v0.123.0).
+    let after = null;
     updateConfigBindings(configPath, (cfg) => {
       had = readBinding(cfg, cwd);
       const raw = rawBindingEntry(cfg, cwd);
@@ -280,15 +286,43 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       // Untouched by a clear — read so the live copy below is the file's,
       // not whatever this process loaded at start-up.
       refusals = readRefusals(cfg, cwd);
-      return withMigrationState(withoutBinding(cfg, cwd), { cwd, recordImported: true });
+      // NOTHING OF ITS OWN, AND AN INHERITED BINDING: nothing to clear, and
+      // nothing is written — not even the migration record, which would close
+      // this worktree's import window for an act that removed nothing.
+      // (Codex, review round 2.)
+      if (raw === undefined && had?.inheritedFrom) return cfg;
+      const cleared = withMigrationState(withoutBinding(cfg, cwd), { cwd, recordImported: true });
+      after = readBinding(cleared, cwd);
+      return cleared;
     }, io);
+
+    // NOTHING OF ITS OWN TO CLEAR: the binding this worktree uses is its main
+    // checkout's, and a clear here cannot remove it — that entry belongs to
+    // another directory. Said as such, and the session is left as it was:
+    // "no longer bound" would be false the moment it was printed.
+    if (!hadRawEntry && had?.inheritedFrom) {
+      registry.workspaceRefusals = refusals;
+      const from = safeForMessage(String(had.inheritedFrom), 200);
+      return {
+        cleared: false,
+        workspace: key,
+        previous: null,
+        boundTo: had.vault,
+        inheritedFrom: had.inheritedFrom,
+        message: `This git worktree has no binding of its own: it inherits the binding of its main checkout `
+          + `"${from}" (vault "${safeForMessage(had.vault, 80)}") from your config, and nothing changed. To give `
+          + 'this worktree a different binding, bind it here (confirm_workspace_binding({ vault, also })): that '
+          + 'creates its own entry, which takes precedence. To change what every worktree of that repository '
+          + 'inherits, change the binding of the main checkout itself.',
+      };
+    }
 
     // THE LIVE REGISTRY IS RELEASED TOO, not only the file. The first version
     // wrote the config and returned "all registered vaults are available
     // again" while the running server stayed bound — and with `--no-watch`
     // there is nothing to reload it, so the sentence stayed false for the rest
     // of the session. Found by the Codex review, 2026-09-03.
-    registry.workspaceBinding = null;
+    registry.workspaceBinding = after;
     registry.workspaceRefusals = refusals;
     // A lock the BINDING imposed goes with it. One the host imposed does not —
     // and a host lock the binding had been SHADOWING comes back, whatever
@@ -306,6 +340,21 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // vaults are available again". `lockSource` says who imposed the lock,
     // which is the question actually being asked. (Codex, round 5.)
     if (registry.lockSource?.origin === 'binding') releaseBindingLock(registry);
+    // AN INHERITED BINDING THAT LOCKS locks again, with the precedence a
+    // binding lock has everywhere else (`adoptRouting` installs it over a host
+    // lock) — but only when its vault is one this session holds and reaches,
+    // the check start-up applies to every lock candidate. A lock naming a
+    // vault `resolveVault()` refuses would fail every call until unlocked.
+    // (Codex, review of v0.123.0, 6a.)
+    // A LOCK THIS SESSION CHOSE (`lock_vault`, origin "runtime") is the
+    // user's explicit act and is never displaced by a clear. (Codex, round 2.)
+    if (after?.locked
+      && registry.lockSource?.origin !== 'runtime'
+      && (registry.vaults || []).some((v) => v.name === after.vault)
+      && isVaultReachable(after.vault, registry)) {
+      registry.lockedVault = after.vault;
+      registry.lockSource = { origin: 'binding', variable: null };
+    }
     // A lock that SURVIVES this — a volatile `lock_vault` of this session, or
     // the host's — is not this call's to lift, but it is this call's to
     // mention: "all registered vaults are available again" was said while the
@@ -314,14 +363,16 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       ? ` The session is still locked to "${safeForMessage(String(registry.lockedVault), 80)}" by `
         + (registry.lockSource?.origin === 'host'
           ? 'the host\'s OBSIDIAN_ROUTER_LOCKED, which this call does not touch.'
-          : 'this session\'s own lock_vault call; unlock_vaults lifts it.')
+          : registry.lockSource?.origin === 'binding'
+            ? 'the binding this git worktree now inherits from its main checkout, which is locked.'
+            : 'this session\'s own lock_vault call; unlock_vaults lifts it.')
       : '';
     // Same correction one field over: the default is re-derived when the
     // BINDING was the tier that chose it — and also when it merely names the
     // vault just unbound, which re-runs the cascade for the same answer at
     // worst. The name half is kept on purpose: it costs one resolution and
     // covers a registry whose source field is stale.
-    if (registry.defaultVaultSource?.origin === 'binding' || registry.defaultVault === had?.vault) {
+    if (after || registry.defaultVaultSource?.origin === 'binding' || registry.defaultVault === had?.vault) {
       // The binding was tier 0; with it gone the cascade answers again. THE
       // REAL CASCADE is re-run, not a hand-rolled imitation of it: a second
       // implementation of "which vault is the default" would be a second
@@ -330,7 +381,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       const again = resolveDefaultVaultWithSource({
         vaults: registry.vaults || [],
         configuredDefault: registry.configuredDefault,
-        binding: null,
+        binding: after,
         reach: registry,
       });
       registry.defaultVault = again.name;
@@ -340,6 +391,30 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // that read `confirmed` a moment ago is an unconfirmed proposal again.
     refreshRegistryBindingHint(registry);
 
+    // CLEARING INTO AN INHERITED BINDING is said as what it is — the
+    // worktree's own entry went, its main checkout's binding applies again —
+    // and not as "no longer bound", which the next sentence would contradict.
+    if (after) {
+      const alsoNote = after.also.length
+        ? ` with ${after.also.map((n) => `"${safeForMessage(n, 80)}"`).join(', ')} also bound`
+        : '';
+      return {
+        cleared: true,
+        workspace: key,
+        previous: had ? { vault: had.vault, also: had.also } : null,
+        boundTo: after.vault,
+        inheritedFrom: after.inheritedFrom,
+        message: `This git worktree's own binding entry was removed${had ? ` (it was bound to "${safeForMessage(had.vault, 80)}")` : ''}. `
+          + `It now uses the binding of its main checkout "${safeForMessage(String(after.inheritedFrom), 200)}" again, `
+          + `inherited from your config: "${safeForMessage(after.vault, 80)}"${alsoNote}.`
+          + ((registry.vaults || []).some((v) => v.name === after.vault)
+            ? ''
+            : ` That primary is not a vault this session holds, so it is ignored here and calls that name no vault `
+              + `go to "${safeForMessage(String(registry.defaultVault ?? 'no default'), 80)}" (${safeForMessage(String(registry.defaultVaultSource?.origin ?? 'unset'), 40)}); `
+              + 'repair the main checkout\'s binding.')
+          + stillLocked,
+      };
+    }
     return {
       cleared: true,
       workspace: key,
@@ -730,7 +805,10 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // below), so this cannot make an unbindable name the new PRIMARY — that
     // refusal is untouched, and a repair that keeps an unregistered primary
     // is still not a repair. (Codex, review of the demotion.)
-    const rawEntryHere = rawBindingEntry(cfg, cwd);
+    // A WORKTREE WITH NO ENTRY OF ITS OWN keeps what it INHERITED the same way
+    // (v0.123.0): the main checkout's entry is the one its first write starts from.
+    const ownEntryHere = rawBindingEntry(cfg, cwd);
+    const rawEntryHere = ownEntryHere !== undefined ? ownEntryHere : inheritedBindingSource(cfg, cwd)?.raw;
     const keptFromEntry = new Set(rawSecondaryTiers(rawEntryHere)?.also ?? []);
     if (rawEntryHere && typeof rawEntryHere === 'object' && !Array.isArray(rawEntryHere)
       && typeof rawEntryHere.vault === 'string' && rawEntryHere.vault.trim() !== '') {
@@ -841,8 +919,11 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // the precondition let a stale repair recreate an entry a sibling had
     // deleted; `rawEntryDigest` is the identity of the entry itself. (Codex,
     // round 11.)
-    precondition: ({ rawPrevious }) => {
-    if (args.ifBindingDigest !== undefined && rawEntryDigest(rawPrevious) !== args.ifBindingDigest) {
+    precondition: () => {
+    // WHEN THE BINDING IS INHERITED (a git worktree with no entry of its own),
+    // the digest is the inherited entry's with its origin: `bindingEntryDigest`,
+    // which is exactly `rawEntryDigest(rawPrevious)` whenever an own entry exists.
+    if (args.ifBindingDigest !== undefined && bindingEntryDigest(cfg, cwd) !== args.ifBindingDigest) {
       adoptRefusals(readRefusals(cfg, cwd));
       throw new Error(
         'confirm_workspace_binding: this workspace\'s binding entry now differs from the one that diagnostic '
@@ -1246,7 +1327,13 @@ async function refuseProposal({ registry, cwd, key, configPath, io, upsertDotenv
       const primaryShown = identifierForCall(bound.vault);
       const remainder = bound.also.filter((n) => n !== name).map(identifierForCall).join(', ');
       throw new Error(
-        bound.vault === name
+        bound.vault === name && bound.inheritedFrom
+          ? `confirm_workspace_binding: this git worktree inherits "${shown}" as its primary from its main checkout `
+            + `"${safeForMessage(String(bound.inheritedFrom), 200)}", so that vault cannot be refused here — a binding in `
+            + 'force is the opposite answer, and a clear here clears nothing (the entry is the main checkout\'s). Bind '
+            + 'this worktree to another vault first (confirm_workspace_binding({ vault })), or change the main '
+            + 'checkout\'s binding; then refuse.'
+          : bound.vault === name
           ? `confirm_workspace_binding: this workspace is bound to "${shown}" as its primary, so that vault cannot be `
             + 'refused — a binding in force is the opposite answer. Clear the binding first '
             + '(confirm_workspace_binding({ clear: true })), or bind the workspace elsewhere; then refuse.'

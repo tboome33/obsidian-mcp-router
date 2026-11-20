@@ -1099,6 +1099,11 @@ export async function loadRegistry({ configPath } = {}) {
                 + 'file does have it — this session loaded its vault list before that vault existed, and '
                 + 'has not picked it up: hot-reload is off here, or has not fired yet. Nothing needs '
                 + 'repairing. Retry in a moment, or restart the session.'
+              : live.fromFile && typeof live.binding?.inheritedFrom === 'string'
+                ? `${preamble} This git worktree inherits its binding from its main checkout `
+                  + `"${safeForMessage(live.binding.inheritedFrom, 200)}", whose primary "${primary}" is not a registered `
+                  + 'vault. Repair the binding of the main checkout, or bind this worktree to a vault of its own '
+                  + '(confirm_workspace_binding({ vault })): a clear here clears nothing, the entry is the main checkout\'s.'
               : live.fromFile && live.rawEntry !== undefined
                 ? `${preamble} ${describeBindingRepair(live.rawEntry, [
                   { kind: BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED, names: [primary] },
@@ -1258,6 +1263,14 @@ function importDotenvHintOnce(config, cfgPath, vaults) {
     // written down as considered, or clearing that binding later re-opens the
     // window and the next start puts the binding back.
     const stale = readMigrationState(config);
+    // A GIT WORKTREE THAT INHERITS ITS MAIN CHECKOUT'S BINDING (v0.123.0) is
+    // bound: the one-time import has nothing to do there, and once the
+    // migration window is open its start writes nothing. The window itself is
+    // still opened by whatever start comes first — an early return before it
+    // was, left `openedAt` unset and let a repository cloned later have its
+    // .env hint imported (Codex, review round 4).
+    const inheritsHere = (cfg) => Boolean(readBinding(cfg, cwd)?.inheritedFrom);
+    if (inheritsHere(config) && stale.openedAt) return fallback();
     // AN ENTRY THE ROUTER HAD TO REPAIR TO READ is asked of the RAW entry, the
     // one fact the repaired reading hides (round 16, W4).
     const toRepair = (cfg) => bindingIncoherences(rawBindingEntry(cfg, cwd)).length > 0;
@@ -1317,7 +1330,9 @@ function importDotenvHintOnce(config, cfgPath, vaults) {
       // window has CLOSED for is written down even when nothing was imported:
       // `record` covers "already bound", which is the case a clear used to
       // re-open.
-      if (!decision.import) return withMigrationState(cfg, { at, cwd, recordImported: decision.record });
+      // An INHERITED binding is never recorded as this worktree's decision:
+      // the day the worktree stops inheriting, its own case is still open.
+      if (!decision.import) return withMigrationState(cfg, { at, cwd, recordImported: decision.record && !inheritsHere(cfg) });
       imported = {
         vault: decision.vault,
         at,

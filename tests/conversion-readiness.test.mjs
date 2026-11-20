@@ -1120,6 +1120,8 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
       alsoPaused: [],
       // v0.117.0 — the primary's own tier, "writable" unless the user narrowed it.
       primaryMode: 'writable',
+      // v0.123.0 — the main checkout a git worktree inherits from; null for an own binding.
+      inheritedFrom: null,
     }, 'the binding is REBUILT: the values cross, the extra field does not');
     assert.deepEqual(out.bindingHint, {
       status: 'unconfirmed', hint: 'beta', boundTo: 'alpha', origin: 'workspace-dotenv',

@@ -156,6 +156,7 @@
   "primary.none": "No primary vault: choose one below.",
   "primary.unreachable": "Unreachable: is WireGuard on? is the container running on the server?",
   "primary.imported": "Binding imported from a .env, never confirmed.",
+  "primary.inherited": "Binding inherited from the main repository {from}: this worktree has none of its own. A change made here gives it its own.",
   "primary.confirm": "Confirm",
   "primary.sessionLocked": "Session locked to the primary: the secondaries do not answer.",
   "primary.routerLocked": "Router locked to {vault} for this session (lock_vault): the other vaults do not answer.",

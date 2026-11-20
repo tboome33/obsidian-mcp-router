@@ -319,6 +319,8 @@ type Binding = {
   alsoPaused?: string[]
   /** The primary's own write tier (router v0.117.0+): absent from an older router. */
   primaryMode?: SecondaryMode
+  /** A git worktree with no binding of its own reads its main checkout's (router v0.123.0+). */
+  inheritedFrom?: string | null
 }
 
 // A `remoteVaults` entry on the loopback is a vault of this machine's own
@@ -745,7 +747,12 @@ function toSnapshot(data: ListVaults, fetchedAt: number): Snapshot {
     isLocked: b?.locked ?? false,
     lockedTo: data.lockedTo ?? null,
     autoEnrichMode: data.autoEnrichMode ?? null,
-    isImported: b?.confirmedVia === 'migration',
+    // An inherited binding was imported in the main checkout: the Confirm key here would only copy it.
+    isImported: b?.confirmedVia === 'migration' && !b?.inheritedFrom,
+    // One line on screen whatever the folder is called: control and line-separator characters become spaces.
+    inheritedFrom: typeof b?.inheritedFrom === 'string' && b.inheritedFrom
+      ? b.inheritedFrom.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
+      : null,
     secondaries: (b?.also ?? []).filter(name => !pausedNames.has(name)).map(name => ({ ...row(name), mode: modeOf(name) })),
     available,
     paused: [...pausedNames].map(name => ({
@@ -4168,6 +4175,11 @@ export const register: Register = on => {
             <Text color="warning">{t('primary.none')}</Text>
             <Button key="primary-setup" label={t('primary.setup')} variant="primary" onPress={() => void showAdminSection($, 'create')} />
           </Box>
+        )}
+        {snap.inheritedFrom && snap.primary && (
+          <Text size="caption" dimColor>
+            {t('primary.inherited', { from: snap.inheritedFrom })}
+          </Text>
         )}
         {snap.isImported && snap.primary && (
           <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">

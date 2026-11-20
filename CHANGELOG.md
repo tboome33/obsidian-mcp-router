@@ -10,6 +10,101 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.123.0] — 2026-11-20 — a git worktree inherits its main checkout's vault binding
+
+Asked by Roland on 2026-11-20, after a DEDIBOX worktree (`<repo>\.claude\worktrees\<name>`) was found
+bound to the wrong vault and had to be corrected by hand. Numbered 0.123.0 because the unmerged
+branches `claude/vault-panel-surface` and `claude/no-implicit-default-vault` already hold 0.121.0 and
+0.122.0.
+
+### A worktree with no binding of its own reads its main checkout's
+
+- **Bindings are keyed by the exact workspace path**, so every worktree Claude Code creates started
+  unbound, or with a wrong binding, while its repository was bound. Now a **git worktree with no
+  entry of its own in `workspaceBindings`** uses its main checkout's entry: primary, `also`,
+  `alsoLocked`, `alsoWritable`, `alsoPaused`, `locked` and the primary's own tier.
+- **Dynamic and read-only.** Nothing is copied into the config; the main checkout stays the one
+  source. A change made there is seen by the next read of the file — `list_vaults`'
+  `workspaceBindingOnFile` and the next session's briefing at once; the running session's binding
+  (`workspaceBinding`, its routing and the panel's tiles) when it reloads its config (on by
+  default, off with `--no-watch`) or at its next start. **Known limit, not new:** a reload keeps
+  the session's lock as it was while its vault stays loaded and reachable, so a `locked` added in
+  the main checkout's binding, or one removed while its vault stays reachable, is applied by a
+  running worktree session at its next start — the same as for any binding changed by another
+  session today.
+  **An own entry always wins** — even one the router cannot read, which must be repaired rather
+  than papered over. A main entry the router has to repair to read is not inherited either.
+- **Writes from a worktree create its own entry**, starting from what it inherited; the main
+  checkout's entry is never touched. Every binding writer goes through the one transform
+  `withBinding` (`confirm_workspace_binding`, `set_secondary_vault_mode`, `set_primary_vault_mode`,
+  `lock_vault --persist`, `setup-vault --attach`/`--link-workspace`, a click in the Vaults panel);
+  the transform and the first three tools are tested here, the others rest on that transform. The first entry keeps the inherited primary tier and
+  paused secondaries (as they apply in the main checkout — a stale field there does not become a
+  live restriction), and a binding the migration imported in the main checkout is re-stamped
+  `confirmedVia: "inherited"` rather than announced as an import in the worktree.
+- **The panel's compare-and-set covers the inherited entry**: `workspaceBindingOnFile.digest` now
+  moves when the main checkout's entry moves (its own hash domain, so no own entry can share it),
+  so a click computed from a stale inherited binding is refused. For an own entry the digest is
+  unchanged, so every repair diagnostic works as before.
+- **`clear` in a worktree** removes its own entry and hands it back to inheritance (live: binding,
+  default vault, and a lock the inherited binding imposes, unless the session chose its own with
+  `lock_vault`); with no own entry and an inherited binding it clears nothing, writes nothing,
+  and says so (`cleared: false`). An inheriting worktree's first start writes nothing to the config
+  once the migration window is open (the one-time dotenv import has nothing to do there, and an
+  inherited binding is never recorded as the worktree's own decision).
+- **Said everywhere.** `list_vaults` returns `workspaceBinding.inheritedFrom` and
+  `workspaceBindingOnFile.inheritedFrom` (the main checkout's path, or `null`); the SessionStart
+  briefing and the Vaults panel say the binding is inherited, and from where.
+- **Security: a project file still only proposes.** The worktree is recognised from git's own files,
+  without running git (`src/helpers/worktree-origin.mjs`): `.git` must be a regular file
+  `gitdir: <repo>/.git/worktrees/<name>`, that directory must hold `commondir`, and its `gitdir`
+  file must point back at this workspace's `.git`. A downloaded folder whose `.git` claims another
+  repository fails the back-pointer, which lives in that repository's own `.git`. Identity is
+  proved PHYSICALLY (`realpath`: junctions, links, the case the filesystem holds) while the answer
+  keeps the spelling the config is keyed by (a mapped or `subst` drive is not rewritten); every
+  record is a bounded one-line regular file, read through one descriptor; git's common directory
+  must be the approved checkout's own `.git`, physically; a bare repository (`core.bare` read
+  with git's boolean syntax, a value it cannot place counting as bare, whatever its folder is
+  called) has no main checkout, and a config that cannot be read fails closed; a main entry whose
+  primary tier cannot be read is not inherited; `config.worktree` is read too when present, and a
+  variable on the section's own line (`[core] bare = true`) counts; nothing outside the workspace is opened until the
+  config is seen to bind the candidate repository, so a pointer to an unbound folder or an
+  unreachable share costs one local read. A valid pointer yields only a path; the binding always
+  comes from the user's config, and reading writes nothing.
+- **Shared-vault guard.** A worktree that inherits writes the same vaults as its main checkout, so
+  the guard counts it as a second writer — every worktree git has registered whose session would
+  really inherit (the same rule, applied forward, and the same key resolution in both
+  directions, and only toward the vaults it really inherits), never a stale registration, a
+  registered location that is a link to a moved worktree followed to its physical place (only a
+  real link: an 8.3 short name of the same folder is one writer, not two); a registration list that exists but cannot be read counts as one more writer. Writes to those vaults then need a
+  precondition, as for any vault two workspaces declare. The worktree scan is done once per config read, not once per vault: on this
+  repository's own layout (30 registrations) a `list_vaults` over 25 vaults measured about 17–21 ms
+  for a fresh config, 0.2 ms for the same one again.
+- **Messages that point at the right place.** A refused access whose inherited primary is not
+  registered, a `refuse` of an inherited primary, and a `clear` that falls back to an inherited
+  binding whose primary this session does not hold each say so and send the user to the main
+  checkout's binding or to a binding of the worktree's own — never to a `clear` that clears nothing.
+- Docs: `docs/features/01-routage-multi-vault.md` (« Copies de travail Git »), the `bind-workspace`
+  skill, the `configure-secondary-vaults` command, the `list_vaults` description.
+- Tests: `tests/worktree-binding-inheritance.test.mjs` (new, in `npm test`), 71 tests: detection on
+  layouts built like git's and on a real `git worktree add`, every refused shape (no `.git`, a
+  `.git` directory or symlink, garbage, oversized or multi-line records, a submodule, a bare
+  repository in either spelling, an unreadable config, a commondir naming another repository, a
+  planted pointer), the config consulted before anything outside the workspace is opened,
+  inheritance of every field, own entry first, Windows paths and case, the digest and its domain,
+  the writes and `clear` through the real tools, the sharing guard,
+  `list_vaults`, the router's start-up in a child process and the SessionStart hook in a child
+  process; `tests/vault-panel.test.tsx` three more (155 as the runner counts them). Mutations: 50,
+  one rule at a time (47 router, 3 panel), each killed, every file restored by hash; one more was
+  found equivalent (skipping the config lock on an inheriting start only saves the lock) and dropped.
+- Reviewed adversarially by Codex (`gpt-6.2-astra`, high), four rounds, then by Fable 5.2 (medium), whose six minor findings were
+  fixed (the registry message for a refused access is not covered by a test). A
+  repair of the reload lock tried in round 2 was withdrawn after round 3 (it could drop a valid host
+  lock and undo a session `unlock_vaults`); that limit stays as it was, listed above. Left for later,
+  each needing a hand-edited config or a race of milliseconds: a binding key stored as a RELATIVE
+  path (resolved against each process's own directory), several reads of a worktree's `.git` inside
+  one locked write, proposal identifiers that ignore the primary tier and pauses.
+
 ## [0.120.0] — 2026-10-28 — the panel's mark moves right; a footer holds GitHub, the version and an automatic update switch
 
 Asked by Roland on v0.119.2.
