@@ -472,6 +472,10 @@ export async function listVaults(registry, sharedConfig = null) {
       primaryMode: b.primaryTier && b.primaryTier.vault === b.vault && ['locked', 'soft'].includes(b.primaryTier.mode)
         ? b.primaryTier.mode
         : 'writable',
+      // A GIT WORKTREE WITH NO ENTRY OF ITS OWN reads its main checkout's
+      // binding (v0.123.0): the main checkout's path, or null when the
+      // binding is this workspace's own.
+      inheritedFrom: str(b.inheritedFrom) ? b.inheritedFrom : null,
     };
   };
   // The hint, same treatment. `status` must be one the classifier can produce

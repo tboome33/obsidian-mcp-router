@@ -144,6 +144,7 @@ export const FR: Record<string, string> = {
   "primary.none": "Aucun vault principal : choisis-en un ci-dessous.",
   "primary.unreachable": "Injoignable : WireGuard actif ? conteneur démarré sur le serveur ?",
   "primary.imported": "Liaison importée d'un .env, jamais confirmée.",
+  "primary.inherited": "Liaison héritée du dépôt principal {from} : cette worktree n'en a pas à elle. Un changement fait ici lui en crée une.",
   "primary.confirm": "Confirmer",
   "primary.sessionLocked": "Session verrouillée sur le principal : les secondaires ne répondent pas.",
   "primary.routerLocked": "Router verrouillé sur {vault} pour cette session (lock_vault) : les autres vaults ne répondent pas.",

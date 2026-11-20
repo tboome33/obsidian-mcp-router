@@ -196,7 +196,9 @@ function build() {
     // the fact the user has to be told, and it stays true on every session
     // until they act on it — which is better than a one-shot announcement the
     // one session that happened to run the import.
-    imported: binding?.confirmedVia === 'migration'
+    // NOT FOR AN INHERITED BINDING: the import happened in the main checkout,
+    // and the remedy it names (a clear HERE) would leave the same primary in force.
+    imported: binding?.confirmedVia === 'migration' && !binding.inheritedFrom
       ? { vault: binding.vault, at: binding.confirmedAt, locked: binding.locked, dotenvFile: null }
       : null,
   });

@@ -108,6 +108,15 @@ function attachmentLine(binding, isRegistered) {
   // "bound to X". The cascade falls through such a binding gracefully; a
   // briefing that announced it as in force would be the one place in the
   // system still asserting it. Round 2 of the Codex review, 2026-09-03.
+  if (state !== 'all' && typeof isRegistered === 'function' && !isRegistered(binding.vault)
+    && typeof binding.inheritedFrom === 'string' && binding.inheritedFrom) {
+    // INHERITED: a clear here clears nothing, the entry lives in the main
+    // checkout. (Codex, review round 3.)
+    return `This workspace inherits a binding whose primary vault ${q(binding.vault)} is not registered on `
+      + 'this machine any more, so that primary is ignored. Repair the binding of its main checkout, or bind '
+      + 'this worktree to another vault (confirm_workspace_binding({ vault })); a clear here clears nothing, '
+      + 'since the entry is the main checkout\'s.';
+  }
   if (state !== 'all' && typeof isRegistered === 'function' && !isRegistered(binding.vault)) {
     return `This workspace is bound to the vault ${q(binding.vault)}, which is not registered on this `
       + 'machine any more — the binding is ignored until you register it again or clear it with '
@@ -302,6 +311,22 @@ function importedLine(imported) {
     + 'confirm_workspace_binding({ vault: … }) makes it yours and this line stops.';
 }
 
+/**
+ * Where an INHERITED binding comes from (v0.123.0), or null. A git worktree
+ * with no entry of its own reads its main checkout's binding from the user's
+ * config; the reader must be told so, or a re-binding made here looks like it
+ * changes the repository's binding when it only gives the worktree its own.
+ */
+function inheritedLine(binding) {
+  if (attachmentState(binding) === 'all') return null;
+  if (typeof binding.inheritedFrom !== 'string' || binding.inheritedFrom === '') return null;
+  return `This binding is INHERITED: this workspace is a git worktree with no binding of its own, and it uses `
+    + `the binding of its main checkout "${safeForMessage(binding.inheritedFrom, 200)}" from your config. `
+    + 'A binding change made here (confirm_workspace_binding, set_secondary_vault_mode, set_primary_vault_mode, '
+    + 'lock_vault --persist) gives this worktree its own entry, which then takes precedence; the main '
+    + 'checkout\'s binding is not touched.';
+}
+
 /** The closing line: the two calls that answer "and how do I change this?". */
 function actionsLine() {
   return 'list_vaults lists reachable vaults, open or closed; confirm_workspace_binding '
@@ -346,6 +371,7 @@ export function composeBriefing({
   const lines = [
     BRIEFING_MARKER,
     attachmentLine(binding, isRegistered),
+    inheritedLine(binding),
     // Before the hint: when an import just happened, the hint that produced it
     // is now `confirmed` and silent anyway, and the import is the news.
     importedLine(imported),
