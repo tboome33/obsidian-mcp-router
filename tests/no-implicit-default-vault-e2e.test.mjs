@@ -1,5 +1,5 @@
 /**
- * NO IMPLICIT DEFAULT VAULT, DRIVEN END TO END (v0.122.0).
+ * NO IMPLICIT DEFAULT VAULT, DRIVEN END TO END (v0.124.0).
  *
  * The bug: an unbound workspace (C:\Users\<me>, vaultReach "declared", eleven
  * openVaults, a config.json `defaultVault` naming a disabled vault) got DEDIBOX

@@ -255,11 +255,11 @@ export function buildRemoteConfig({ vaults, host, defaultVault } = {}) {
     if (!seen.has(defaultVault)) {
       throw new Error(`buildRemoteConfig: defaultVault "${defaultVault}" n'est pas dans la sélection.`);
     }
-    // PAS dans le fichier : depuis la v0.122.0, la clé `defaultVault` de
+    // PAS dans le fichier : depuis la v0.124.0, la clé `defaultVault` de
     // config.json ne choisit plus rien (le routeur la signale comme obsolète).
     // Le défaut d'un routeur sans workspace se nomme côté HÔTE.
     warnings.push(
-      `defaultVault "${defaultVault}" n'est pas écrit dans la config : depuis la v0.122.0 le routeur ne lit plus `
+      `defaultVault "${defaultVault}" n'est pas écrit dans la config : depuis la v0.124.0 le routeur ne lit plus `
       + `cette clé. Pour un défaut, déclarez OBSIDIAN_ROUTER_DEFAULT_VAULT=${defaultVault} dans l'environnement `
       + 'du serveur (déclaration MCP, MCPHub, systemd, conteneur).',
     );

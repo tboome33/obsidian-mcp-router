@@ -146,7 +146,7 @@ describe('orderedVaultCandidates', () => {
     }
   });
 
-  test('config.json defaultVault no longer reorders anything (v0.122.0)', () => {
+  test('config.json defaultVault no longer reorders anything (v0.124.0)', () => {
     const base = {
       portRegistry: {
         [templateVaultDir]: 27124,

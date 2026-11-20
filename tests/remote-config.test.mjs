@@ -210,7 +210,7 @@ describe('buildRemoteConfig', () => {
     assert.throws(() => buildRemoteConfig({ vaults, defaultVault: 'absent' }), /n'est pas dans la sélection/);
   });
 
-  test('un defaultVault valide n\'est PAS écrit (v0.122.0) : un avertissement dit de le nommer côté hôte', () => {
+  test('un defaultVault valide n\'est PAS écrit (v0.124.0) : un avertissement dit de le nommer côté hôte', () => {
     const { config, warnings } = buildRemoteConfig({ vaults, defaultVault: vaults[0].name });
     assert.equal(config.defaultVault, undefined);
     assert.ok(warnings.some((w) => w.includes(`OBSIDIAN_ROUTER_DEFAULT_VAULT=${vaults[0].name}`)), warnings.join(' | '));
@@ -265,7 +265,7 @@ describe('ALLER-RETOUR avec le routeur — la protection contre la dérive', () 
       assert.equal(reg.vaults.length, 1);
       assert.equal(reg.vaults[0].type, 'remote', 'type remote = aucune lecture de data.json');
       assert.equal(reg.vaults[0].apiKey, fakeKey('roland'), 'la clé vient de la config');
-      // v0.122.0 : la config ne porte plus de défaut — un avertissement dit
+      // v0.124.0 : la config ne porte plus de défaut — un avertissement dit
       // de le nommer côté hôte, et le routeur n'en choisit aucun.
       assert.equal(config.defaultVault, undefined);
       assert.equal(reg.defaultVault, null);

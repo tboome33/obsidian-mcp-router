@@ -94,7 +94,7 @@ test('D: drift binding, default and disabled selection preserve exact slug case'
   const cfg = { portRegistry: { [a]: 27124, [b]: 27125 }, vaultNames: { [a]: 'notes', [b]: 'NOTES' } };
   const bound = { ...cfg, workspaceBindings: { [canonicalWorkspaceKey(cwd)]: { vault: 'NOTES' } } };
   assert.equal(orderedVaultCandidates(cwd, bound)[0], b);
-  // config.json's defaultVault is obsolete (v0.122.0): it reorders nothing.
+  // config.json's defaultVault is obsolete (v0.124.0): it reorders nothing.
   assert.deepEqual(orderedVaultCandidates(cwd, { ...cfg, defaultVault: 'NOTES' }), orderedVaultCandidates(cwd, cfg));
   assert.deepEqual(orderedVaultCandidates(path.join(cwd, 'unrelated'), { ...cfg, disabledVaults: ['notes'] }), [b]);
 });
@@ -141,7 +141,7 @@ test('G: clear and no-binding briefing describe declared reachability, including
 test('H: every default tier filters unreachable vaults; nothing picks a vault on its own', () => {
   const vaults = [{ name: 'private', type: 'local' }, { name: 'public', type: 'remote' }];
   const resolve = registry.resolveDefaultVaultWithSource;
-  // No tier left to choose: openVaults is reach, never a default (v0.122.0).
+  // No tier left to choose: openVaults is reach, never a default (v0.124.0).
   assert.equal(resolve({ vaults, reach: { vaultReach: 'declared' } }).name, null);
   assert.equal(resolve({ vaults, reach: { vaultReach: 'declared', openVaults: ['public'] } }).name, null);
   assert.equal(resolve({ vaults }).name, null);

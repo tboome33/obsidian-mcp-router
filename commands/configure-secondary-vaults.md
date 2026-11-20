@@ -6,6 +6,8 @@ Invoke the `bind-workspace` skill, entering at its **secondary vaults** step (St
 
 Requires: the workspace already has a primary vault. Without one, the skill says so and sets the primary first (its Steps 2-5), then continues with the secondaries.
 
+In a git worktree with no binding of its own (`list_vaults` → `workspaceBinding.inheritedFrom` not null), the primary and secondaries are its main checkout's, inherited from the user's config. The first change made here that actually changes something (a tier set to its current value changes nothing) gives the worktree its own binding, starting from what it inherited; the main checkout's binding is not touched. Say so before the first change.
+
 The skill handles, step by step, each with one prompt and one tool call:
 - "Open the secondary vaults you want in Obsidian, close the others, tell me when it is done" — then WAITS; the primary is never listed
 - Detect (`list_vaults`, `online: true`, not the primary), propose the list for confirmation, bind (`confirm_workspace_binding` with `also`, earlier secondaries kept)

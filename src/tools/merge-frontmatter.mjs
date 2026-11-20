@@ -32,7 +32,7 @@ export async function mergeFrontmatterTool(registry, args = {}) {
   // deterministic viewLink hook reads `result.vault`, so a non-canonical name here would
   // point the view-agent at the WRONG vault (review+ pass 1 — Code Reviewer + codex convergent).
   // EXCEPT when no vault can be resolved at all: an unbound session has no
-  // default (v0.122.0), and swallowing that here turned it into one "failed"
+  // default (v0.124.0), and swallowing that here turned it into one "failed"
   // row per key instead of the one refusal that names the vaults to choose from.
   if (!name && !registry.defaultVault) registry.resolveVault(name);
   let resolvedVault = null;

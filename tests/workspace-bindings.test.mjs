@@ -644,7 +644,7 @@ describe('THE CASCADE — a confirmed binding outranks the environment', () => {
   test('a binding whose vault was disabled or removed FALLS THROUGH instead of bricking the session', () => {
     // Same friendly failure the other tiers already have. A stale binding must
     // not make every tool call fail; it must quietly lose its turn.
-    // Since v0.122.0 it falls through to NOTHING (no config default, no first
+    // Since v0.124.0 it falls through to NOTHING (no config default, no first
     // vault): resolveVault() then says the primary is not loaded, instead of
     // silently serving some other vault.
     const r = withEnv(undefined, () => resolveDefaultVaultWithSource({
@@ -662,7 +662,7 @@ describe('THE CASCADE — a confirmed binding outranks the environment', () => {
     assert.equal(r.name, 'notes', 'secondaries are addressable, not default');
   });
 
-  test('no binding and no environment: NO default (v0.122.0), whatever config.json says', () => {
+  test('no binding and no environment: NO default (v0.124.0), whatever config.json says', () => {
     const r = withEnv(undefined, () => resolveDefaultVaultWithSource({
       vaults: VAULTS, configuredDefault: 'work', binding: null,
     }));
@@ -1838,9 +1838,9 @@ describe('GUARD — a workspace file proposes a vault; only the host may choose 
     // directory the file lives in.
     const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-elsewhere-'));
     try {
-      // From the host, since v0.122.0: the SAME rule — a statement about the
+      // From the host, since v0.124.0: the SAME rule — a statement about the
       // working directory, or nothing. Pointing elsewhere it chooses nothing;
-      // naming the cwd it is honoured. (Codex review of v0.122.0: the link
+      // naming the cwd it is honoured. (Codex review of v0.124.0: the link
       // linter still took a host value pointing elsewhere.)
       await asHost(elsewhere, () => assert.equal(authoritativeVaultPath(process.cwd()), null), 'VAULT_PATH');
       await asHost(elsewhere, () => assert.equal(authoritativeVaultPath(elsewhere), elsewhere), 'VAULT_PATH');
@@ -1896,7 +1896,7 @@ describe('GUARD — a workspace file proposes a vault; only the host may choose 
         vaults: VAULTS, binding: null,
       }).name,
       // What the cascade falls through to when the proposal is refused:
-      // nothing, since v0.122.0.
+      // nothing, since v0.124.0.
       fallback: null,
     },
     {
@@ -1918,7 +1918,7 @@ describe('GUARD — a workspace file proposes a vault; only the host may choose 
         // a single-vault fixture would report a refusal that never took
         // place. The first version of this row did exactly that and passed for
         // the wrong reason. (`other` used to come first as the config default,
-        // a source removed in v0.122.0.)
+        // a source removed in v0.124.0.)
         const cfg = {
           portRegistry: { [otherDir]: 28000, [vaultDir]: 27999 },
           vaultNames: { [vaultDir]: 'notes', [otherDir]: 'other' },

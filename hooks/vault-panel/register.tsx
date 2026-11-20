@@ -319,6 +319,8 @@ type Binding = {
   alsoPaused?: string[]
   /** The primary's own write tier (router v0.117.0+): absent from an older router. */
   primaryMode?: SecondaryMode
+  /** A git worktree with no binding of its own reads its main checkout's (router v0.123.0+). */
+  inheritedFrom?: string | null
 }
 
 // A `remoteVaults` entry on the loopback is a vault of this machine's own
@@ -350,9 +352,9 @@ type ListVaults = {
   workspaceBindingOnFile?: OnFile | null
   /** When each vault was last written through the router, and its last files (router v0.115.0+). */
   vaultActivity?: Record<string, VaultActivity>
-  /** The vaults reachable without a binding, by name only (router v0.122.0+). */
+  /** The vaults reachable without a binding, by name only (router v0.124.0+). */
   openVaults?: string[]
-  /** The session's default vault: null when nothing chose one (router v0.122.0+). */
+  /** The session's default vault: null when nothing chose one (router v0.124.0+). */
   defaultVault?: string | null
 }
 
@@ -749,7 +751,12 @@ function toSnapshot(data: ListVaults, fetchedAt: number): Snapshot {
     isLocked: b?.locked ?? false,
     lockedTo: data.lockedTo ?? null,
     autoEnrichMode: data.autoEnrichMode ?? null,
-    isImported: b?.confirmedVia === 'migration',
+    // An inherited binding was imported in the main checkout: the Confirm key here would only copy it.
+    isImported: b?.confirmedVia === 'migration' && !b?.inheritedFrom,
+    // One line on screen whatever the folder is called: control and line-separator characters become spaces.
+    inheritedFrom: typeof b?.inheritedFrom === 'string' && b.inheritedFrom
+      ? b.inheritedFrom.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
+      : null,
     secondaries: (b?.also ?? []).filter(name => !pausedNames.has(name)).map(name => ({ ...row(name), mode: modeOf(name) })),
     available,
     paused: [...pausedNames].map(name => ({
@@ -759,11 +766,11 @@ function toSnapshot(data: ListVaults, fetchedAt: number): Snapshot {
     routerVersion: data.routerBuild?.version ?? null,
     order: (b?.also ?? []).filter(name => name !== b?.vault),
     // Unbound: what a call may NAME without a binding. No default among them:
-    // since router v0.122.0 an unbound session has none.
+    // since router v0.124.0 an unbound session has none.
     openReach: b ? [] : (data.openVaults ?? []).filter(name => byName.has(name)),
     // An unbound session can still have a default the HOST named: it is said,
     // never hidden behind "no default". Only from a router that reports
-    // `openVaults` (v0.122.0+): an older one still fell back to "the first
+    // `openVaults` (v0.124.0+): an older one still fell back to "the first
     // vault that answers", which is no host's choice and must not read as one.
     ...(!b && data.openVaults !== undefined ? { unboundDefault: data.defaultVault ?? null } : {}),
     activity: data.vaultActivity ?? {},
@@ -4199,6 +4206,11 @@ export const register: Register = on => {
               </Box>
             )}
           </Box>
+        )}
+        {snap.inheritedFrom && snap.primary && (
+          <Text size="caption" dimColor>
+            {t('primary.inherited', { from: snap.inheritedFrom })}
+          </Text>
         )}
         {snap.isImported && snap.primary && (
           <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">

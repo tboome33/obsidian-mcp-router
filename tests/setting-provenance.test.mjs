@@ -192,7 +192,7 @@ describe('resolveDefaultVaultWithSource — which tier of the cascade answered',
 
     // The same value, same variable, same active vaults — but applied by the
     // loader from a repository's own file. It is now REFUSED, and the cascade
-    // continues — to nothing, since v0.122.0 (no config default any more).
+    // continues — to nothing, since v0.124.0 (no config default any more).
     //
     // Until the Codex review of 2026-09-03 this tier applied it and reported
     // origin `workspace-dotenv`, while `bindingHint` reported the very same
@@ -232,7 +232,7 @@ describe('resolveDefaultVaultWithSource — which tier of the cascade answered',
           { name: 'here', origin: 'host', variable: 'VAULT_PATH' },
         );
       });
-      // v0.122.0: a host-wide VAULT_PATH naming another vault than the cwd
+      // v0.124.0: a host-wide VAULT_PATH naming another vault than the cwd
       // decides nothing — that is "some vault", not "I work in this vault".
       withProcessEnv({ OBSIDIAN_ROUTER_DEFAULT_VAULT: undefined, VAULT_PATH: '/v/beta' }, () => {
         assert.deepEqual(
@@ -257,7 +257,7 @@ describe('resolveDefaultVaultWithSource — which tier of the cascade answered',
     });
   });
 
-  test('past the three tiers there is NO default (v0.122.0): config, first-healthy, first-active are gone', () => {
+  test('past the three tiers there is NO default (v0.124.0): config, first-healthy, first-active are gone', () => {
     _resetWorkspaceDotenvProvenance();
     withProcessEnv({ OBSIDIAN_ROUTER_DEFAULT_VAULT: undefined, VAULT_PATH: undefined }, () => {
       const UNSET = { name: null, origin: 'unset', variable: null };
@@ -787,7 +787,7 @@ describe('GUARD — the tool description names the three fields and every origin
       // v0.90.0 added "binding" — the confirmed workspace binding, tier 0 of
       // the cascade. Added here on purpose, which is what this list is for.
       'binding',
-      // v0.122.0 REMOVED "config", "first-healthy" and "first-active" with the
+      // v0.124.0 REMOVED "config", "first-healthy" and "first-active" with the
       // cascade tiers that produced them — on purpose, which is what this
       // list is for.
       'default', 'host', 'runtime', 'unknown', 'unset', 'workspace-dotenv',

@@ -156,7 +156,7 @@ ENVIRONMENT
                                   the default vault for this process (vault
                                   name from list_vaults), winning over
                                   VAULT_PATH. config.json's defaultVault is
-                                  ignored since v0.122.0: an unbound session
+                                  ignored since v0.124.0: an unbound session
                                   has no default. From a workspace .env: a
                                   PROPOSAL, reported by list_vaults
                                   (bindingHint) and never applied — the

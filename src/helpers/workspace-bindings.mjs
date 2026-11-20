@@ -65,6 +65,7 @@ import { safeForMessage, identifierForCall } from './sanitize.mjs';
 import { bindableVaultNames, disabledVaultNames } from './vault-slug.mjs';
 import { envKeyOrigin, ENV_ORIGINS, dotenvRefusalHint, workspaceBindingProposal, workspaceLockProposed, isGatedDeployment } from './workspace-dotenv.mjs';
 import { acquireLock, lockPathFor } from './file-lock.mjs';
+import { worktreeMainCheckout } from './worktree-origin.mjs';
 
 /** The config key holding every binding. The seventh top-level key. */
 export const WORKSPACE_BINDINGS_KEY = 'workspaceBindings';
@@ -262,8 +263,151 @@ export function normalizeBinding(raw) {
  * @param {string} cwd
  * @returns {{ vault: string, also: string[], locked: boolean, confirmedAt: string|null, confirmedVia: string|null }|null}
  */
-export function readBinding(config, cwd) {
-  return normalizeBinding(rawBindingEntry(config, cwd));
+export function readBinding(config, cwd, seams = {}) {
+  // NO DIGEST HERE: routing readers never pay for one, and an opaque field
+  // too deep to hash cannot make an ordinary read throw. (Codex, round 2.)
+  const ownRaw = rawBindingEntry(config, cwd);
+  if (ownRaw !== undefined) return normalizeBinding(ownRaw);
+  const inherited = inheritedBindingSource(config, cwd, seams);
+  return inherited ? { ...inherited.binding, inheritedFrom: inherited.from } : null;
+}
+
+/**
+ * ONE reading of this workspace's binding, from which every derived value is
+ * taken: the own entry as written, the inherited source (or null), the
+ * effective binding, and the precondition digest. A caller that needs two of
+ * these takes them from one snapshot, so a worktree registration that moves
+ * between two reads cannot pair checkout A's vaults with checkout B's digest.
+ *
+ * @param {object} config
+ * @param {string} cwd
+ * @param {object} [seams] as for `inheritedBindingSource`
+ * @returns {{ ownRaw: unknown, inherited: object|null, binding: object|null, digest: string }}
+ */
+export function bindingSnapshot(config, cwd, seams = {}) {
+  const ownRaw = rawBindingEntry(config, cwd);
+  if (ownRaw !== undefined) {
+    return { ownRaw, inherited: null, binding: normalizeBinding(ownRaw), digest: rawEntryDigest(ownRaw) };
+  }
+  // NO ENTRY OF ITS OWN: a git worktree reads its main checkout's (v0.123.0).
+  // The returned object is the main checkout's binding plus `inheritedFrom`,
+  // which `normalizeBinding` drops — so a writer that starts from this reading
+  // and writes it back through `withBinding` gives the worktree its OWN entry,
+  // a copy, and never touches the main checkout's.
+  const inherited = inheritedBindingSource(config, cwd, seams);
+  if (!inherited) return { ownRaw, inherited: null, binding: null, digest: rawEntryDigest(undefined) };
+  return {
+    ownRaw,
+    inherited,
+    binding: { ...inherited.binding, inheritedFrom: inherited.from },
+    digest: inheritedEntryDigest(inherited),
+  };
+}
+
+/**
+ * The binding a git worktree INHERITS from its main checkout, or null.
+ *
+ * Inheritance is DYNAMIC and READ-ONLY: nothing is copied into the config, so
+ * the main checkout stays the one source of truth, and the next read of the
+ * config by any worktree with no entry of its own sees a change made there
+ * (a running session adopts it when it reloads its config — on by default —
+ * or at its next start). Four rules:
+ *
+ *   - ONLY WITH NO ENTRY OF ITS OWN. Any entry the worktree holds — even one
+ *     the router cannot read (a present `null`, no usable primary) — wins and
+ *     stops inheritance: that entry is the user's statement about this
+ *     directory, and an unreadable one must be repaired, not papered over.
+ *   - ONLY FROM THE USER'S CONFIG. `worktreeMainCheckout` answers a directory
+ *     (following the `.git` pointer, checked against the repository's own
+ *     back-pointer); the binding itself is the one the user's config already
+ *     holds for that directory. A project file never names a vault here.
+ *   - ONLY A DIRECTORY THE CONFIG ALREADY BINDS IS EXAMINED. The candidate
+ *     main checkout is checked against the config BEFORE any file outside the
+ *     workspace is opened, so a pointer to an unbound directory or to an
+ *     unreachable network share costs nothing.
+ *   - ONLY A USABLE ENTRY. A main checkout whose entry does not normalise to a
+ *     binding passes nothing on; its own repair diagnostics are where that is
+ *     dealt with.
+ *
+ * @param {object} config the parsed router config
+ * @param {string} cwd the workspace
+ * @param {{ worktreeMainCheckout?: (cwd: string, seams?: object) => string|null }} [seams]
+ * @returns {{ from: string, key: string, raw: object, binding: object }|null}
+ */
+export function inheritedBindingSource(config, cwd, seams = {}) {
+  const key = canonicalWorkspaceKey(cwd);
+  if (!key) return null;
+  if (rawBindingEntry(config, cwd) !== undefined) return null;
+  const all = config?.[WORKSPACE_BINDINGS_KEY];
+  if (!all || typeof all !== 'object' || Array.isArray(all) || Object.keys(all).length === 0) return null;
+  const locate = typeof seams.worktreeMainCheckout === 'function' ? seams.worktreeMainCheckout : worktreeMainCheckout;
+  const accept = (candidate) => {
+    const k = canonicalWorkspaceKey(candidate);
+    if (!k || k === key) return false;
+    return isInheritableEntry(rawBindingEntry(config, candidate));
+  };
+  const from = locate(cwd, { accept });
+  if (typeof from !== 'string' || from === '') return null;
+  const mainKey = canonicalWorkspaceKey(from);
+  if (!mainKey || mainKey === key) return null;
+  const raw = rawBindingEntry(config, from);
+  const binding = normalizeBinding(raw);
+  if (!binding) return null;
+  // AN ENTRY THE ROUTER HAD TO REPAIR TO READ is not passed on: the main
+  // checkout's own session diagnoses it and spells the repair, and a worktree
+  // write would otherwise freeze the repaired reading into a copy nobody was
+  // asked about. (Codex, review round 2.)
+  if (!isInheritableEntry(raw)) return null;
+  return { from, key: mainKey, raw, binding };
+}
+
+/**
+ * Whether a main checkout's entry may be passed on to its worktrees: it reads
+ * as a binding, the router does not have to repair it to read it, and its
+ * primary tier — when it has one that qualifies its own primary — is one the
+ * router can read. The main checkout's session reads an unreadable tier as
+ * "locked" (failing closed); a worktree's first write would PERSIST that
+ * guess as a real restriction nobody chose, so such an entry is not
+ * inherited until it is repaired where it lives. (Codex, review rounds 2–3.)
+ */
+function isInheritableEntry(raw) {
+  if (normalizeBinding(raw) === null) return false;
+  if (bindingIncoherences(raw).length > 0) return false;
+  if (raw.primaryTier === undefined) return true;
+  const t = raw.primaryTier;
+  if (!t || typeof t !== 'object' || Array.isArray(t) || typeof t.vault !== 'string' || t.vault.trim() === '') return false;
+  return t.vault !== raw.vault || PRIMARY_MODES.includes(t.mode);
+}
+
+/**
+ * The digest of an INHERITED entry: its own hash domain (`inherited-entry-v1`),
+ * the main checkout's canonical key, and the main entry's `rawEntryDigest`.
+ * A separate domain, so no own entry — whatever a hand edit makes it look
+ * like — can ever share a digest with an inherited reading.
+ */
+function inheritedEntryDigest(inherited) {
+  const NUL = String.fromCharCode(0);
+  return createHash('sha256')
+    .update(['inherited-entry-v1', inherited.key, rawEntryDigest(inherited.raw)].join(NUL))
+    .digest('hex');
+}
+
+/**
+ * The digest a write precondition (`ifBindingDigest`) compares: of the
+ * workspace's own entry when it has one (exactly `rawEntryDigest`, so every
+ * repair diagnostic keeps working), and of the INHERITED entry together with
+ * where it came from when the binding is inherited. The second case matters
+ * for the vault panel, which rewrites a binding from `workspaceBindingOnFile`:
+ * if the main checkout's entry changes between that read and the write, the
+ * write is refused instead of freezing a stale copy into the worktree.
+ *
+ * @param {object} config
+ * @param {string} cwd
+ * @param {object} [seams] as for `readBinding`
+ * @returns {string} 64-hex sha256
+ */
+export function bindingEntryDigest(config, cwd, seams = {}) {
+  return bindingSnapshot(config, cwd, seams).digest;
 }
 
 /**
@@ -392,13 +536,18 @@ function selectBindingKey(all, key) {
  * @param {object} config the parsed router config
  * @param {string} cwd
  */
-export function bindingOnFileOf(config, cwd) {
-  const binding = readBinding(config, cwd);
+export function bindingOnFileOf(config, cwd, seams = {}) {
+  // ONE snapshot: the vaults and the digest come from the same reading.
+  const { binding, digest } = bindingSnapshot(config, cwd, seams);
   return {
-    digest: rawEntryDigest(rawBindingEntry(config, cwd)),
+    digest,
     vault: binding?.vault ?? null,
     also: Array.isArray(binding?.also) ? [...binding.also] : [],
     aliases: bindingEntryAliases(config, cwd).length,
+    // The main checkout this git worktree inherits its binding from, or null
+    // when the entry is the workspace's own (or there is none). A write made
+    // from here gives the worktree its own entry.
+    inheritedFrom: typeof binding?.inheritedFrom === 'string' ? binding.inheritedFrom : null,
   };
 }
 
@@ -1263,7 +1412,34 @@ export function withBinding(config, cwd, binding) {
   // first version of this carry-over took whichever spelling came first in
   // the object — so the unknown fields kept could come from an entry the
   // reading never used. (Codex, round 16.)
-  const storedRaw = rawBindingEntry(base, cwd);
+  // A GIT WORKTREE WITH NO ENTRY OF ITS OWN carries over what it INHERITED
+  // (v0.123.0): its first write starts from the main checkout's entry, so the
+  // fields this transform keeps but no writer names — the primary's tier, the
+  // paused secondaries, a field this version does not know — survive into the
+  // worktree's own entry. Without this, the first write from a worktree made
+  // a narrowed primary writable again and resumed a paused secondary (Codex,
+  // review of v0.123.0, 4a). The main checkout's entry itself is untouched.
+  //
+  // THE RESTRICTIONS COME FROM THE INHERITED READING, NOT FROM THE RAW ENTRY:
+  // the main checkout's `primaryTier` and `alsoPaused` as they apply THERE
+  // (a tier naming another vault, a pause of an undeclared vault, read as
+  // nothing), so a stale field in the main entry cannot start applying to a
+  // role the worktree's write gives it. Only the opaque fields — the ones
+  // this version does not know — are taken raw. (Codex, review round 2, R1.)
+  const ownRaw = rawBindingEntry(base, cwd);
+  const inheritedSource = ownRaw === undefined ? inheritedBindingSource(base, cwd) : null;
+  let storedRaw = ownRaw;
+  if (inheritedSource) {
+    const { raw: mainRaw, binding: mainBinding } = inheritedSource;
+    const opaque = mainRaw && typeof mainRaw === 'object' && !Array.isArray(mainRaw)
+      ? Object.fromEntries(Object.entries(mainRaw).filter(([k]) => k !== 'primaryTier' && k !== 'alsoPaused'))
+      : {};
+    storedRaw = {
+      ...opaque,
+      ...(mainBinding.primaryTier ? { primaryTier: mainBinding.primaryTier } : {}),
+      ...(Array.isArray(mainBinding.alsoPaused) && mainBinding.alsoPaused.length ? { alsoPaused: mainBinding.alsoPaused } : {}),
+    };
+  }
   for (const storedKey of Object.keys(all)) {
     if (canonicalWorkspaceKey(storedKey) === key) delete all[storedKey];
   }
@@ -1274,7 +1450,9 @@ export function withBinding(config, cwd, binding) {
   // always write, so a repair of a duplicate also dropped `foo: 1` in silence
   // (Codex, round 15). Carried through explicitly: the known fields are
   // written from the normalised record, everything else as it was.
-  const KNOWN = new Set(['vault', 'also', 'locked', 'confirmedAt', 'confirmedVia', 'alsoLocked', 'alsoWritable']);
+  // `inheritedFrom` is a READING, never a stored field: listed here so that a
+  // hand edit that wrote it into an entry is not carried through either.
+  const KNOWN = new Set(['vault', 'also', 'locked', 'confirmedAt', 'confirmedVia', 'alsoLocked', 'alsoWritable', 'inheritedFrom']);
   const unknownFields = storedRaw && typeof storedRaw === 'object' && !Array.isArray(storedRaw)
     ? Object.fromEntries(Object.entries(storedRaw).filter(([k]) => !KNOWN.has(k)))
     : {};
@@ -1283,6 +1461,15 @@ export function withBinding(config, cwd, binding) {
     ...normalized,
     confirmedAt: normalized.confirmedAt || new Date().toISOString().slice(0, 10),
   };
+  // AN IMPORT MADE ELSEWHERE IS NOT AN IMPORT HERE. A writer that starts from
+  // an inherited reading passes the main checkout's provenance through; a
+  // `migration` stamp copied into the worktree would make its briefing and
+  // panel announce an import nobody made in this directory. Re-stamped as
+  // what it is. (Codex, review round 2, R1.)
+  if (inheritedSource && entry.confirmedVia === 'migration') {
+    entry.confirmedVia = 'inherited';
+    entry.confirmedAt = new Date().toISOString().slice(0, 10);
+  }
   // A PAUSE SURVIVES EVERY WRITER THAT DOES NOT NAME IT — `alsoPaused` is not
   // a KNOWN field, so a re-binding, a lock or `--attach` carries the stored
   // list through as it carries any field it does not write. Only the
@@ -1577,11 +1764,11 @@ export function authoritativeVaultPath(cwd, env = process.env) {
   const value = env?.VAULT_PATH;
   if (typeof value !== 'string' || value.trim() === '') return null;
   // Only a statement about the workspace itself — from the workspace file
-  // since round 2 of the Codex review, and FROM THE HOST TOO since v0.122.0:
+  // since round 2 of the Codex review, and FROM THE HOST TOO since v0.124.0:
   // a host-wide VAULT_PATH naming a vault the session does not sit in is
   // "some vault", not "I work in this vault", and it chose an unbound
   // session's default. One rule here, so the cascade and the link linter —
-  // the two readers — cannot disagree (Codex review of v0.122.0).
+  // the two readers — cannot disagree (Codex review of v0.124.0).
   const self = canonicalWorkspaceKey(cwd);
   return self && canonicalWorkspaceKey(value) === self ? value : null;
 }

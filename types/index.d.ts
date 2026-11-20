@@ -98,10 +98,12 @@ export type Snapshot = {
   lockedTo: string | null
   /** The binding came from the one-time .env import, nobody confirmed it. */
   isImported: boolean
+  /** The main checkout this git worktree inherits its binding from (router v0.123.0+), or null. */
+  inheritedFrom?: string | null
   secondaries: Secondary[]
   available: VaultRow[]
   /** Unbound only: the vaults this session reaches WITHOUT a binding
-   * (list_vaults.openVaults, router v0.122.0+), callable by name only, never a
+   * (list_vaults.openVaults, router v0.124.0+), callable by name only, never a
    * default. Empty when bound, or from an older router. */
   openReach?: string[]
   /** Unbound only: the default the HOST named (list_vaults.defaultVault with no

@@ -283,12 +283,12 @@ precisely the default that lets a project write into it by accident. Note the
 interaction with the section above: a vault in `openVaults` is treated as
 **shared by hypothesis**, so its writes always need a precondition.
 
-**`openVaults` is reach, never a default (v0.122.0).** An unbound session — the
+**`openVaults` is reach, never a default (v0.124.0).** An unbound session — the
 Desktop chat, a home directory, any folder nobody bound — reaches the
 `openVaults` **only when a call names one**. It has no default vault:
 `list_vaults` reports `defaultVault: null` (`defaultVaultSource.origin:
 "unset"`), and a call that omits `vault` is refused with the list of vaults it
-may name and a pointer to `confirm_workspace_binding`. Before v0.122.0 the
+may name and a pointer to `confirm_workspace_binding`. Before v0.124.0 the
 router fell back to `config.json`'s `defaultVault`, then to the first vault that
 answered — so a remote vault could become an unbound session's default without
 anyone choosing it. A router that belongs to no workspace and should have a

@@ -1,5 +1,5 @@
 /**
- * AN UNBOUND SESSION INJECTS NO VAULT CONTENT (v0.122.0).
+ * AN UNBOUND SESSION INJECTS NO VAULT CONTENT (v0.124.0).
  *
  * The server no longer gives an unbound workspace a default vault; the hooks
  * must agree, or the session reads one vault's hot cache and decisions while

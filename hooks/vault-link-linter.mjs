@@ -531,7 +531,7 @@ if (lockedSlug) {
  *      the point of the key: from a workspace file it is honoured when it
  *      names the workspace ITSELF, which is what `setup-vault` writes into
  *      each bootstrapped vault's own `.env`.
- *   (`cfg.defaultVault` is no longer a tier: obsolete since v0.122.0.)
+ *   (`cfg.defaultVault` is no longer a tier: obsolete since v0.124.0.)
  * Returns null if no tier matches the active vault set.
  *
  * Used to bias `findOwningVault` toward the current vault when multiple
@@ -570,7 +570,7 @@ function resolveDefaultVaultPath() {
     }
   }
 
-  // Tier 3 — config.json's `defaultVault` — is GONE (v0.122.0): the router's
+  // Tier 3 — config.json's `defaultVault` — is GONE (v0.124.0): the router's
   // cascade no longer reads it, and this linter must not treat as "the
   // project's own" a vault the router itself would not default to.
 

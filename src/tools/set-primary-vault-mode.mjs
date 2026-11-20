@@ -206,7 +206,17 @@ export async function setPrimaryVaultMode(registry, args = {}, seams = {}) {
   // the next reader of this block would otherwise have to prove.
   const sameLive = !!live && live.vault === vault;
   if (sameLive) {
-    const { primaryTier: _drop, ...rest } = live;
+    // `inheritedFrom` follows the FILE too: a write from a git worktree that
+    // was inheriting has just given it an entry of its own (v0.123.0).
+    const { primaryTier: _drop, inheritedFrom: _was, ...withoutTier } = live;
+    // The provenance too: that first write re-stamps a `migration` import made
+    // in the main checkout as `inherited` (v0.123.0).
+    const provenance = live.inheritedFrom && fileBinding && !fileBinding.inheritedFrom
+      ? { confirmedAt: fileBinding.confirmedAt, confirmedVia: fileBinding.confirmedVia }
+      : {};
+    const rest = typeof fileBinding?.inheritedFrom === 'string'
+      ? { ...withoutTier, ...provenance, inheritedFrom: fileBinding.inheritedFrom }
+      : { ...withoutTier, ...provenance };
     registry.workspaceBinding = fileBinding && fileBinding.primaryTier && fileBinding.primaryTier.vault === vault
       ? { ...rest, primaryTier: fileBinding.primaryTier }
       : rest;

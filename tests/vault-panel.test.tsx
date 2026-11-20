@@ -425,6 +425,34 @@ test("the primary's tier read from the router is the one drawn; a router that ke
   await ui.unmount()
 })
 
+test('a binding a git worktree inherits says so, and names the main repository', async ($, on) => {
+  const list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, inheritedFrom: 'C:/work/Repo' } }
+  wire(on, { list })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Liaison héritée du dépôt principal C:\/work\/Repo/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('an inherited path with a line separator or a control character stays on one line', async ($, on) => {
+  const list = { ...LIST, workspaceBinding: { ...LIST.workspaceBinding, inheritedFrom: 'Work Re po\u0007x', confirmedVia: 'migration' } }
+  wire(on, { list })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /du dépôt principal Work Re po x :/ })).toBeTruthy()
+  // Imported in the main checkout: no "never confirmed" line, no Confirm key here.
+  expect(await ui.find({ type: 'Button', key: 'confirm-binding' })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('an own binding draws no inheritance line', async ($, on) => {
+  wire(on, { list: LIST })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Liaison héritée/ })).toBeFalsy()
+  await ui.unmount()
+})
+
 test("an older router, which reports no tier for the primary, gets its rights told as text, with no key to press", async ($, on) => {
   wire(on, { list: LIST })
   await begin($)
@@ -862,7 +890,7 @@ test('with no primary yet, the add list is open without asking', async ($, on) =
   await ui.unmount()
 })
 
-test('unbound: "no primary", then the openVaults callable by name, and never a default (router v0.122.0)', async ($, on) => {
+test('unbound: "no primary", then the openVaults callable by name, and never a default (router v0.124.0)', async ($, on) => {
   wire(on, { list: { ...LIST, workspaceBinding: null, vaultReach: 'declared', openVaults: ['notes', 'extra', 'gone'] } })
   await begin($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
