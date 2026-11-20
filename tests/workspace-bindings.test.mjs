@@ -644,11 +644,14 @@ describe('THE CASCADE — a confirmed binding outranks the environment', () => {
   test('a binding whose vault was disabled or removed FALLS THROUGH instead of bricking the session', () => {
     // Same friendly failure the other tiers already have. A stale binding must
     // not make every tool call fail; it must quietly lose its turn.
+    // Since v0.124.0 it falls through to NOTHING (no config default, no first
+    // vault): resolveVault() then says the primary is not loaded, instead of
+    // silently serving some other vault.
     const r = withEnv(undefined, () => resolveDefaultVaultWithSource({
-      vaults: VAULTS, configuredDefault: 'work', binding: normalizeBinding({ vault: 'gone' }),
+      vaults: VAULTS, binding: normalizeBinding({ vault: 'gone' }),
     }));
-    assert.equal(r.name, 'work');
-    assert.equal(r.origin, 'config');
+    assert.equal(r.name, null);
+    assert.equal(r.origin, 'unset');
   });
 
   test('`also` does not change WHICH vault is the default — only the primary does', () => {
@@ -659,12 +662,12 @@ describe('THE CASCADE — a confirmed binding outranks the environment', () => {
     assert.equal(r.name, 'notes', 'secondaries are addressable, not default');
   });
 
-  test('no binding and no environment: the cascade below is untouched', () => {
+  test('no binding and no environment: NO default (v0.124.0), whatever config.json says', () => {
     const r = withEnv(undefined, () => resolveDefaultVaultWithSource({
       vaults: VAULTS, configuredDefault: 'work', binding: null,
     }));
-    assert.equal(r.name, 'work');
-    assert.equal(r.origin, 'config');
+    assert.equal(r.name, null);
+    assert.equal(r.origin, 'unset');
   });
 });
 
@@ -1835,8 +1838,12 @@ describe('GUARD — a workspace file proposes a vault; only the host may choose 
     // directory the file lives in.
     const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-elsewhere-'));
     try {
-      // From the host: an authority, wherever it points.
-      await asHost(elsewhere, () => assert.equal(authoritativeVaultPath(process.cwd()), elsewhere), 'VAULT_PATH');
+      // From the host, since v0.124.0: the SAME rule — a statement about the
+      // working directory, or nothing. Pointing elsewhere it chooses nothing;
+      // naming the cwd it is honoured. (Codex review of v0.124.0: the link
+      // linter still took a host value pointing elsewhere.)
+      await asHost(elsewhere, () => assert.equal(authoritativeVaultPath(process.cwd()), null), 'VAULT_PATH');
+      await asHost(elsewhere, () => assert.equal(authoritativeVaultPath(elsewhere), elsewhere), 'VAULT_PATH');
 
       // From the workspace file, pointing ELSEWHERE: refused.
       await asWorkspaceFile(elsewhere, (dir) => assert.equal(authoritativeVaultPath(dir), null), 'VAULT_PATH');
@@ -1886,10 +1893,11 @@ describe('GUARD — a workspace file proposes a vault; only the host may choose 
     {
       name: 'the resolution cascade (src/registry.mjs)',
       resolve: () => resolveDefaultVaultWithSource({
-        vaults: VAULTS, configuredDefault: 'work', binding: null,
+        vaults: VAULTS, binding: null,
       }).name,
-      // What the cascade falls through to when the proposal is refused.
-      fallback: 'work',
+      // What the cascade falls through to when the proposal is refused:
+      // nothing, since v0.124.0.
+      fallback: null,
     },
     {
       name: 'detectVaultContext (every workspace-bound hook)',
@@ -1904,15 +1912,16 @@ describe('GUARD — a workspace file proposes a vault; only the host may choose 
       name: 'orderedVaultCandidates (doc-drift detector)',
       resolve: async (cwd, vaultDir, otherDir) => {
         const { orderedVaultCandidates } = await import('../hooks/_helpers/doc-drift-detector.mjs');
-        // TWO registered vaults, and `other` is the config default. With only
-        // one vault this resolver returns it whatever happens — the ordering
-        // has nothing to order — so a single-vault fixture would report a
-        // refusal that never took place. The first version of this row did
-        // exactly that and passed for the wrong reason.
+        // TWO registered vaults, `other` registered FIRST so it heads the
+        // order when nothing chooses. With only one vault this resolver
+        // returns it whatever happens — the ordering has nothing to order — so
+        // a single-vault fixture would report a refusal that never took
+        // place. The first version of this row did exactly that and passed for
+        // the wrong reason. (`other` used to come first as the config default,
+        // a source removed in v0.124.0.)
         const cfg = {
-          portRegistry: { [vaultDir]: 27999, [otherDir]: 28000 },
+          portRegistry: { [otherDir]: 28000, [vaultDir]: 27999 },
           vaultNames: { [vaultDir]: 'notes', [otherDir]: 'other' },
-          defaultVault: 'other',
         };
         const ordered = orderedVaultCandidates(cwd, cfg);
         if (ordered[0] === vaultDir) return 'notes';

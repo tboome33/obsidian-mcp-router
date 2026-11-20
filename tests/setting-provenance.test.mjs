@@ -185,14 +185,14 @@ describe('resolveDefaultVaultWithSource — which tier of the cascade answered',
     consultAnEmptyWorkspace();
     withProcessEnv({ OBSIDIAN_ROUTER_DEFAULT_VAULT: 'beta', VAULT_PATH: undefined }, () => {
       assert.deepEqual(
-        resolveDefaultVaultWithSource({ vaults, configuredDefault: 'alpha' }),
+        resolveDefaultVaultWithSource({ vaults }),
         { name: 'beta', origin: 'host', variable: 'OBSIDIAN_ROUTER_DEFAULT_VAULT' },
       );
     });
 
     // The same value, same variable, same active vaults — but applied by the
     // loader from a repository's own file. It is now REFUSED, and the cascade
-    // continues to the config default.
+    // continues — to nothing, since v0.124.0 (no config default any more).
     //
     // Until the Codex review of 2026-09-03 this tier applied it and reported
     // origin `workspace-dotenv`, while `bindingHint` reported the very same
@@ -208,8 +208,8 @@ describe('resolveDefaultVaultWithSource — which tier of the cascade answered',
       try {
         assert.equal(process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT, 'beta', 'the loader did apply it to the environment');
         assert.deepEqual(
-          resolveDefaultVaultWithSource({ vaults, configuredDefault: 'alpha' }),
-          { name: 'alpha', origin: 'config', variable: null },
+          resolveDefaultVaultWithSource({ vaults }),
+          { name: null, origin: 'unset', variable: null },
           'a workspace file may propose a vault; it may not choose one',
         );
       } finally {
@@ -218,64 +218,65 @@ describe('resolveDefaultVaultWithSource — which tier of the cascade answered',
     });
   });
 
-  test('tier 2 names VAULT_PATH, not the override — the variable reported is the one that answered', () => {
+  test('tier 2 names VAULT_PATH, not the override — and only when the cwd IS that vault', () => {
     _resetWorkspaceDotenvProvenance();
     consultAnEmptyWorkspace();
-    withProcessEnv({ OBSIDIAN_ROUTER_DEFAULT_VAULT: undefined, VAULT_PATH: '/v/beta' }, () => {
-      assert.deepEqual(
-        resolveDefaultVaultWithSource({ vaults, configuredDefault: undefined }),
-        { name: 'beta', origin: 'host', variable: 'VAULT_PATH' },
-      );
-    });
+    const here = fs.mkdtempSync(path.join(os.tmpdir(), 'provenance-tier2-'));
+    const before = process.cwd();
+    const local = [...vaults, { name: 'here', type: 'local', path: here }];
+    try {
+      process.chdir(here);
+      withProcessEnv({ OBSIDIAN_ROUTER_DEFAULT_VAULT: undefined, VAULT_PATH: here }, () => {
+        assert.deepEqual(
+          resolveDefaultVaultWithSource({ vaults: local }),
+          { name: 'here', origin: 'host', variable: 'VAULT_PATH' },
+        );
+      });
+      // v0.124.0: a host-wide VAULT_PATH naming another vault than the cwd
+      // decides nothing — that is "some vault", not "I work in this vault".
+      withProcessEnv({ OBSIDIAN_ROUTER_DEFAULT_VAULT: undefined, VAULT_PATH: '/v/beta' }, () => {
+        assert.deepEqual(
+          resolveDefaultVaultWithSource({ vaults: local }),
+          { name: null, origin: 'unset', variable: null },
+        );
+      });
+    } finally {
+      process.chdir(before);
+      fs.rmSync(here, { recursive: true, force: true });
+    }
   });
 
   test('an override naming an unknown vault falls through, and the SOURCE is the tier that actually answered', () => {
     _resetWorkspaceDotenvProvenance();
     withProcessEnv({ OBSIDIAN_ROUTER_DEFAULT_VAULT: 'ghost', VAULT_PATH: undefined }, () => {
       assert.deepEqual(
-        resolveDefaultVaultWithSource({ vaults, configuredDefault: 'alpha' }),
-        { name: 'alpha', origin: 'config', variable: null },
+        resolveDefaultVaultWithSource({ vaults }),
+        { name: null, origin: 'unset', variable: null },
         'a rejected override must not be reported as the source of what replaced it',
       );
     });
   });
 
-  test('tiers 3 to 5, and an empty registry', () => {
+  test('past the three tiers there is NO default (v0.124.0): config, first-healthy, first-active are gone', () => {
     _resetWorkspaceDotenvProvenance();
     withProcessEnv({ OBSIDIAN_ROUTER_DEFAULT_VAULT: undefined, VAULT_PATH: undefined }, () => {
-      assert.deepEqual(
-        resolveDefaultVaultWithSource({ vaults, configuredDefault: 'beta' }),
-        { name: 'beta', origin: 'config', variable: null },
-      );
-      assert.deepEqual(
-        resolveDefaultVaultWithSource({ vaults, configuredDefault: undefined }),
-        { name: 'alpha', origin: 'first-healthy', variable: null },
-      );
-      assert.deepEqual(
-        resolveDefaultVaultWithSource({ vaults: [{ name: 'r', type: 'remote' }], configuredDefault: undefined }),
-        { name: 'r', origin: 'first-active', variable: null },
-      );
-      assert.deepEqual(
-        resolveDefaultVaultWithSource({ vaults: [], configuredDefault: undefined }),
-        { name: undefined, origin: 'unset', variable: null },
-      );
-      // Tier 5 returns the first entry's name VERBATIM, as the name-only
-      // function always did (`vaults[0]?.name`). A falsy-but-present name must
-      // not collapse to undefined: the two functions have to agree for every
-      // input, not just the realistic ones.
-      for (const odd of ['', null, undefined]) {
-        const only = [{ name: odd, type: 'remote' }];
-        assert.equal(resolveDefaultVaultWithSource({ vaults: only, configuredDefault: undefined }).name, odd, JSON.stringify(odd));
-        assert.equal(resolveDefaultVault({ vaults: only, configuredDefault: undefined }), odd, `name-only, ${JSON.stringify(odd)}`);
-      }
+      const UNSET = { name: null, origin: 'unset', variable: null };
+      // A config default passed anyway is ignored: the parameter is gone.
+      assert.deepEqual(resolveDefaultVaultWithSource({ vaults, configuredDefault: 'beta' }), UNSET);
+      assert.deepEqual(resolveDefaultVaultWithSource({ vaults }), UNSET);
+      assert.deepEqual(resolveDefaultVaultWithSource({ vaults: [{ name: 'r', type: 'remote' }] }), UNSET);
+      assert.deepEqual(resolveDefaultVaultWithSource({ vaults: [] }), UNSET);
     });
   });
 
-  test('the name-only cascade is unchanged — a dozen tests depend on it', () => {
+  test('the name-only cascade agrees with the full one', () => {
     _resetWorkspaceDotenvProvenance();
     withProcessEnv({ OBSIDIAN_ROUTER_DEFAULT_VAULT: undefined, VAULT_PATH: undefined }, () => {
-      assert.equal(resolveDefaultVault({ vaults, configuredDefault: 'beta' }), 'beta');
-      assert.equal(resolveDefaultVault({ vaults: [], configuredDefault: undefined }), undefined);
+      assert.equal(resolveDefaultVault({ vaults }), null);
+      assert.equal(resolveDefaultVault({ vaults: [] }), null);
+    });
+    withProcessEnv({ OBSIDIAN_ROUTER_DEFAULT_VAULT: 'beta', VAULT_PATH: undefined }, () => {
+      assert.equal(resolveDefaultVault({ vaults }), 'beta');
     });
   });
 });
@@ -786,7 +787,10 @@ describe('GUARD — the tool description names the three fields and every origin
       // v0.90.0 added "binding" — the confirmed workspace binding, tier 0 of
       // the cascade. Added here on purpose, which is what this list is for.
       'binding',
-      'config', 'default', 'first-active', 'first-healthy', 'host', 'runtime', 'unknown', 'unset', 'workspace-dotenv',
+      // v0.124.0 REMOVED "config", "first-healthy" and "first-active" with the
+      // cascade tiers that produced them — on purpose, which is what this
+      // list is for.
+      'default', 'host', 'runtime', 'unknown', 'unset', 'workspace-dotenv',
     ], 'the vocabulary changed: update the description, the README and this list, deliberately');
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
     for (const origin of SETTING_ORIGINS) {

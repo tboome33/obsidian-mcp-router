@@ -316,7 +316,6 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
     registry.workspaceBinding = binding;
     const again = resolveDefaultVaultWithSource({
       vaults: registry.vaults || [],
-      configuredDefault: registry.configuredDefault,
       binding,
       reach: registry,
     });

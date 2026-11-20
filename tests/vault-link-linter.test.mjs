@@ -569,7 +569,9 @@ describe('vault-link-linter — block cases', () => {
         message: { content: [{ type: 'text', text: 'See [log](wiki/log.md).' }] },
       };
       fs.writeFileSync(transcriptPath, JSON.stringify(entry) + '\n');
-      const r = spawnSync(
+      // Since v0.124.0 VAULT_PATH decides only when the session sits IN that
+      // vault — from the host too — exactly as the router's cascade does.
+      const run = (projectDir) => spawnSync(
         process.execPath,
         [HOOK_PATH],
         {
@@ -578,24 +580,32 @@ describe('vault-link-linter — block cases', () => {
           env: {
             ...process.env,
             OBSIDIAN_ROUTER_CONFIG: multiConfigPath,
+            OBSIDIAN_ROUTER_DEFAULT_VAULT: '',
+            CLAUDE_PROJECT_DIR: projectDir,
             VAULT_PATH: otherVault,  // path-based override (tier 2)
           },
         },
       );
+      const r = run(otherVault);
       assert.equal(r.status, 2);
       assert.match(r.stderr, /127\.0\.0\.1:27144/);
       assert.doesNotMatch(r.stderr, /127\.0\.0\.1:27142/);
+      // The same host VAULT_PATH, from a session that is NOT in that vault:
+      // it chooses nothing, so the linter does not steer to that vault.
+      const elsewhere = run(workDir);
+      assert.doesNotMatch(elsewhere.stderr, /127\.0\.0\.1:27144/);
     } finally {
       fs.rmSync(otherVault, { recursive: true, force: true });
       fs.rmSync(multiConfigPath, { force: true });
     }
   });
 
-  test('REGRESSION (codex P2): multi-vault collision prefers defaultVault when set', () => {
-    // Create a second vault that ALSO contains wiki/log.md, plus set
-    // defaultVault to the second vault. The linter should suggest a URL
-    // pointing at the second vault's port (insecurePort 27143), not the
-    // first vault's (27142).
+  test('REGRESSION (codex P2): multi-vault collision prefers the session default vault when set', () => {
+    // Create a second vault that ALSO contains wiki/log.md, and make it the
+    // session's default through the HOST override. The linter should suggest
+    // a URL pointing at the second vault's port (insecurePort 27143), not the
+    // first vault's (27142). (Until v0.124.0 config.json's `defaultVault` did
+    // this; that key no longer chooses anything — see the next test.)
     const otherVault = path.join(workDir, 'other-vault');
     fs.mkdirSync(path.join(otherVault, 'wiki'), { recursive: true });
     fs.writeFileSync(path.join(otherVault, 'wiki', 'log.md'), '# other log');
@@ -610,7 +620,6 @@ describe('vault-link-linter — block cases', () => {
 
     const multiConfigPath = path.join(workDir, 'multi-config.json');
     fs.writeFileSync(multiConfigPath, JSON.stringify({
-      defaultVault: 'other-vault',
       portRegistry: { [vaultPath]: 27132, [otherVault]: 27133 },
       portStart: 27132,
     }, null, 2));
@@ -627,7 +636,7 @@ describe('vault-link-linter — block cases', () => {
         {
           input: JSON.stringify({ hook_event_name: 'Stop', transcript_path: transcriptPath }),
           encoding: 'utf8',
-          env: { ...process.env, OBSIDIAN_ROUTER_CONFIG: multiConfigPath },
+          env: { ...process.env, OBSIDIAN_ROUTER_CONFIG: multiConfigPath, OBSIDIAN_ROUTER_DEFAULT_VAULT: 'other-vault' },
         },
       );
       assert.equal(r.status, 2);

@@ -380,7 +380,6 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       // for, and it would drift the first time a tier changed.
       const again = resolveDefaultVaultWithSource({
         vaults: registry.vaults || [],
-        configuredDefault: registry.configuredDefault,
         binding: after,
         reach: registry,
       });

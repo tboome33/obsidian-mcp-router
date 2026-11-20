@@ -94,7 +94,8 @@ test('D: drift binding, default and disabled selection preserve exact slug case'
   const cfg = { portRegistry: { [a]: 27124, [b]: 27125 }, vaultNames: { [a]: 'notes', [b]: 'NOTES' } };
   const bound = { ...cfg, workspaceBindings: { [canonicalWorkspaceKey(cwd)]: { vault: 'NOTES' } } };
   assert.equal(orderedVaultCandidates(cwd, bound)[0], b);
-  assert.equal(orderedVaultCandidates(cwd, { ...cfg, defaultVault: 'NOTES' })[0], b);
+  // config.json's defaultVault is obsolete (v0.124.0): it reorders nothing.
+  assert.deepEqual(orderedVaultCandidates(cwd, { ...cfg, defaultVault: 'NOTES' }), orderedVaultCandidates(cwd, cfg));
   assert.deepEqual(orderedVaultCandidates(path.join(cwd, 'unrelated'), { ...cfg, disabledVaults: ['notes'] }), [b]);
 });
 
@@ -132,18 +133,32 @@ test('G: clear and no-binding briefing describe declared reachability, including
     cwd, readFile: () => JSON.stringify(cfg), writeFile: (_p, c) => { cfg = JSON.parse(c); },
   });
   assert.match(out.message, /openVaults.*possibly none/);
-  assert.equal(reg.defaultVault, undefined, 'clearing re-runs the reachable default cascade');
+  assert.equal(reg.defaultVault, null, 'clearing re-runs the cascade, which picks nothing for an unbound workspace');
   assert.doesNotMatch(out.message, /All registered vaults are available/);
   assert.match(composeBriefing({ registeredCount: 1 }), /vaultReach.*openVaults.*possibly none/s);
 });
 
-test('H: every default tier filters unreachable vaults; unset reach keeps the old cascade', () => {
+test('H: every default tier filters unreachable vaults; nothing picks a vault on its own', () => {
   const vaults = [{ name: 'private', type: 'local' }, { name: 'public', type: 'remote' }];
-  const base = { vaults, configuredDefault: 'private' };
   const resolve = registry.resolveDefaultVaultWithSource;
-  assert.equal(resolve({ ...base, reach: { vaultReach: 'declared' } }).name, undefined);
-  assert.equal(resolve({ ...base, reach: { vaultReach: 'declared', openVaults: ['public'] } }).name, 'public');
-  assert.equal(resolve(base).name, 'private');
+  // No tier left to choose: openVaults is reach, never a default (v0.124.0).
+  assert.equal(resolve({ vaults, reach: { vaultReach: 'declared' } }).name, null);
+  assert.equal(resolve({ vaults, reach: { vaultReach: 'declared', openVaults: ['public'] } }).name, null);
+  assert.equal(resolve({ vaults }).name, null);
+  // The host override is a tier, and it is filtered by reach like the others.
+  const saved = process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+  process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT = 'private';
+  const warn = console.error;
+  console.error = () => {};
+  try {
+    assert.equal(resolve({ vaults, reach: { vaultReach: 'declared', openVaults: ['public'] } }).name, null);
+    assert.equal(resolve({ vaults, reach: { vaultReach: 'declared', openVaults: ['private'] } }).name, 'private');
+    assert.equal(resolve({ vaults }).name, 'private');
+  } finally {
+    console.error = warn;
+    if (saved === undefined) delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+    else process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT = saved;
+  }
 });
 
 test('H wiring: loading an unbound declared registry cannot announce an unreachable default', async (t) => {
@@ -151,7 +166,7 @@ test('H wiring: loading an unbound declared registry cannot announce an unreacha
   const configPath = path.join(cwd, 'config.json');
   fs.writeFileSync(configPath, JSON.stringify({ vaultReach: 'declared', defaultVault: 'private', remoteVaults: [{ name: 'private', baseUrl: 'https://example.invalid', apiKey: 'fixture' }] }));
   const reg = await loadRegistry({ configPath });
-  assert.equal(reg.defaultVault, undefined);
+  assert.equal(reg.defaultVault, null);
 });
 
 test('I: empty query and fragment delimiters are refused before registration', async (t) => {

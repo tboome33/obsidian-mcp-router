@@ -102,6 +102,13 @@ export type Snapshot = {
   inheritedFrom?: string | null
   secondaries: Secondary[]
   available: VaultRow[]
+  /** Unbound only: the vaults this session reaches WITHOUT a binding
+   * (list_vaults.openVaults, router v0.124.0+), callable by name only, never a
+   * default. Empty when bound, or from an older router. */
+  openReach?: string[]
+  /** Unbound only: the default the HOST named (list_vaults.defaultVault with no
+   * binding — OBSIDIAN_ROUTER_DEFAULT_VAULT, or the cwd being a vault), or null. */
+  unboundDefault?: string | null
   /** Secondaries paused from the pane: out of the binding, kept here with
    * their write tier until resumed. Absent in a snapshot an older panel kept. */
   paused?: Secondary[]

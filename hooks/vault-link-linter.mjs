@@ -146,7 +146,6 @@ import {
   authoritativeVaultPath,
 } from '../src/helpers/workspace-bindings.mjs';
 import {
-  configuredDefaultVault,
   disabledVaultEntries,
   registeredVaultPaths,
   vaultSlug,
@@ -532,7 +531,7 @@ if (lockedSlug) {
  *      the point of the key: from a workspace file it is honoured when it
  *      names the workspace ITSELF, which is what `setup-vault` writes into
  *      each bootstrapped vault's own `.env`.
- *   3. `cfg.defaultVault` (slug) — global fallback from config.
+ *   (`cfg.defaultVault` is no longer a tier: obsolete since v0.124.0.)
  * Returns null if no tier matches the active vault set.
  *
  * Used to bias `findOwningVault` toward the current vault when multiple
@@ -571,18 +570,9 @@ function resolveDefaultVaultPath() {
     }
   }
 
-  // Tier 3: cfg.defaultVault slug.
-  //
-  // This one never threw — `===` against a number simply never matches — but
-  // it read the raw value, and a reader that is safe only by accident is a
-  // reader the scan in tests/vault-slug.test.mjs cannot vouch for. Through the
-  // accessor it is safe on purpose. (v0.90.0)
-  const configuredDefault = configuredDefaultVault(cfg);
-  if (configuredDefault) {
-    for (const vp of vaultPaths) {
-      if (vaultSlug(cfg, vp) === configuredDefault) return vp;
-    }
-  }
+  // Tier 3 — config.json's `defaultVault` — is GONE (v0.124.0): the router's
+  // cascade no longer reads it, and this linter must not treat as "the
+  // project's own" a vault the router itself would not default to.
 
   return null;
 }

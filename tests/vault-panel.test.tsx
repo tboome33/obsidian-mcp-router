@@ -890,6 +890,72 @@ test('with no primary yet, the add list is open without asking', async ($, on) =
   await ui.unmount()
 })
 
+test('unbound: "no primary", then the openVaults callable by name, and never a default (router v0.124.0)', async ($, on) => {
+  wire(on, { list: { ...LIST, workspaceBinding: null, vaultReach: 'declared', openVaults: ['notes', 'extra', 'gone'] } })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Aucun vault principal/ })).toBeTruthy()
+  // Only the open vaults this session actually loaded; `gone` is not one.
+  expect(await ui.find({ type: 'Text', text: /^Joignables en les nommant \(openVaults\) : notes, extra$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Aucun vault par défaut/ })).toBeTruthy()
+  // Still offered for binding, below.
+  expect(await ui.find({ type: 'Button', key: 'tab-locaux' })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('unbound with a HOST default: the panel names it instead of saying "no default"', async ($, on) => {
+  wire(on, { list: { ...LIST, workspaceBinding: null, vaultReach: 'declared', openVaults: ['notes'], defaultVault: 'notes' } })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Défaut posé hors de ce projet \(hôte\) : notes\./ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Aucun vault par défaut/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('unbound, no openVaults (vaultReach unset): the default status is still said — host default or none', async ($, on) => {
+  const state = { list: { ...LIST, workspaceBinding: null, openVaults: [], defaultVault: 'notes' } as unknown }
+  wire(on, state)
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Joignables en les nommant/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /^Défaut posé hors de ce projet \(hôte\) : notes\./ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('unbound, no openVaults, no host default: "Aucun vault par défaut"', async ($, on) => {
+  wire(on, { list: { ...LIST, workspaceBinding: null, openVaults: [], defaultVault: null } })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Aucun vault par défaut/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('unbound, an older router (no openVaults field): no default status claimed either way', async ($, on) => {
+  wire(on, { list: { ...LIST, workspaceBinding: null, defaultVault: 'main' } })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Défaut posé hors de ce projet/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /^Aucun vault par défaut/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('unbound under a session lock: no default line — unnamed calls go to the locked vault, which its own line says', async ($, on) => {
+  wire(on, { list: { ...LIST, workspaceBinding: null, openVaults: [], defaultVault: null, lockedTo: 'extra' } })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Aucun vault par défaut/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /^Défaut posé hors de ce projet/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('bound: no openVaults line, even when the router lists some', async ($, on) => {
+  wire(on, { list: { ...LIST, vaultReach: 'declared', openVaults: ['extra'] } })
+  await begin($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Joignables en les nommant/ })).toBeFalsy()
+  await ui.unmount()
+})
+
 test('on the phone (no menu, no field): the tier keeps its three buttons, and a filter typed elsewhere hides nothing', async ($, on) => {
   const calls = wire(on, { list: LIST })
   await begin($)
