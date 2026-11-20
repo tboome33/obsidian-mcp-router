@@ -98,6 +98,8 @@ export type Snapshot = {
   lockedTo: string | null
   /** The binding came from the one-time .env import, nobody confirmed it. */
   isImported: boolean
+  /** The main checkout this git worktree inherits its binding from (router v0.123.0+), or null. */
+  inheritedFrom?: string | null
   secondaries: Secondary[]
   available: VaultRow[]
   /** Secondaries paused from the pane: out of the binding, kept here with

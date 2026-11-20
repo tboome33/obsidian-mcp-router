@@ -95,7 +95,8 @@
  */
 
 import fs from 'node:fs';
-import { canonicalWorkspaceKey, normalizeBinding, boundVaults, WORKSPACE_BINDINGS_KEY } from './workspace-bindings.mjs';
+import { canonicalWorkspaceKey, normalizeBinding, boundVaults, inheritedBindingSource, WORKSPACE_BINDINGS_KEY } from './workspace-bindings.mjs';
+import { linkedWorktreesOf } from './worktree-origin.mjs';
 // The bundle's OWN normaliser and id test, not a mirror of them. The first
 // version used `isRecoveryCall` (write-targets.mjs) — a second copy of the same
 // rule, which disagreed with the handler on non-string junk (`recover: 1`), so
@@ -130,6 +131,21 @@ export const SHARING_REASONS = Object.freeze({
 });
 
 /**
+ * Whether a stored key is spelled for ANOTHER platform (a drive or UNC path
+ * read on POSIX, a POSIX root read on Windows): such a key is never probed on
+ * this machine's disk. Any other spelling — a relative one included — is
+ * resolved exactly as the forward lookup resolves it (`canonicalWorkspaceKey`).
+ */
+function isForeignAbsolute(p) {
+  if (typeof p !== 'string') return true;
+  // On Windows every spelling resolves (a rooted one on the current drive, as
+  // `canonicalWorkspaceKey` resolves it for the forward lookup too).
+  return process.platform === 'win32'
+    ? false
+    : /^(?:[a-zA-Z]:[\\/]|\\\\)/.test(p);
+}
+
+/**
  * The workspaces that DECLARE `vaultName` — as their primary or in their
  * `also` — in the binding registry of `config`.
  *
@@ -147,7 +163,34 @@ export const SHARING_REASONS = Object.freeze({
  * @param {object|null} config the parsed router config, or null when unreadable
  * @returns {string[]} canonical workspace keys, sorted
  */
-export function workspacesDeclaring(vaultName, config) {
+/**
+ * Per CONFIG OBJECT, the linked worktrees of each stored workspace that really
+ * inherit from it, with what each inherits — computed once. `list_vaults`
+ * asks `sharingRequirement` once per vault, and listing and checking every
+ * worktree again for each vault cost ~20 ms a call on a real repository with
+ * nineteen registered worktrees (Fable 5.2 review). A new config object (a
+ * fresh read) gets a fresh scan.
+ */
+const inheritingWorktreesCache = new WeakMap();
+function inheritingWorktreesOf(config, storedKey, key, list) {
+  let perConfig = inheritingWorktreesCache.get(config);
+  if (!perConfig) { perConfig = new Map(); inheritingWorktreesCache.set(config, perConfig); }
+  const cacheKey = `${storedKey}${String.fromCharCode(0)}${key}`;
+  if (list === linkedWorktreesOf && perConfig.has(cacheKey)) return perConfig.get(cacheKey);
+  const { dirs, complete } = list(key);
+  const found = [];
+  for (const wt of dirs) {
+    const wtKey = canonicalWorkspaceKey(wt);
+    if (!wtKey || wtKey === key) continue;
+    const inherited = inheritedBindingSource(config, wt);
+    if (inherited?.key === key) found.push({ wtKey, vaults: boundVaults(inherited.binding) });
+  }
+  const result = { found, complete };
+  if (list === linkedWorktreesOf) perConfig.set(cacheKey, result);
+  return result;
+}
+
+export function workspacesDeclaring(vaultName, config, { listWorktrees = linkedWorktreesOf } = {}) {
   if (typeof vaultName !== 'string' || vaultName === '') return [];
   const all = config?.[WORKSPACE_BINDINGS_KEY];
   if (!all || typeof all !== 'object' || Array.isArray(all)) return [];
@@ -161,6 +204,26 @@ export function workspacesDeclaring(vaultName, config) {
     // than counted under its raw spelling.
     const key = canonicalWorkspaceKey(storedKey);
     if (key) keys.add(key);
+    // A GIT WORKTREE OF THIS WORKSPACE WITH NO ENTRY OF ITS OWN inherits this
+    // binding (v0.123.0), so it writes the same vault: it is a second writer
+    // the registry's keys alone do not show. Counted here — the safe
+    // direction for a guard — when it still exists on disk. (Codex, review
+    // of v0.123.0, 4e.)
+    //
+    // ONLY A WORKTREE THE FORWARD RULE CONFIRMS is counted — the very
+    // `inheritedBindingSource` a session in that worktree would read with —
+    // so a stale registration, a reused folder or a worktree with an entry
+    // of its own is not a writer by inheritance. A listing that exists but
+    // could not be read in full counts as one more writer: a guard that
+    // cannot see assumes the worst. A key spelled for another platform is
+    // never probed on this one's disk. (Codex, review round 2, R5.)
+    if (key && !isForeignAbsolute(storedKey)) {
+      const { found, complete } = inheritingWorktreesOf(config, storedKey, key, listWorktrees);
+      for (const { wtKey, vaults } of found) {
+        if (vaults.includes(vaultName)) keys.add(wtKey);
+      }
+      if (!complete) keys.add(`${key} (linked worktrees unreadable)`);
+    }
   }
   return [...keys].sort();
 }
