@@ -75,7 +75,8 @@ branches `claude/vault-panel-surface` and `claude/no-implicit-default-vault` alr
   the guard counts it as a second writer — every worktree git has registered whose session would
   really inherit (the same rule, applied forward, and the same key resolution in both
   directions, and only toward the vaults it really inherits), never a stale registration, a
-  registered location that is a link to a moved worktree followed to its physical place; a registration list that exists but cannot be read counts as one more writer. Writes to those vaults then need a
+  registered location that is a link to a moved worktree followed to its physical place (only a
+  real link: an 8.3 short name of the same folder is one writer, not two); a registration list that exists but cannot be read counts as one more writer. Writes to those vaults then need a
   precondition, as for any vault two workspaces declare. The worktree scan is done once per config read, not once per vault: on this
   repository's own layout (30 registrations) a `list_vaults` over 25 vaults measured about 17–21 ms
   for a fresh config, 0.2 ms for the same one again.

@@ -585,8 +585,15 @@ describe('end to end — a real git worktree, and the router\'s own start-up', (
     git('commit', '-q', '--allow-empty', '-m', 'init');
     const wt = path.join(main, '.claude', 'worktrees', 'feature-x');
     git('worktree', 'add', '-q', '-b', 'feature-x', wt);
-    assert.equal(canonicalWorkspaceKey(worktreeMainCheckout(wt)), canonicalWorkspaceKey(main));
-    assert.equal(readBinding(configWith([[main, MAIN_ENTRY]]), wt).vault, 'dedibox');
+    // Compared PHYSICALLY: git records the long path, while os.tmpdir() can be
+    // an 8.3 short name or go through a link (the Windows CI runner's is
+    // `runner~1`). The answer is git's own spelling of the main checkout.
+    const physical = (p) => canonicalWorkspaceKey(fs.realpathSync.native(p));
+    const found = worktreeMainCheckout(wt);
+    assert.ok(found, 'a real git worktree is recognised');
+    assert.equal(physical(found), physical(main));
+    // A session opened in the main checkout is keyed by the spelling git uses for it.
+    assert.equal(readBinding(configWith([[found, MAIN_ENTRY]]), wt).vault, 'dedibox');
   });
 
   test('loadRegistry in a worktree (a real child process): the inherited binding is the session\'s, origin "binding"', () => {
@@ -914,7 +921,7 @@ describe('review round 3 — the repairs of round 2, attacked', () => {
     assert.ok(fs.existsSync(path.join(admin, 'gitdir')));
     const cfg = configWith([[main, { vault: 'dedibox', also: [] }]]);
     const writers = workspacesDeclaring('dedibox', cfg);
-    assert.ok(writers.includes(canonicalWorkspaceKey(moved)), 'the moved worktree is still a writer, at its physical place');
+    assert.ok(writers.includes(canonicalWorkspaceKey(fs.realpathSync.native(moved))), 'the moved worktree is still a writer, at its physical place');
     assert.ok(writers.length >= 2);
   });
 

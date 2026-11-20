@@ -295,11 +295,18 @@ export function linkedWorktreesOf(mainDir, seams = {}) {
       try { st = io.stat(dir); } catch (err) { if (err?.code !== 'ENOENT' && err?.code !== 'ENOTDIR') complete = false; continue; }
       if (!st || typeof st.isDirectory !== 'function' || !st.isDirectory()) continue;
       dirs.push(dir);
-      // The PHYSICAL location too, when the registered one is a link: a session
-      // started there is keyed by that spelling.
+      // The PHYSICAL location too, but ONLY when the registered one is itself a
+      // link (a worktree moved by hand, its old place left as a link): a
+      // session started there is keyed by that spelling. Not merely when
+      // `realpath` spells the path differently — an 8.3 short name or a mapped
+      // drive is the same directory, and counting it twice listed one writer
+      // under two names (Windows CI, runner~1 vs runneradmin).
       try {
-        const physical = io.realpath(dir);
-        if (physical && physical !== dir) dirs.push(physical);
+        const own = io.lstat(dir);
+        if (own && typeof own.isSymbolicLink === 'function' && own.isSymbolicLink()) {
+          const physical = io.realpath(dir);
+          if (physical && physical !== dir) dirs.push(physical);
+        }
       } catch { /* the registered spelling is enough to count */ }
     } catch (err) {
       // A registration that vanished is a stale entry; anything else is unread.
