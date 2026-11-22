@@ -10,6 +10,36 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### Measuring the router's responses, tool by tool (Phase 0 of the RTK borrowings)
+
+Asked by Roland on 2026-11-22, after a study of `rtk-ai/rtk` proposed lighter tool responses
+(vault page `rtk-roadmap`). Its review asked for measurements before any change, so this lot only
+measures and guards; nothing the router sends has changed.
+
+- **`scripts/measure-tool-responses.mjs`** reads the Claude Code transcripts on this machine and
+  reports, per router tool: calls, UTF-8 bytes received by the model (total, median, p95, max), how
+  many results were too large to show and were diverted to a file (and their real size, read back
+  from that file when it still exists), and what compact JSON would weigh. `--since`, `--project`,
+  `--match`, `--json`. **It prints numbers only, never content**, and it says so when part of the
+  store could not be read. Sizes are bytes, not tokens: no tokenizer for the target model is
+  available offline. Only Claude Code sessions are covered; claude.ai through MCPHub and other
+  hosts keep their own records.
+- **The logic lives in `src/helpers/tool-response-stats.mjs`**, pure functions with no filesystem
+  access; a resumed session's copied lines are counted once (de-duplication by tool-use id).
+- **`tests/wire-fidelity.test.mjs`** pins the property the next phase must keep: what the model
+  decodes from a response equals what the sanitiser produced — carriage returns, final newlines,
+  quotes, backslashes, astral characters included — plus a positive control that the sanitiser
+  leaves those note bodies untouched. Compact serialisation keeps it green; dropping a carriage
+  return or a final newline turns it red.
+- **First run, 2026-11-22**, over the 1 481 transcripts on Roland's machine (1 481/1 481 read):
+  12 749 router calls, 46 325 111 bytes received. `get_file` alone is 64.0 % of those bytes,
+  `search` 12.4 %, `list_vaults` 8.5 %. 522/12 749 results were too large to show (280 `get_file`,
+  229 `search` — 31 % of all searches). Compact JSON would remove 6.5 % of the JSON bytes shown
+  (2 877 748/44 029 770), not the 39 % one search response suggested: `get_file` is one long
+  string, which indentation barely touches.
+- Both new test files were mutation-checked: 9/9 declared mutations turned the declared tests red
+  (or, for the compact-JSON mutation, kept them green), each file restored and checked by hash.
+
 ## [0.123.0] — 2026-11-20 — a git worktree inherits its main checkout's vault binding
 
 Asked by Roland on 2026-11-20, after a DEDIBOX worktree (`<repo>\.claude\worktrees\<name>`) was found
